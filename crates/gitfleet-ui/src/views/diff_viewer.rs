@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::icons;
 use crate::preview::{PreviewHighlightSettings, PreviewHighlighter, PreviewState};
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, type_scale};
 use crate::views::{slim_scroll_h, tip};
 use gitfleet_git::{DiffBlock, DiffChangeKind, ParsedDiff};
 use iced::advanced::layout as adv_layout;
@@ -23,12 +23,12 @@ use iced::{
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub(crate) const DIFF_LINE_H: f32 = 19.0;
-pub(crate) const DIFF_HIDDEN_H: f32 = 22.0;
-pub(crate) const DIFF_SEP_H: f32 = 24.0;
+pub(crate) const DIFF_LINE_H: f32 = 21.0;
+pub(crate) const DIFF_HIDDEN_H: f32 = 24.0;
+pub(crate) const DIFF_SEP_H: f32 = 26.0;
 const DIFF_CONTEXT_LINES: usize = 3;
 const DIFF_EXPAND_STEP: usize = 20;
-const LINE_NUM_W: f32 = 42.0;
+const LINE_NUM_W: f32 = 48.0;
 const CONNECTOR_W: f32 = 28.0;
 const OVERVIEW_BAR_W: f32 = 5.0;
 
@@ -709,7 +709,7 @@ fn diff_code_char_width() -> f32 {
         let para = Para::with_text(adv_text::Text {
             content: sample,
             bounds: Size::INFINITY,
-            size: iced::Pixels(12.0),
+            size: iced::Pixels(type_scale::CODE),
             line_height: text::LineHeight::default(),
             font: theme::CODE_FONT,
             horizontal_alignment: alignment::Horizontal::Left,
@@ -721,7 +721,7 @@ fn diff_code_char_width() -> f32 {
         if w.is_finite() && w > 3.0 && w < 20.0 {
             w
         } else {
-            7.2
+            7.8
         }
     })
 }
@@ -735,7 +735,7 @@ fn measure_code_prefix(prefix: &str) -> f32 {
     let para = Para::with_text(adv_text::Text {
         content: prefix,
         bounds: Size::INFINITY,
-        size: iced::Pixels(12.0),
+        size: iced::Pixels(type_scale::CODE),
         line_height: text::LineHeight::default(),
         font: theme::CODE_FONT,
         horizontal_alignment: alignment::Horizontal::Left,
@@ -1430,12 +1430,12 @@ fn hidden_gap_bar<'a>(
     p: Palette,
 ) -> Element<'a, Message> {
     let mut bar = row![
-        icons::chevron_up(10.0, p.text_muted),
+        icons::chevron_up(11.0, p.text_muted),
         text(format!(
             "{hidden_count} {} hidden",
             if hidden_count == 1 { "line" } else { "lines" }
         ))
-        .size(11)
+        .size(type_scale::CAPTION)
         .color(p.text_muted)
         .wrapping(text::Wrapping::None),
     ]
@@ -1446,13 +1446,15 @@ fn hidden_gap_bar<'a>(
         bar = bar.push(
             button(
                 row![
-                    icons::chevron_down(9.0, p.accent_fg),
-                    text(format!("+{DIFF_EXPAND_STEP}")).size(10).color(p.accent_fg),
+                    icons::chevron_down(10.0, p.accent_fg),
+                    text(format!("+{DIFF_EXPAND_STEP}"))
+                        .size(type_scale::BADGE)
+                        .color(p.accent_fg),
                 ]
                 .spacing(2)
                 .align_y(Alignment::Center),
             )
-            .padding([1, 5])
+            .padding([1, 6])
             .style(theme::subtle_btn(p))
             .on_press(Message::ExpandDiffGap {
                 gap_id,
@@ -1464,9 +1466,9 @@ fn hidden_gap_bar<'a>(
     bar = bar.push(
         button(
             row![
-                icons::chevron_up(9.0, p.text_secondary),
-                text("show").size(10.5).color(p.text_primary),
-                icons::chevron_down(9.0, p.text_secondary),
+                icons::chevron_up(10.0, p.text_secondary),
+                text("show").size(type_scale::BADGE).color(p.text_primary),
+                icons::chevron_down(10.0, p.text_secondary),
             ]
             .spacing(3)
             .align_y(Alignment::Center),
@@ -1483,13 +1485,15 @@ fn hidden_gap_bar<'a>(
         bar = bar.push(
             button(
                 row![
-                    icons::chevron_up(9.0, p.accent_fg),
-                    text(format!("+{DIFF_EXPAND_STEP}")).size(10).color(p.accent_fg),
+                    icons::chevron_up(10.0, p.accent_fg),
+                    text(format!("+{DIFF_EXPAND_STEP}"))
+                        .size(type_scale::BADGE)
+                        .color(p.accent_fg),
                 ]
                 .spacing(2)
                 .align_y(Alignment::Center),
             )
-            .padding([1, 5])
+            .padding([1, 6])
             .style(theme::subtle_btn(p))
             .on_press(Message::ExpandDiffGap {
                 gap_id,
@@ -1524,7 +1528,7 @@ fn render_highlighted_code<'a>(
 ) -> Element<'a, Message> {
     if spans.is_empty() || !spans.iter().any(|s| s.highlighted) {
         return text(code.to_string())
-            .size(12)
+            .size(type_scale::CODE)
             .font(theme::CODE_FONT)
             .color(fg)
             .wrapping(text::Wrapping::None)
@@ -1548,7 +1552,7 @@ fn render_highlighted_code<'a>(
         .map(|seg| {
             let s = span(seg.text.clone())
                 .font(theme::CODE_FONT)
-                .size(12)
+                .size(type_scale::CODE)
                 .color(fg);
             if seg.highlighted {
                 s.background(hl_bg).border(hl_border).padding([1, 0])
@@ -1558,7 +1562,7 @@ fn render_highlighted_code<'a>(
         })
         .collect();
     rich_text(rich_spans)
-        .size(12)
+        .size(type_scale::CODE)
         .font(theme::CODE_FONT)
         .wrapping(text::Wrapping::None)
         .into()
@@ -1597,7 +1601,7 @@ fn render_side_row<'a>(
             let ln_str = line_no.map(|n| n.to_string()).unwrap_or_default();
             let gutter = container(
                 text(ln_str)
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .font(theme::CODE_FONT)
                     .color(p.text_muted)
                     .wrapping(text::Wrapping::None),
@@ -1658,7 +1662,7 @@ fn render_side_row<'a>(
         } => hidden_gap_bar(*gap_id, *hidden_count, *can_expand_top, *can_expand_bottom, p),
         SideRow::Separator(hdr) => container(
             text(theme::sanitize_code_line(hdr))
-                .size(11)
+                .size(type_scale::CAPTION)
                 .font(theme::CODE_FONT)
                 .color(p.accent_fg)
                 .wrapping(text::Wrapping::None),
@@ -1684,14 +1688,16 @@ impl GitFleetApp {
 
         let mut header = row![
             theme::clipped_line(
-                text(self.diff_title.clone()).size(12).color(p.text_primary),
+                text(self.diff_title.clone())
+                    .size(type_scale::BODY)
+                    .color(p.text_primary),
                 Length::Fill,
             ),
             if self.bottom_mode == BottomViewMode::Preview && !preview_badge.is_empty() {
                 Element::from(
                     container(
                         text(preview_badge)
-                            .size(10)
+                            .size(type_scale::BADGE)
                             .color(p.accent_fg)
                             .wrapping(text::Wrapping::None),
                     )
@@ -1706,7 +1712,7 @@ impl GitFleetApp {
                     row![
                         container(Space::new(6, 6)).style(theme::dot_box(p.warning_fg)),
                         text("unsaved")
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .color(p.warning_fg)
                             .wrapping(text::Wrapping::None),
                     ]
@@ -1725,7 +1731,7 @@ impl GitFleetApp {
             if stats.added_blocks > 0 {
                 stat_row = stat_row.push(
                     text(format!("+{}", stats.added_blocks))
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .font(theme::CODE_FONT)
                         .color(p.success_fg)
                         .wrapping(text::Wrapping::None),
@@ -1734,7 +1740,7 @@ impl GitFleetApp {
             if stats.removed_blocks > 0 {
                 stat_row = stat_row.push(
                     text(format!("-{}", stats.removed_blocks))
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .font(theme::CODE_FONT)
                         .color(p.danger_fg)
                         .wrapping(text::Wrapping::None),
@@ -1743,7 +1749,7 @@ impl GitFleetApp {
             if stats.modified_blocks > 0 {
                 stat_row = stat_row.push(
                     text(format!("~{}", stats.modified_blocks))
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .font(theme::CODE_FONT)
                         .color(p.warning_fg)
                         .wrapping(text::Wrapping::None),
@@ -1769,7 +1775,7 @@ impl GitFleetApp {
             header = header.push(tip(
                 button(
                     text(resolve_label)
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .color(if self.bottom_mode == BottomViewMode::ResolveConflicts {
                             p.accent_fg
                         } else if unresolved > 0 {
@@ -1793,25 +1799,33 @@ impl GitFleetApp {
 
         header = header
             .push(tip(
-                button(text("Unified").size(11).wrapping(text::Wrapping::None))
-                    .padding([3, 8])
-                    .style(theme::filter_pill_btn(
-                        p,
-                        self.bottom_mode == BottomViewMode::UnifiedDiff,
-                    ))
-                    .on_press(Message::SetBottomViewMode(BottomViewMode::UnifiedDiff)),
+                button(
+                    text("Unified")
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(
+                    p,
+                    self.bottom_mode == BottomViewMode::UnifiedDiff,
+                ))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::UnifiedDiff)),
                 "Unified Diff with Line Numbers & Hunk Staging",
                 tooltip::Position::Top,
                 p,
             ))
             .push(tip(
-                button(text("Side by Side").size(11).wrapping(text::Wrapping::None))
-                    .padding([3, 8])
-                    .style(theme::filter_pill_btn(
-                        p,
-                        self.bottom_mode == BottomViewMode::SideBySideDiff,
-                    ))
-                    .on_press(Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),
+                button(
+                    text("Side by Side")
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(
+                    p,
+                    self.bottom_mode == BottomViewMode::SideBySideDiff,
+                ))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),
                 "SmartGit-style Side-by-Side Diff (Synced Vertical & Horizontal Scroll + Connectors)",
                 tooltip::Position::Top,
                 p,
@@ -1819,10 +1833,14 @@ impl GitFleetApp {
 
         if is_diff_mode {
             header = header.push(tip(
-                button(text("Compact").size(11).wrapping(text::Wrapping::None))
-                    .padding([3, 8])
-                    .style(theme::filter_pill_btn(p, self.diff_compact))
-                    .on_press(Message::ToggleDiffCompact),
+                button(
+                    text("Compact")
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(p, self.diff_compact))
+                .on_press(Message::ToggleDiffCompact),
                 if self.diff_compact {
                     "Compact mode ON (hides unchanged lines — click to show full file)"
                 } else {
@@ -1834,7 +1852,7 @@ impl GitFleetApp {
             if has_changes {
                 header = header
                     .push(tip(
-                        button(icons::push(11.0, p.text_secondary))
+                        button(icons::push(12.0, p.text_secondary))
                             .padding([4, 6])
                             .style(theme::subtle_btn(p))
                             .on_press(Message::DiffJumpChange(-1)),
@@ -1843,7 +1861,7 @@ impl GitFleetApp {
                         p,
                     ))
                     .push(tip(
-                        button(icons::pull(11.0, p.text_secondary))
+                        button(icons::pull(12.0, p.text_secondary))
                             .padding([4, 6])
                             .style(theme::subtle_btn(p))
                             .on_press(Message::DiffJumpChange(1)),
@@ -1856,25 +1874,33 @@ impl GitFleetApp {
 
         header = header
             .push(tip(
-                button(text("Preview").size(11).wrapping(text::Wrapping::None))
-                    .padding([3, 8])
-                    .style(theme::filter_pill_btn(
-                        p,
-                        self.bottom_mode == BottomViewMode::Preview,
-                    ))
-                    .on_press(Message::SetBottomViewMode(BottomViewMode::Preview)),
+                button(
+                    text("Preview")
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(
+                    p,
+                    self.bottom_mode == BottomViewMode::Preview,
+                ))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::Preview)),
                 "Selectable Rich Preview (.md, images, SVG, JSON, CSV, configs, code)",
                 tooltip::Position::Top,
                 p,
             ))
             .push(tip(
-                button(text("Edit").size(11).wrapping(text::Wrapping::None))
-                    .padding([3, 8])
-                    .style(theme::filter_pill_btn(
-                        p,
-                        self.bottom_mode == BottomViewMode::Edit,
-                    ))
-                    .on_press(Message::SetBottomViewMode(BottomViewMode::Edit)),
+                button(
+                    text("Edit")
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(
+                    p,
+                    self.bottom_mode == BottomViewMode::Edit,
+                ))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::Edit)),
                 "Live File Editor (Ctrl+S to save)",
                 tooltip::Position::Top,
                 p,
@@ -1889,7 +1915,7 @@ impl GitFleetApp {
                         } else {
                             "Select Text"
                         })
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .wrapping(text::Wrapping::None),
                     )
                     .padding([3, 8])
@@ -1909,7 +1935,7 @@ impl GitFleetApp {
                     button(
                         row![
                             icons::copy(
-                                11.0,
+                                12.0,
                                 if has_preview_sel {
                                     p.accent_fg
                                 } else {
@@ -1917,7 +1943,7 @@ impl GitFleetApp {
                                 }
                             ),
                             text(if has_preview_sel { "Copy Sel" } else { "Copy" })
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .wrapping(text::Wrapping::None),
                         ]
                         .spacing(4)
@@ -1936,22 +1962,25 @@ impl GitFleetApp {
         if self.bottom_mode == BottomViewMode::Edit {
             header = header
                 .push(
-                    button(text("Open File…").size(10))
-                        .padding([3, 7])
+                    button(text("Open File…").size(type_scale::CAPTION))
+                        .padding([3, 8])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::PickOpenIgnoredFile),
                 )
                 .push(
-                    button(text("Save As…").size(10))
-                        .padding([3, 7])
+                    button(text("Save As…").size(type_scale::CAPTION))
+                        .padding([3, 8])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::PickSaveDocAs),
                 )
                 .push(
                     button(
-                        row![icons::save(12.0, Color::WHITE), text("Save (Ctrl+S)").size(11)]
-                            .spacing(4)
-                            .align_y(Alignment::Center),
+                        row![
+                            icons::save(13.0, Color::WHITE),
+                            text("Save (Ctrl+S)").size(type_scale::CAPTION)
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
                     )
                     .padding([3, 9])
                     .style(theme::primary_btn(p))
@@ -2002,7 +2031,7 @@ impl GitFleetApp {
                 max_chars = max_chars.max(char_len);
                 let gutter = container(
                     text(format!("{}", i + 1))
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .font(theme::CODE_FONT)
                         .color(p.text_muted)
                         .wrapping(text::Wrapping::None),
@@ -2014,7 +2043,7 @@ impl GitFleetApp {
                 .align_y(alignment::Vertical::Center);
                 let code_cell = container(
                     text(clean.clone())
-                        .size(12)
+                        .size(type_scale::CODE)
                         .font(theme::CODE_FONT)
                         .color(p.text_secondary)
                         .wrapping(text::Wrapping::None),
@@ -2056,7 +2085,7 @@ impl GitFleetApp {
                     row![gutter, code_cell].align_y(Alignment::Center),
                 ));
             }
-            let min_w = (max_chars as f32 * 7.5 + LINE_NUM_W + 32.0).clamp(380.0, 2800.0);
+            let min_w = (max_chars as f32 * 8.0 + LINE_NUM_W + 32.0).clamp(380.0, 2800.0);
             return slim_scroll_h(raw_col, min_w, p);
         }
 
@@ -2081,7 +2110,7 @@ impl GitFleetApp {
                     let (_, accent, _) = change_colors(*kind, p);
                     let mut bar = row![
                         text(header.clone())
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .font(theme::CODE_FONT)
                             .color(accent)
                             .wrapping(text::Wrapping::None),
@@ -2093,8 +2122,8 @@ impl GitFleetApp {
                     if self.diff_is_working_file {
                         if self.diff_is_staged {
                             bar = bar.push(
-                                button(text("Unstage Hunk").size(10))
-                                    .padding([2, 7])
+                                button(text("Unstage Hunk").size(type_scale::BADGE))
+                                    .padding([2, 8])
                                     .style(theme::subtle_btn(p))
                                     .on_press(Message::ApplyHunk {
                                         patch: patch.clone(),
@@ -2105,8 +2134,8 @@ impl GitFleetApp {
                         } else {
                             bar = bar
                                 .push(
-                                    button(text("Stage Hunk").size(10))
-                                        .padding([2, 7])
+                                    button(text("Stage Hunk").size(type_scale::BADGE))
+                                        .padding([2, 8])
                                         .style(theme::primary_btn(p))
                                         .on_press(Message::ApplyHunk {
                                             patch: patch.clone(),
@@ -2115,16 +2144,20 @@ impl GitFleetApp {
                                         }),
                                 )
                                 .push(
-                                    button(text("Discard Hunk").size(10).color(p.danger_fg))
-                                        .padding([2, 7])
-                                        .style(theme::subtle_btn(p))
-                                        .on_press(Message::RequestConfirm(
-                                            PendingConfirm::discard_hunk(
-                                                &self.diff_title,
-                                                header,
-                                                patch.clone(),
-                                            ),
-                                        )),
+                                    button(
+                                        text("Discard Hunk")
+                                            .size(type_scale::BADGE)
+                                            .color(p.danger_fg),
+                                    )
+                                    .padding([2, 8])
+                                    .style(theme::subtle_btn(p))
+                                    .on_press(Message::RequestConfirm(
+                                        PendingConfirm::discard_hunk(
+                                            &self.diff_title,
+                                            header,
+                                            patch.clone(),
+                                        ),
+                                    )),
                                 );
                         }
                     }
@@ -2161,7 +2194,7 @@ impl GitFleetApp {
                     let row_inner = row![
                         container(
                             text(old_s)
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .font(theme::CODE_FONT)
                                 .color(p.text_muted)
                                 .wrapping(text::Wrapping::None),
@@ -2173,7 +2206,7 @@ impl GitFleetApp {
                         .align_y(alignment::Vertical::Center),
                         container(
                             text(new_s)
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .font(theme::CODE_FONT)
                                 .color(p.text_muted)
                                 .wrapping(text::Wrapping::None),
@@ -2185,7 +2218,7 @@ impl GitFleetApp {
                         .align_y(alignment::Vertical::Center),
                         container(
                             text(sign.to_string())
-                                .size(12)
+                                .size(type_scale::CODE)
                                 .font(theme::CODE_FONT)
                                 .color(sign_color)
                                 .wrapping(text::Wrapping::None),
@@ -2255,7 +2288,7 @@ impl GitFleetApp {
                     lines_col = lines_col.push(
                         container(
                             text(theme::sanitize_code_line(hdr))
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .font(theme::CODE_FONT)
                                 .color(p.accent_fg)
                                 .wrapping(text::Wrapping::None),
@@ -2270,7 +2303,7 @@ impl GitFleetApp {
             }
         }
 
-        let min_w = (layout.max_unified_chars as f32 * 7.5 + gutter_total + 40.0)
+        let min_w = (layout.max_unified_chars as f32 * 8.0 + gutter_total + 40.0)
             .clamp(420.0, 2800.0);
         theme::responsive_hscroll_with_id(
             lines_col,
@@ -2319,9 +2352,9 @@ impl GitFleetApp {
         }
 
         let left_min_w =
-            (layout.max_left_chars as f32 * 7.5 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
+            (layout.max_left_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
         let right_min_w =
-            (layout.max_right_chars as f32 * 7.5 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
+            (layout.max_right_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
         // Share the wider canvas width so both horizontal scrollbars have identical range & thumb size
         let shared_min_w = left_min_w.max(right_min_w);
 
@@ -2392,16 +2425,20 @@ impl GitFleetApp {
                     ..
                 } if !valid => {
                     col = col.push(
-                        container(text(format!("Invalid JSON: {err}")).size(11).color(p.danger_fg))
-                            .padding([4, 8])
-                            .width(Length::Fill)
-                            .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
+                        container(
+                            text(format!("Invalid JSON: {err}"))
+                                .size(type_scale::CAPTION)
+                                .color(p.danger_fg),
+                        )
+                        .padding([4, 8])
+                        .width(Length::Fill)
+                        .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
                     );
                 }
                 PreviewState::Json { valid: true, .. } => {
                     col = col.push(
                         text("Valid JSON — formatted (select text & Ctrl+C to copy)")
-                            .size(10.5)
+                            .size(type_scale::CAPTION)
                             .color(p.success_fg),
                     );
                 }
@@ -2411,7 +2448,7 @@ impl GitFleetApp {
                             "{kind} Preview  •  {} lines  (select & Ctrl+C to copy)",
                             content.lines().count()
                         ))
-                        .size(10.5)
+                        .size(type_scale::CAPTION)
                         .color(p.text_muted),
                     );
                 }
@@ -2421,7 +2458,7 @@ impl GitFleetApp {
                             "{lang}  •  {} lines  (select & Ctrl+C to copy)",
                             content.lines().count()
                         ))
-                        .size(10.5)
+                        .size(type_scale::CAPTION)
                         .color(p.text_muted),
                     );
                 }
@@ -2441,7 +2478,7 @@ impl GitFleetApp {
                     }
                 })
                 .font(theme::CODE_FONT)
-                .size(12)
+                .size(type_scale::CODE)
                 .height(Length::Fill)
                 .style(theme::dark_editor(p));
 
@@ -2458,7 +2495,7 @@ impl GitFleetApp {
         if self.open_doc_id.is_none() {
             return container(
                 text("Select any file from 'All Files' or 'Changed' to edit it directly.")
-                    .size(12)
+                    .size(type_scale::BODY)
                     .color(p.text_muted),
             )
             .padding(10)
@@ -2467,7 +2504,7 @@ impl GitFleetApp {
         text_editor(&self.editor_content)
             .on_action(Message::EditorAction)
             .font(theme::CODE_FONT)
-            .size(12)
+            .size(type_scale::CODE)
             .height(Length::Fill)
             .style(theme::dark_editor(p))
             .into()

@@ -280,8 +280,8 @@ where
         // Scrollback indicator pill at top-right when scrolled up
         if self.snapshot.scrollback_offset > 0 {
             let label = format!("Scrollback +{}", self.snapshot.scrollback_offset);
-            let pill_w = 104.0;
-            let pill_h = 18.0;
+            let pill_w = 126.0;
+            let pill_h = 22.0;
             let px = (bounds.width - pill_w - 8.0).max(4.0);
             let py = 6.0;
             frame.fill_rectangle(
@@ -293,7 +293,7 @@ where
                 content: label,
                 position: Point::new(px + pill_w * 0.5, py + pill_h * 0.5),
                 color: Color::WHITE,
-                size: iced::Pixels(10.0),
+                size: iced::Pixels(12.0),
                 font: font_regular,
                 horizontal_alignment: alignment::Horizontal::Center,
                 vertical_alignment: alignment::Vertical::Center,

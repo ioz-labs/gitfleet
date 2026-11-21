@@ -47,17 +47,17 @@ fn render_code_lines<'a>(
         col = col.push(
             row![
                 text(format!("{:>3}", idx + 1))
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .font(theme::CODE_FONT)
                     .color(p.text_muted)
-                    .width(Length::Fixed(26.0))
+                    .width(Length::Fixed(30.0))
                     .wrapping(text::Wrapping::None),
                 text(if sanitized.is_empty() {
                     " ".to_string()
                 } else {
                     sanitized
                 })
-                .size(11.5)
+                .size(type_scale::CODE)
                 .font(theme::CODE_FONT)
                 .color(text_color)
                 .width(Length::Fill),
@@ -83,17 +83,17 @@ fn render_common_lines<'a>(
         col = col.push(
             row![
                 text(format!("{:>4}", start_line + offset))
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .font(theme::CODE_FONT)
                     .color(p.text_muted)
-                    .width(Length::Fixed(34.0))
+                    .width(Length::Fixed(38.0))
                     .wrapping(text::Wrapping::None),
                 text(if sanitized.is_empty() {
                     " ".to_string()
                 } else {
                     sanitized
                 })
-                .size(11.5)
+                .size(type_scale::CODE)
                 .font(theme::CODE_FONT)
                 .color(p.text_secondary)
                 .width(Length::Fill),
@@ -173,7 +173,7 @@ impl GitFleetApp {
                     p,
                 ))
                 .push(tip(
-                    button(text("All Ours").size(11).wrapping(text::Wrapping::None))
+                    button(text("All Ours").size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                         .padding([3, 8])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::ConflictResolveAll(HunkChoice::Ours)),
@@ -182,7 +182,7 @@ impl GitFleetApp {
                     p,
                 ))
                 .push(tip(
-                    button(text("All Theirs").size(11).wrapping(text::Wrapping::None))
+                    button(text("All Theirs").size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                         .padding([3, 8])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::ConflictResolveAll(HunkChoice::Theirs)),
@@ -191,7 +191,7 @@ impl GitFleetApp {
                     p,
                 ))
                 .push(tip(
-                    button(text("All Both").size(11).wrapping(text::Wrapping::None))
+                    button(text("All Both").size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                         .padding([3, 8])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::ConflictResolveAll(HunkChoice::BothOursFirst)),
@@ -206,7 +206,7 @@ impl GitFleetApp {
         if total > 0 {
             solver_bar = solver_bar
                 .push(tip(
-                    button(text("Save Draft").size(11).wrapping(text::Wrapping::None))
+                    button(text("Save Draft").size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                         .padding([4, 9])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::SaveResolvedConflict {
@@ -219,9 +219,9 @@ impl GitFleetApp {
                 .push(tip(
                     button(
                         row![
-                            icons::check(12.0, Color::WHITE),
+                            icons::check(icon_size::XS, Color::WHITE),
                             text("Save & Mark Resolved")
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .wrapping(text::Wrapping::None),
                         ]
                         .spacing(5)
@@ -245,7 +245,7 @@ impl GitFleetApp {
             let path_owned = rel_path.to_string();
             solver_bar = solver_bar
                 .push(
-                    button(text("Keep Ours (File)").size(11).wrapping(text::Wrapping::None))
+                    button(text("Keep Ours (File)").size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                         .padding([4, 9])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::ResolveConflict(
@@ -254,7 +254,7 @@ impl GitFleetApp {
                         )),
                 )
                 .push(
-                    button(text("Keep Theirs (File)").size(11).wrapping(text::Wrapping::None))
+                    button(text("Keep Theirs (File)").size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                         .padding([4, 9])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::ResolveConflict(
@@ -265,8 +265,8 @@ impl GitFleetApp {
                 .push(
                     button(
                         row![
-                            icons::check(12.0, Color::WHITE),
-                            text("Mark Resolved").size(11).wrapping(text::Wrapping::None),
+                            icons::check(icon_size::XS, Color::WHITE),
+                            text("Mark Resolved").size(type_scale::CAPTION).wrapping(text::Wrapping::None),
                         ]
                         .spacing(5)
                         .align_y(Alignment::Center),
@@ -416,7 +416,7 @@ impl GitFleetApp {
         let choice_btn = |label: &'static str, choice: HunkChoice, hint: &'static str| {
             let active = hunk.choice == choice && !is_editing;
             tip(
-                button(text(label).size(11).wrapping(text::Wrapping::None))
+                button(text(label).size(type_scale::CAPTION).wrapping(text::Wrapping::None))
                     .padding([3, 8])
                     .style(theme::filter_pill_btn(p, active))
                     .on_press(Message::ConflictSetHunkChoice(hunk.id, choice)),
@@ -459,7 +459,7 @@ impl GitFleetApp {
             tip(
                 button(
                     text(if is_editing { "Done Edit" } else { "Edit" })
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .wrapping(text::Wrapping::None),
                 )
                 .padding([3, 8])
@@ -614,7 +614,7 @@ impl GitFleetApp {
             let editor = text_editor(&self.conflict_hunk_editor)
                 .on_action(Message::ConflictCustomEditAction)
                 .font(theme::CODE_FONT)
-                .size(12)
+                .size(type_scale::CODE)
                 .height(Length::Fixed(130.0))
                 .style(theme::dark_editor(p));
             body_col = body_col.push(

@@ -9,7 +9,8 @@ pub use formats::{normalize_repo_rel_path, parse_secret_entries};
 pub use manifest::manifest_file_path;
 pub use models::{
     IgnoreLayer, IgnoreSnapshot, OversizedFile, SecretFileFormat, SecretFileSpec, SecretFinding,
-    SecretsManifest, VaultFileState, VaultFileSummary, VaultKeyInfo, VaultSummary,
+    SecretsManifest, VaultFileState, VaultFileSummary, VaultKeyEntry, VaultKeyInfo,
+    VaultKeyringSummary, VaultSummary,
 };
 
 use std::collections::HashSet;
@@ -214,6 +215,128 @@ mod tests {
                 .files
                 .iter()
                 .all(|f| f.state == VaultFileState::Synced)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manages_multiple_named_keys_auto_decrypts_and_rekeys() {
+        let root = temp_dir("multi_key");
+        let repo_personal = root.join("personal");
+        let repo_work = root.join("work");
+        std::fs::create_dir_all(&repo_personal).unwrap();
+        std::fs::create_dir_all(&repo_work).unwrap();
+
+        let keyring_path = root.join("keyring.json");
+        let svc = SecurityService::with_identity_path(keyring_path);
+
+        let k_personal = svc.create_named_key("Personal").unwrap();
+        let k_work = svc.create_named_key("Company A").unwrap();
+        assert!(k_personal.is_default);
+        assert!(!k_work.is_default);
+
+        let kr = svc.keyring_summary();
+        assert_eq!(kr.keys.len(), 2);
+        assert_eq!(kr.default_key_id.as_deref(), Some(k_personal.id.as_str()));
+
+        // Encrypt personal repo with default key ("Personal") and work repo with explicit key ("Company A")
+        std::fs::write(repo_personal.join(".env"), "TOKEN=personal-1\n").unwrap();
+        std::fs::write(repo_work.join(".env"), "TOKEN=work-99\n").unwrap();
+        svc.add_manifest_file(&repo_personal, ".env", None).unwrap();
+        svc.add_manifest_file(&repo_work, ".env", None).unwrap();
+
+        let (n1, used1) = svc
+            .encrypt_selected_files_with_key(&repo_personal, None, None)
+            .unwrap();
+        assert_eq!(n1, 1);
+        assert_eq!(used1.id, k_personal.id);
+
+        let (n2, used2) = svc
+            .encrypt_selected_files_with_key(&repo_work, None, Some(&k_work.id))
+            .unwrap();
+        assert_eq!(n2, 1);
+        assert_eq!(used2.id, k_work.id);
+
+        // Auto-unlocks BOTH repos with no manual key switching and reports which key unlocked each
+        let sum_p = svc.vault_summary(&repo_personal).unwrap();
+        assert!(!sum_p.vault_locked);
+        assert_eq!(sum_p.unlocked_by_key_id.as_deref(), Some(k_personal.id.as_str()));
+        assert_eq!(sum_p.unlocked_by_key_name.as_deref(), Some("Personal"));
+        assert_eq!(sum_p.encrypt_needed_count(), 0);
+
+        let sum_w = svc.vault_summary(&repo_work).unwrap();
+        assert!(!sum_w.vault_locked);
+        assert_eq!(sum_w.unlocked_by_key_id.as_deref(), Some(k_work.id.as_str()));
+        assert_eq!(sum_w.unlocked_by_key_name.as_deref(), Some("Company A"));
+        assert_eq!(sum_w.manifest_key_name.as_deref(), Some("Company A"));
+
+        // Modifying .env on disk immediately reflects in encrypt_needed_count
+        std::fs::write(repo_work.join(".env"), "TOKEN=work-updated\n").unwrap();
+        let sum_dirty = svc.vault_summary(&repo_work).unwrap();
+        assert_eq!(sum_dirty.encrypt_needed_count(), 1);
+        assert_eq!(sum_dirty.encrypt_needed_paths(), vec![".env"]);
+
+        // Rename key, set default, and re-key repo_personal to renamed work key
+        svc.rename_key(&k_work.id, "Client X").unwrap();
+        svc.set_default_key(&k_work.id).unwrap();
+        let rekeyed = svc.rekey_vault(&repo_personal, &k_work.id).unwrap();
+        assert_eq!(rekeyed.name, "Client X");
+
+        let sum_rekeyed = svc.vault_summary(&repo_personal).unwrap();
+        assert_eq!(sum_rekeyed.unlocked_by_key_id.as_deref(), Some(k_work.id.as_str()));
+        assert_eq!(sum_rekeyed.manifest_key_name.as_deref(), Some("Client X"));
+
+        // Deleting old personal key still keeps both vaults unlocked under Client X
+        svc.delete_key(&k_personal.id).unwrap();
+        assert_eq!(svc.keyring_summary().keys.len(), 1);
+        assert!(!svc.vault_summary(&repo_personal).unwrap().vault_locked);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleans_up_empty_vault_and_destroys_locked_vault_safely() {
+        let root = temp_dir("destroy_vault");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join(".env"), "API_KEY=keep-me\n").unwrap();
+
+        let svc = SecurityService::with_identity_path(root.join("keyring.json"));
+        let key = svc.create_named_key("Test").unwrap();
+        svc.add_manifest_file(&repo, ".env", None).unwrap();
+        svc.encrypt_selected_files_with_key(&repo, None, Some(&key.id))
+            .unwrap();
+
+        // 1. Removing the last tracked file while unlocked automatically cleans up .gitfleet/secrets.*
+        svc.remove_manifest_file(&repo, ".env", true).unwrap();
+        let after_remove = svc.vault_summary(&repo).unwrap();
+        assert!(!after_remove.has_vault);
+        assert!(!after_remove.has_manifest);
+        assert!(!after_remove.vault_locked);
+
+        // 2. Re-encrypt, then delete the key so the vault becomes locked — destroy_repo_vault must
+        //    completely remove the locked vault while keeping local .env untouched.
+        svc.add_manifest_file(&repo, ".env", None).unwrap();
+        svc.encrypt_selected_files_with_key(&repo, None, Some(&key.id))
+            .unwrap();
+        svc.delete_key(&key.id).unwrap();
+
+        let locked = svc.vault_summary(&repo).unwrap();
+        assert!(locked.vault_locked);
+        assert!(locked.has_vault);
+
+        let removed = svc.destroy_repo_vault(&repo).unwrap();
+        assert_eq!(removed, 2);
+
+        let clean = svc.vault_summary(&repo).unwrap();
+        assert!(!clean.has_vault);
+        assert!(!clean.has_manifest);
+        assert!(!clean.vault_locked);
+        assert!(clean.files.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".env")).unwrap(),
+            "API_KEY=keep-me\n"
         );
 
         let _ = std::fs::remove_dir_all(&root);

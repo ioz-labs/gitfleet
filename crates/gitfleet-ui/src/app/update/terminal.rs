@@ -274,7 +274,7 @@ impl GitFleetApp {
             }
             Message::SetTerminalFontSize(sz) => {
                 let mut s = self.service.settings();
-                s.terminal_font_size = sz.clamp(9, 24);
+                s.terminal_font_size = sz.clamp(12, 24);
                 self.service.update_settings(s);
                 Task::none()
             }

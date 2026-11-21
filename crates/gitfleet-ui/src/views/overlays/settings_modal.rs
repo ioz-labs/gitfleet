@@ -63,7 +63,7 @@ impl GitFleetApp {
         let mut size_row = row![theme::field_label(p, "Font size:")]
             .spacing(space::XS)
             .align_y(Alignment::Center);
-        for sz in [11u16, 12, 13, 14, 15, 16] {
+        for sz in [12u16, 13, 14, 15, 16, 18] {
             size_row = size_row.push(
                 button(text(format!("{sz}pt")).size(type_scale::CAPTION))
                     .padding(pad::BTN_SM)

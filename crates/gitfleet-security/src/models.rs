@@ -38,6 +38,35 @@ pub struct VaultKeyInfo {
     pub key_path: Option<PathBuf>,
 }
 
+/// Public metadata for one named Age key stored in the local keyring (never includes secret bytes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultKeyEntry {
+    pub id: String,
+    pub name: String,
+    pub public_key: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VaultKeyringSummary {
+    pub keys: Vec<VaultKeyEntry>,
+    pub default_key_id: Option<String>,
+    pub keyring_path: Option<PathBuf>,
+}
+
+impl VaultKeyringSummary {
+    pub fn find(&self, key_id: &str) -> Option<&VaultKeyEntry> {
+        self.keys.iter().find(|k| k.id == key_id)
+    }
+
+    pub fn default_key(&self) -> Option<&VaultKeyEntry> {
+        self.default_key_id
+            .as_deref()
+            .and_then(|id| self.find(id))
+            .or_else(|| self.keys.first())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretFileFormat {
@@ -85,6 +114,10 @@ pub struct SecretFileSpec {
 pub struct SecretsManifest {
     #[serde(default = "default_manifest_version")]
     pub version: u32,
+    /// Optional human-readable name of the Age key last used to encrypt `.gitfleet/secrets.age`
+    /// (non-secret hint shown if another machine lacks the matching private key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_name: Option<String>,
     #[serde(default)]
     pub files: Vec<SecretFileSpec>,
 }
@@ -97,6 +130,7 @@ impl Default for SecretsManifest {
     fn default() -> Self {
         Self {
             version: default_manifest_version(),
+            key_name: None,
             files: Vec::new(),
         }
     }
@@ -141,5 +175,58 @@ pub struct VaultSummary {
     pub has_vault: bool,
     pub vault_locked: bool,
     pub lock_error: Option<String>,
+    /// Key ID from the local keyring that unlocked `.gitfleet/secrets.age` (if unlocked).
+    #[serde(default)]
+    pub unlocked_by_key_id: Option<String>,
+    /// Key name from the local keyring that unlocked `.gitfleet/secrets.age` (if unlocked).
+    #[serde(default)]
+    pub unlocked_by_key_name: Option<String>,
+    /// Key name hint stored in `.gitfleet/secrets.json` (if any).
+    #[serde(default)]
+    pub manifest_key_name: Option<String>,
     pub files: Vec<VaultFileSummary>,
+}
+
+impl VaultSummary {
+    /// Number of tracked secret files on disk that have unencrypted changes or are not yet sealed.
+    pub fn encrypt_needed_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.state,
+                    VaultFileState::Modified | VaultFileState::NotEncrypted
+                )
+            })
+            .count()
+    }
+
+    /// Number of encrypted secret files missing from the local working tree that can be restored.
+    pub fn restore_needed_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|f| f.state == VaultFileState::MissingOnDisk)
+            .count()
+    }
+
+    pub fn encrypt_needed_paths(&self) -> Vec<&str> {
+        self.files
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.state,
+                    VaultFileState::Modified | VaultFileState::NotEncrypted
+                )
+            })
+            .map(|f| f.path.as_str())
+            .collect()
+    }
+
+    pub fn restore_needed_paths(&self) -> Vec<&str> {
+        self.files
+            .iter()
+            .filter(|f| f.state == VaultFileState::MissingOnDisk)
+            .map(|f| f.path.as_str())
+            .collect()
+    }
 }

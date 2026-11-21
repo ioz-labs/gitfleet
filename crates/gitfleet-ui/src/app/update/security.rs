@@ -1,4 +1,4 @@
-use crate::app::{GitFleetApp, Message};
+use crate::app::{DrawerTab, GitFleetApp, Message};
 use gitfleet_security::IgnoreLayer;
 use iced::Task;
 use iced::widget::text_editor;
@@ -30,14 +30,33 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
-            Message::CreateVaultKey => {
-                match self.service.security.create_key() {
-                    Ok(info) => {
+            Message::OpenSecretsDrawer { show_keys } => {
+                self.drawer_tab = Some(DrawerTab::Secrets);
+                self.terminal_focused = false;
+                if show_keys {
+                    self.show_key_manager = true;
+                }
+                self.refresh_vault_and_ignore();
+                Task::none()
+            }
+            Message::ToggleKeyManager => {
+                self.show_key_manager = !self.show_key_manager;
+                if !self.show_key_manager {
+                    self.renaming_key = None;
+                }
+                Task::none()
+            }
+            Message::NewVaultKeyNameChanged(v) => {
+                self.new_key_name_input = v;
+                Task::none()
+            }
+            Message::CreateNamedVaultKey => {
+                let name = self.new_key_name_input.trim().to_string();
+                match self.service.security.create_named_key(&name) {
+                    Ok(entry) => {
+                        self.new_key_name_input.clear();
                         self.toast_is_error = false;
-                        self.toast_message = format!(
-                            "Created Age key: {}",
-                            info.public_key.unwrap_or_default()
-                        );
+                        self.toast_message = format!("Created Age key '{}'", entry.name);
                         self.refresh_vault_and_ignore();
                     }
                     Err(e) => {
@@ -47,8 +66,8 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
-            Message::CopyVaultPublicKey => {
-                match self.service.security.copy_public_key() {
+            Message::CopyNamedKeyPublic(key_id) => {
+                match self.service.security.copy_key_public(&key_id) {
                     Ok(_) => {
                         self.toast_is_error = false;
                         self.toast_message = "Copied Age public key to clipboard".into();
@@ -60,8 +79,8 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
-            Message::CopyVaultPrivateKey => {
-                match self.service.security.copy_private_key() {
+            Message::CopyNamedKeyPrivate(key_id) => {
+                match self.service.security.copy_key_private(&key_id) {
                     Ok(_) => {
                         self.toast_is_error = false;
                         self.toast_message =
@@ -77,6 +96,11 @@ impl GitFleetApp {
             Message::ToggleImportVaultKey => {
                 self.show_import_key_bar = !self.show_import_key_bar;
                 self.import_key_input.clear();
+                self.import_key_name_input.clear();
+                Task::none()
+            }
+            Message::ImportVaultKeyNameChanged(v) => {
+                self.import_key_name_input = v;
                 Task::none()
             }
             Message::ImportVaultKeyInputChanged(v) => {
@@ -85,15 +109,14 @@ impl GitFleetApp {
             }
             Message::ImportVaultKeySubmitted => {
                 let raw = self.import_key_input.clone();
-                match self.service.security.import_key(&raw) {
-                    Ok(info) => {
+                let name = self.import_key_name_input.trim().to_string();
+                match self.service.security.import_named_key(&name, &raw) {
+                    Ok(entry) => {
                         self.import_key_input.clear();
+                        self.import_key_name_input.clear();
                         self.show_import_key_bar = false;
                         self.toast_is_error = false;
-                        self.toast_message = format!(
-                            "Imported Age key: {}",
-                            info.public_key.unwrap_or_default()
-                        );
+                        self.toast_message = format!("Imported Age key '{}'", entry.name);
                         self.refresh_vault_and_ignore();
                     }
                     Err(e) => {
@@ -103,25 +126,198 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
-            Message::ResetVaultKey => {
-                let _ = self.service.security.reset_key();
-                self.revealed_secrets.clear();
-                self.refresh_vault_and_ignore();
-                self.toast_is_error = false;
-                self.toast_message = "Reset local Age identity key".into();
+            Message::StartRenameVaultKey(key_id, current_name) => {
+                self.renaming_key = Some((key_id, current_name));
                 Task::none()
             }
-            Message::EncryptRepoEnv => {
+            Message::RenameVaultKeyInputChanged(v) => {
+                if let Some((_, draft)) = &mut self.renaming_key {
+                    *draft = v;
+                }
+                Task::none()
+            }
+            Message::CancelRenameVaultKey => {
+                self.renaming_key = None;
+                Task::none()
+            }
+            Message::SubmitRenameVaultKey => {
+                let Some((key_id, draft)) = self.renaming_key.take() else {
+                    return Task::none();
+                };
+                match self.service.security.rename_key(&key_id, &draft) {
+                    Ok(_) => {
+                        self.toast_is_error = false;
+                        self.toast_message = format!("Renamed Age key to '{}'", draft.trim());
+                        self.refresh_vault_summary();
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Rename key failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::SetDefaultVaultKey(key_id) => {
+                match self.service.security.set_default_key(&key_id) {
+                    Ok(_) => {
+                        let name = self
+                            .service
+                            .security
+                            .keyring_summary()
+                            .find(&key_id)
+                            .map(|k| k.name.clone())
+                            .unwrap_or_else(|| "key".into());
+                        self.toast_is_error = false;
+                        self.toast_message = format!("Set '{name}' as default Age key");
+                        self.refresh_vault_summary();
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Set default key failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::DeleteVaultKey(key_id) => {
+                if self
+                    .renaming_key
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &key_id)
+                {
+                    self.renaming_key = None;
+                }
+                match self.service.security.delete_key(&key_id) {
+                    Ok(_) => {
+                        self.service.workspace.clear_secret_key_bindings(&key_id);
+                        self.revealed_secrets.clear();
+                        self.refresh_vault_and_ignore();
+                        self.toast_is_error = false;
+                        self.toast_message = "Deleted Age key from keyring".into();
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Delete key failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::SetRepoSecretKey(repo_id, key_id) => {
+                let key_name = key_id.as_deref().and_then(|id| {
+                    self.service
+                        .security
+                        .keyring_summary()
+                        .find(id)
+                        .map(|k| k.name.clone())
+                });
+                match self.service.workspace.set_repo_secret_key(&repo_id, key_id) {
+                    Ok(_) => {
+                        self.toast_is_error = false;
+                        self.toast_message = match key_name {
+                            Some(n) => format!("Assigned secret key '{n}' to repository"),
+                            None => "Repository now inherits secret key from group / default".into(),
+                        };
+                        if self.selected_repo.as_ref() == Some(&repo_id) {
+                            self.refresh_vault_summary();
+                        }
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Set repo key failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::SetGroupSecretKey(group_name, key_id) => {
+                let key_name = key_id.as_deref().and_then(|id| {
+                    self.service
+                        .security
+                        .keyring_summary()
+                        .find(id)
+                        .map(|k| k.name.clone())
+                });
+                match self
+                    .service
+                    .workspace
+                    .set_group_secret_key(&group_name, key_id)
+                {
+                    Ok(_) => {
+                        self.toast_is_error = false;
+                        self.toast_message = match key_name {
+                            Some(n) => format!("Assigned secret key '{n}' to group '{group_name}'"),
+                            None => format!(
+                                "Group '{group_name}' now inherits secret key from parent / default"
+                            ),
+                        };
+                        self.refresh_vault_summary();
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Set group key failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::RekeyActiveRepoVault(target_key_id) => {
                 if let Some(repo) = self.current_repo() {
                     match self
                         .service
                         .security
-                        .encrypt_selected_files(&repo.path, None)
+                        .rekey_vault(&repo.path, &target_key_id)
                     {
-                        Ok(n) => {
+                        Ok(used_key) => {
                             self.toast_is_error = false;
                             self.toast_message = format!(
-                                "Encrypted {n} secret file(s) into .gitfleet/secrets.age (commit with .gitfleet/secrets.json)"
+                                "Re-encrypted vault with key '{}' — commit .gitfleet/secrets.age",
+                                used_key.name
+                            );
+                            self.refresh_vault_summary();
+                            return self.load_status_task(repo);
+                        }
+                        Err(e) => {
+                            self.toast_is_error = true;
+                            self.toast_message = format!("Re-key failed: {e}");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::DestroyRepoVault => {
+                if let Some(repo) = self.current_repo() {
+                    match self.service.security.destroy_repo_vault(&repo.path) {
+                        Ok(n) => {
+                            self.revealed_secrets.clear();
+                            self.refresh_vault_and_ignore();
+                            self.toast_is_error = false;
+                            self.toast_message = if n > 0 {
+                                "Deleted Secrets Vault (.gitfleet/secrets.age & secrets.json). Local secret files on disk were kept.".into()
+                            } else {
+                                "No Secrets Vault files found in this repository.".into()
+                            };
+                            return self.load_status_task(repo);
+                        }
+                        Err(e) => {
+                            self.toast_is_error = true;
+                            self.toast_message = format!("Delete vault failed: {e}");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::EncryptRepoEnv => {
+                if let Some(repo) = self.current_repo() {
+                    let preferred = self
+                        .active_repo_secret_key_binding()
+                        .map(|(id, _)| id);
+                    match self.service.security.encrypt_selected_files_with_key(
+                        &repo.path,
+                        None,
+                        preferred.as_deref(),
+                    ) {
+                        Ok((n, used_key)) => {
+                            self.toast_is_error = false;
+                            self.toast_message = format!(
+                                "Encrypted {n} secret file(s) with key '{}' → commit .gitfleet/secrets.age",
+                                used_key.name
                             );
                             self.refresh_vault_and_ignore();
                             return self.load_status_task(repo);
@@ -136,11 +332,14 @@ impl GitFleetApp {
             }
             Message::RestoreRepoEnv => {
                 if let Some(repo) = self.current_repo() {
-                    match self
-                        .service
-                        .security
-                        .restore_selected_files(&repo.path, None)
-                    {
+                    let preferred = self
+                        .active_repo_secret_key_binding()
+                        .map(|(id, _)| id);
+                    match self.service.security.restore_selected_files_with_key(
+                        &repo.path,
+                        None,
+                        preferred.as_deref(),
+                    ) {
                         Ok(n) => {
                             self.toast_is_error = false;
                             self.toast_message =
@@ -158,15 +357,20 @@ impl GitFleetApp {
             }
             Message::EncryptSingleSecretFile(path) => {
                 if let Some(repo) = self.current_repo() {
-                    match self
-                        .service
-                        .security
-                        .encrypt_selected_files(&repo.path, Some(&[path.clone()]))
-                    {
-                        Ok(_) => {
+                    let preferred = self
+                        .active_repo_secret_key_binding()
+                        .map(|(id, _)| id);
+                    match self.service.security.encrypt_selected_files_with_key(
+                        &repo.path,
+                        Some(std::slice::from_ref(&path)),
+                        preferred.as_deref(),
+                    ) {
+                        Ok((_, used_key)) => {
                             self.toast_is_error = false;
-                            self.toast_message =
-                                format!("Encrypted '{path}' into .gitfleet/secrets.age");
+                            self.toast_message = format!(
+                                "Encrypted '{path}' with key '{}' into .gitfleet/secrets.age",
+                                used_key.name
+                            );
                             self.refresh_vault_and_ignore();
                             return self.load_status_task(repo);
                         }
@@ -180,11 +384,14 @@ impl GitFleetApp {
             }
             Message::RestoreSingleSecretFile(path) => {
                 if let Some(repo) = self.current_repo() {
-                    match self
-                        .service
-                        .security
-                        .restore_selected_files(&repo.path, Some(&[path.clone()]))
-                    {
+                    let preferred = self
+                        .active_repo_secret_key_binding()
+                        .map(|(id, _)| id);
+                    match self.service.security.restore_selected_files_with_key(
+                        &repo.path,
+                        Some(std::slice::from_ref(&path)),
+                        preferred.as_deref(),
+                    ) {
                         Ok(_) => {
                             self.toast_is_error = false;
                             self.toast_message = format!("Restored '{path}' from encrypted vault");
@@ -341,17 +548,26 @@ impl GitFleetApp {
                     return Task::none();
                 }
                 if let Some(repo) = self.current_repo() {
-                    match self
-                        .service
-                        .security
-                        .set_secret_value(&repo.path, &file, &key, &val)
-                    {
-                        Ok(_) => {
+                    let preferred = self
+                        .active_repo_secret_key_binding()
+                        .map(|(id, _)| id);
+                    match self.service.security.set_secret_value_with_key(
+                        &repo.path,
+                        &file,
+                        &key,
+                        &val,
+                        preferred.as_deref(),
+                    ) {
+                        Ok(used_key) => {
                             self.secret_key_input.clear();
                             self.secret_val_input.clear();
                             self.toast_is_error = false;
-                            self.toast_message = format!("Saved secret '{key}' into encrypted vault");
+                            self.toast_message = format!(
+                                "Saved secret '{key}' into encrypted vault (key '{}')",
+                                used_key.name
+                            );
                             self.refresh_vault_and_ignore();
+                            return self.load_status_task(repo);
                         }
                         Err(e) => {
                             self.toast_is_error = true;

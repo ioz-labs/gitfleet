@@ -1,4 +1,4 @@
-use crate::theme::{self, Palette, ThemeMode};
+use crate::theme::{self, Palette, ThemeMode, type_scale};
 use iced::advanced::text::Highlighter as TextHighlighter;
 use iced::widget::{Space, column, container, horizontal_rule, image, markdown, row, svg, text};
 use iced::{Alignment, Color, ContentFit, Element, Length};
@@ -477,7 +477,7 @@ impl PreviewState {
         match self {
             Self::Empty => container(
                 text("Select a file (.md, .png/.jpg/.svg, .json, .csv, .yaml/.toml/.env, or code) to preview.")
-                    .size(12)
+                    .size(type_scale::BODY)
                     .color(p.text_muted),
             )
             .padding(14)
@@ -498,11 +498,11 @@ impl PreviewState {
                 column![
                     row![
                         text(format!("Image  •  {}", format_bytes(*size_bytes)))
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                         Space::with_width(Length::Fill),
                         text(path.display().to_string())
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     ]
                     .align_y(Alignment::Center),
@@ -527,11 +527,11 @@ impl PreviewState {
                 column![
                     row![
                         text(format!("SVG Vector  •  {}", format_bytes(*size_bytes)))
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                         Space::with_width(Length::Fill),
                         text(path.display().to_string())
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     ]
                     .align_y(Alignment::Center),
@@ -561,15 +561,19 @@ impl PreviewState {
                 let mut col = column![].spacing(3);
                 if let Some(err) = error {
                     col = col.push(
-                        container(text(format!("Invalid JSON: {err}")).size(11).color(p.danger_fg))
-                            .padding([4, 8])
-                            .width(Length::Fill)
-                            .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
+                        container(
+                            text(format!("Invalid JSON: {err}"))
+                                .size(type_scale::CAPTION)
+                                .color(p.danger_fg),
+                        )
+                        .padding([4, 8])
+                        .width(Length::Fill)
+                        .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
                     );
                 } else if *valid {
                     col = col.push(
                         text("Valid JSON — formatted")
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.success_fg),
                     );
                 }
@@ -597,11 +601,11 @@ impl PreviewState {
                     col = col.push(
                         row![
                             text(format!("{:>4}", idx + 1))
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .font(theme::CODE_FONT)
                                 .color(p.text_muted),
                             text(theme::sanitize_code_line(line))
-                                .size(12)
+                                .size(type_scale::CODE)
                                 .font(theme::CODE_FONT)
                                 .color(color)
                                 .wrapping(text::Wrapping::None),
@@ -626,7 +630,7 @@ impl PreviewState {
                         headers.len(),
                         total_rows
                     ))
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .color(p.text_muted),
                 ]
                 .spacing(4);
@@ -634,10 +638,14 @@ impl PreviewState {
                 let mut header_row = row![].spacing(4);
                 for h in headers {
                     header_row = header_row.push(
-                        container(text(h.clone()).size(11).color(p.accent_fg))
-                            .width(Length::Fixed(140.0))
-                            .padding([4, 8])
-                            .style(theme::diff_line_box(p.fill_selected, p.accent_fg)),
+                        container(
+                            text(h.clone())
+                                .size(type_scale::CAPTION)
+                                .color(p.accent_fg),
+                        )
+                        .width(Length::Fixed(152.0))
+                        .padding([4, 8])
+                        .style(theme::diff_line_box(p.fill_selected, p.accent_fg)),
                     );
                 }
                 tbl = tbl.push(header_row);
@@ -651,10 +659,14 @@ impl PreviewState {
                     let mut r_ui = row![].spacing(4);
                     for cell in r {
                         r_ui = r_ui.push(
-                            container(text(cell.clone()).size(11).color(p.text_primary))
-                                .width(Length::Fixed(140.0))
-                                .padding([3, 8])
-                                .style(theme::diff_line_box(bg, p.text_primary)),
+                            container(
+                                text(cell.clone())
+                                    .size(type_scale::CAPTION)
+                                    .color(p.text_primary),
+                            )
+                            .width(Length::Fixed(152.0))
+                            .padding([4, 8])
+                            .style(theme::diff_line_box(bg, p.text_primary)),
                         );
                     }
                     tbl = tbl.push(r_ui);
@@ -665,7 +677,7 @@ impl PreviewState {
             Self::Config { kind, content } => {
                 let mut col = column![
                     text(format!("{kind} Structured Preview"))
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .color(p.text_muted),
                 ]
                 .spacing(2);
@@ -675,14 +687,14 @@ impl PreviewState {
                     let trimmed = clean.trim();
                     let line_view: Element<'a, M> = if trimmed.starts_with('#') || trimmed.starts_with(';') {
                         text(clean)
-                            .size(12)
+                            .size(type_scale::CODE)
                             .font(theme::CODE_FONT)
                             .color(p.text_muted)
                             .wrapping(text::Wrapping::None)
                             .into()
                     } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
                         text(clean)
-                            .size(12)
+                            .size(type_scale::CODE)
                             .font(theme::CODE_FONT)
                             .color(p.violet_fg)
                             .wrapping(text::Wrapping::None)
@@ -694,14 +706,23 @@ impl PreviewState {
                             ":"
                         };
                         row![
-                            text(k.to_string()).size(12).font(theme::CODE_FONT).color(p.accent_fg),
-                            text(sep).size(12).font(theme::CODE_FONT).color(p.text_muted),
-                            text(v.to_string()).size(12).font(theme::CODE_FONT).color(p.success_fg),
+                            text(k.to_string())
+                                .size(type_scale::CODE)
+                                .font(theme::CODE_FONT)
+                                .color(p.accent_fg),
+                            text(sep)
+                                .size(type_scale::CODE)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_muted),
+                            text(v.to_string())
+                                .size(type_scale::CODE)
+                                .font(theme::CODE_FONT)
+                                .color(p.success_fg),
                         ]
                         .into()
                     } else {
                         text(clean)
-                            .size(12)
+                            .size(type_scale::CODE)
                             .font(theme::CODE_FONT)
                             .color(p.text_primary)
                             .wrapping(text::Wrapping::None)
@@ -711,7 +732,7 @@ impl PreviewState {
                     col = col.push(
                         row![
                             text(format!("{:>4}", idx + 1))
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .font(theme::CODE_FONT)
                                 .color(p.text_muted),
                             line_view,
@@ -725,7 +746,7 @@ impl PreviewState {
             Self::Code { lang, content } => {
                 let mut col = column![
                     text(format!("{lang}  •  {} lines", content.lines().count()))
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .color(p.text_muted),
                 ]
                 .spacing(1);
@@ -756,11 +777,11 @@ impl PreviewState {
                     col = col.push(
                         row![
                             text(format!("{:>4}", idx + 1))
-                                .size(11)
+                                .size(type_scale::CAPTION)
                                 .font(theme::CODE_FONT)
                                 .color(p.text_muted),
                             text(theme::sanitize_code_line(line))
-                                .size(12)
+                                .size(type_scale::CODE)
                                 .font(theme::CODE_FONT)
                                 .color(color)
                                 .wrapping(text::Wrapping::None),
@@ -773,13 +794,15 @@ impl PreviewState {
 
             Self::Binary { ext, size_bytes } => container(
                 column![
-                    text("Binary File").size(15).color(p.text_primary),
+                    text("Binary File")
+                        .size(type_scale::HEADING)
+                        .color(p.text_primary),
                     text(format!(
                         "Extension: .{}  •  Size: {}",
                         if ext.is_empty() { "bin" } else { ext.as_str() },
                         format_bytes(*size_bytes)
                     ))
-                    .size(12)
+                    .size(type_scale::BODY)
                     .color(p.text_muted),
                 ]
                 .spacing(6),

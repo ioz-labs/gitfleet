@@ -11,6 +11,7 @@ impl GitFleetApp {
                 if let Some(repo) = self.current_repo() {
                     self.busy_label = Some("Refreshing…".into());
                     self.release_triggers = self.service.git.read_release_triggers(&repo.path);
+                    self.refresh_vault_summary();
                     let mut tasks = vec![
                         self.load_status_task(repo.clone()),
                         self.load_log_task(repo.clone()),

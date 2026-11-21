@@ -1,7 +1,7 @@
 use crate::app::types::{
-    BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuTarget, DiffGapExpandMode,
-    DiffSelectionSide, DrawerTab, FilesViewMode, GraphTab, PendingConfirm, RepoFilter,
-    TerminalMenuSubmenu,
+    BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuSubmenu, ContextMenuTarget,
+    DiffGapExpandMode, DiffSelectionSide, DrawerTab, FilesViewMode, GraphTab, PendingConfirm,
+    RepoFilter, ScanLevelPreset, TerminalMenuSubmenu,
 };
 use crate::terminal::TerminalCanvasAction;
 use gitfleet_core::RepoId;
@@ -13,6 +13,7 @@ use gitfleet_git::{
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{IgnoreLayer, OversizedFile, SecretFinding};
+use gitfleet_workspace::ScanFolderResult;
 use iced::keyboard::{Key, Modifiers};
 use iced::widget::{scrollable, text_editor};
 use iced::{Point, Size, window};
@@ -32,9 +33,26 @@ pub(crate) enum Message {
     FilterChanged(String),
     SetRepoFilter(RepoFilter),
     PickAddRepo,
-    PickScanFolder,
+    PickScanFolder(Option<String>),
     AddRepoPath(Option<PathBuf>),
-    ScanFolderPath(Option<PathBuf>),
+    ScanFolderPath(Option<String>, Option<PathBuf>),
+    ScanPreviewLoaded {
+        request_id: u64,
+        target_parent_group: Option<String>,
+        result: Result<ScanFolderResult, String>,
+    },
+    ScanModalSetDepth(usize),
+    ScanModalToggleLevel(usize),
+    ScanModalApplyPreset(ScanLevelPreset),
+    ScanModalDropGroupNodes(Vec<String>),
+    ScanModalRestoreDroppedGroups,
+    ScanModalParentGroupChanged(String),
+    ScanModalToggleRepo(usize, bool),
+    ScanModalToggleRepos(Vec<usize>, bool),
+    ScanModalToggleAll(bool),
+    ScanModalToggleUpdateExisting(bool),
+    ConfirmScanImport,
+    CloseScanModal,
     SelectRepo(RepoId),
     ToggleRepoSubmodules(RepoId),
     SelectSubmodule(RepoId, String),
@@ -220,7 +238,7 @@ pub(crate) enum Message {
     RepoMouseDown(RepoId, String),
     DragHoverGroup(String, Option<String>),
     DragHoverGroupExit(String),
-    SetContextSubmenu(bool),
+    SetContextSubmenu(ContextMenuSubmenu),
     ToggleWorkspaceModal,
     NewWorkspaceNameChanged(String),
     CreateNewWorkspace,
@@ -269,13 +287,26 @@ pub(crate) enum Message {
     HygieneScanned(RepoId, Vec<SecretFinding>, Vec<OversizedFile>),
     AllowSecretLine(String),
     IgnoreOversizedFile(String),
-    CreateVaultKey,
-    CopyVaultPublicKey,
-    CopyVaultPrivateKey,
+    OpenSecretsDrawer { show_keys: bool },
+    ToggleKeyManager,
+    NewVaultKeyNameChanged(String),
+    CreateNamedVaultKey,
+    CopyNamedKeyPublic(String),
+    CopyNamedKeyPrivate(String),
     ToggleImportVaultKey,
+    ImportVaultKeyNameChanged(String),
     ImportVaultKeyInputChanged(String),
     ImportVaultKeySubmitted,
-    ResetVaultKey,
+    StartRenameVaultKey(String, String),
+    RenameVaultKeyInputChanged(String),
+    SubmitRenameVaultKey,
+    CancelRenameVaultKey,
+    SetDefaultVaultKey(String),
+    DeleteVaultKey(String),
+    SetRepoSecretKey(RepoId, Option<String>),
+    SetGroupSecretKey(String, Option<String>),
+    RekeyActiveRepoVault(String),
+    DestroyRepoVault,
     EncryptRepoEnv,
     RestoreRepoEnv,
     EncryptSingleSecretFile(String),

@@ -69,14 +69,14 @@ impl GitFleetApp {
                                 .size(type_scale::CAPTION)
                                 .color(if behind > 0 { p.accent_fg } else { p.text_muted }),
                             icons::pull(
-                                10.0,
+                                11.0,
                                 if behind > 0 { p.accent_fg } else { p.text_muted }
                             ),
                             text(ahead.to_string())
                                 .size(type_scale::CAPTION)
                                 .color(if ahead > 0 { p.success_fg } else { p.text_muted }),
                             icons::push(
-                                10.0,
+                                11.0,
                                 if ahead > 0 { p.success_fg } else { p.text_muted }
                             ),
                         ]
@@ -90,7 +90,7 @@ impl GitFleetApp {
                 left = left.push(
                     container(
                         row![
-                            icons::x_circle(11.0, p.danger_fg),
+                            icons::x_circle(12.0, p.danger_fg),
                             text(format!("{conflicts} conflict"))
                                 .size(type_scale::CAPTION)
                                 .color(p.danger_fg),
@@ -162,21 +162,73 @@ impl GitFleetApp {
         };
 
         let secrets_active = self.drawer_tab == Some(DrawerTab::Secrets);
-        let secrets_status_text = if hygiene_warns > 0 {
-            format!("Secrets ({hygiene_warns}!)")
+        let encrypt_needed = self.vault_summary.encrypt_needed_count();
+        let restore_needed = self.vault_summary.restore_needed_count();
+        let encrypt_paths = self.vault_summary.encrypt_needed_paths();
+        let restore_paths = self.vault_summary.restore_needed_paths();
+
+        let (secrets_status_text, secrets_color, secrets_dot, secrets_tip) = if hygiene_warns > 0 {
+            (
+                format!("Secrets ({hygiene_warns}!)"),
+                p.danger_fg,
+                Some(p.danger_fg),
+                "Staged secret / oversized hygiene warnings — click to review".to_string(),
+            )
         } else if self.vault_summary.vault_locked {
-            "Secrets: Locked".to_string()
+            let key_hint = self
+                .vault_summary
+                .manifest_key_name
+                .as_deref()
+                .map(|k| format!(" (key: {k})"))
+                .unwrap_or_default();
+            (
+                "Secrets: Locked".to_string(),
+                p.warning_fg,
+                Some(p.warning_fg),
+                format!("Secrets vault is locked{key_hint} — click to import or select key"),
+            )
+        } else if encrypt_needed > 0 {
+            (
+                format!("Secrets: {encrypt_needed} modified"),
+                p.warning_fg,
+                Some(p.warning_fg),
+                format!(
+                    "Secret file(s) changed on disk ({}) — click Encrypt or open Secrets Vault",
+                    encrypt_paths.join(", ")
+                ),
+            )
+        } else if restore_needed > 0 {
+            (
+                format!("Secrets: {restore_needed} missing"),
+                p.accent_fg,
+                Some(p.accent_fg),
+                format!(
+                    "Secret file(s) missing on disk ({}) — click Restore or open Secrets Vault",
+                    restore_paths.join(", ")
+                ),
+            )
         } else if !self.vault_summary.files.is_empty() {
-            format!("Secrets ({})", self.vault_summary.files.len())
+            (
+                format!("Secrets ({})", self.vault_summary.files.len()),
+                if secrets_active {
+                    p.accent_fg
+                } else {
+                    p.text_secondary
+                },
+                None,
+                "Secrets Vault (.gitfleet/secrets.json & secrets.age) — all files synced".to_string(),
+            )
         } else {
-            "Secrets".to_string()
-        };
-        let secrets_color = if hygiene_warns > 0 || self.vault_summary.vault_locked {
-            p.warning_fg
-        } else if secrets_active {
-            p.accent_fg
-        } else {
-            p.text_secondary
+            (
+                "Secrets".to_string(),
+                if secrets_active {
+                    p.accent_fg
+                } else {
+                    p.text_secondary
+                },
+                None,
+                "Secrets Vault (.gitfleet/secrets.json & secrets.age)".to_string(),
+            )
         };
 
         let term_active = self.drawer_tab == Some(DrawerTab::Terminal);
@@ -200,11 +252,34 @@ impl GitFleetApp {
             p.text_muted
         };
 
+        let mut secrets_btn_row = row![icons::shield(12.0, secrets_color)]
+            .spacing(4)
+            .align_y(Alignment::Center);
+        if let Some(dot_color) = secrets_dot {
+            secrets_btn_row = secrets_btn_row.push(
+                container(Space::new(Length::Fixed(6.0), Length::Fixed(6.0))).style(move |_| {
+                    container::Style {
+                        background: Some(iced::Background::Color(dot_color)),
+                        border: iced::Border {
+                            radius: 999.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                }),
+            );
+        }
+        secrets_btn_row = secrets_btn_row.push(
+            text(secrets_status_text)
+                .size(type_scale::CAPTION)
+                .color(secrets_color),
+        );
+
         right = right
             .push(tip(
                 button(
                     row![
-                        icons::search(11.0, search_color),
+                        icons::search(12.0, search_color),
                         text("Search").size(type_scale::CAPTION).color(search_color),
                     ]
                     .spacing(4)
@@ -218,27 +293,66 @@ impl GitFleetApp {
                 p,
             ))
             .push(tip(
+                button(secrets_btn_row)
+                    .padding([2, 7])
+                    .style(theme::vscode_status_item(p))
+                    .on_press(Message::ToggleDrawer(DrawerTab::Secrets)),
+                secrets_tip,
+                tooltip::Position::Top,
+                p,
+            ));
+
+        if encrypt_needed > 0 && !self.vault_summary.vault_locked {
+            let encrypt_tip = format!(
+                "Encrypt {} modified secret file(s) ({}) into .gitfleet/secrets.age",
+                encrypt_needed,
+                encrypt_paths.join(", ")
+            );
+            right = right.push(tip(
                 button(
                     row![
-                        icons::shield(11.0, secrets_color),
-                        text(secrets_status_text)
-                            .size(type_scale::CAPTION)
-                            .color(secrets_color),
+                        icons::lock(11.0, Color::WHITE),
+                        text("Encrypt").size(type_scale::BADGE).color(Color::WHITE),
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center),
                 )
-                .padding([2, 7])
-                .style(theme::vscode_status_item(p))
-                .on_press(Message::ToggleDrawer(DrawerTab::Secrets)),
-                "Secrets Vault (.gitfleet/secrets.json & secrets.age)",
+                .padding([2, 8])
+                .style(theme::primary_btn(p))
+                .on_press(Message::EncryptRepoEnv),
+                encrypt_tip,
                 tooltip::Position::Top,
                 p,
-            ))
+            ));
+        } else if restore_needed > 0 && !self.vault_summary.vault_locked {
+            let restore_tip = format!(
+                "Restore {} missing secret file(s) ({}) from .gitfleet/secrets.age",
+                restore_needed,
+                restore_paths.join(", ")
+            );
+            right = right.push(tip(
+                button(
+                    row![
+                        icons::pull(11.0, p.accent_fg),
+                        text("Restore").size(type_scale::BADGE).color(p.accent_fg),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([2, 8])
+                .style(theme::subtle_btn(p))
+                .on_press(Message::RestoreRepoEnv),
+                restore_tip,
+                tooltip::Position::Top,
+                p,
+            ));
+        }
+
+        right = right
             .push(tip(
                 button(
                     row![
-                        icons::terminal(11.0, term_color),
+                        icons::terminal(12.0, term_color),
                         text(active_shell)
                             .size(type_scale::CAPTION)
                             .color(term_color),

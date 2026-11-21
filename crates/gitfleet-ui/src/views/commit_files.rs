@@ -389,6 +389,150 @@ impl GitFleetApp {
                     );
                 }
 
+                let encrypt_needed = self.vault_summary.encrypt_needed_count();
+                let restore_needed = self.vault_summary.restore_needed_count();
+                if self.vault_summary.vault_locked {
+                    has_alerts = true;
+                    let repo_name = self
+                        .current_repo()
+                        .map(|r| r.name)
+                        .unwrap_or_else(|| "repository".into());
+                    let key_hint = self
+                        .vault_summary
+                        .manifest_key_name
+                        .as_deref()
+                        .map(|k| format!(" (key: {k})"))
+                        .unwrap_or_default();
+                    alerts_col = alerts_col.push(
+                        container(
+                            row![
+                                icons::lock(icon_size::XS, p.warning_fg),
+                                theme::clipped_line(
+                                    text(format!("Secrets vault locked{key_hint}"))
+                                        .size(type_scale::BADGE)
+                                        .color(p.warning_fg),
+                                    Length::Fill,
+                                ),
+                                tip(
+                                    button(icons::trash(icon_size::XS, p.danger_fg))
+                                        .padding([2, 6])
+                                        .style(theme::subtle_btn(p))
+                                        .on_press(Message::RequestConfirm(
+                                            PendingConfirm::destroy_repo_vault(&repo_name),
+                                        )),
+                                    "Delete locked Secrets Vault (.gitfleet/secrets.age & secrets.json)",
+                                    tooltip::Position::Top,
+                                    p,
+                                ),
+                                button(text("Keys").size(type_scale::BADGE))
+                                    .padding([2, 8])
+                                    .style(theme::primary_btn(p))
+                                    .on_press(Message::OpenSecretsDrawer { show_keys: true }),
+                            ]
+                            .spacing(space::XS)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 8])
+                        .width(Length::Fill)
+                        .style(theme::pill_box(p.warning_bg, p.warning_fg, p.border_default)),
+                    );
+                } else if encrypt_needed > 0 {
+                    has_alerts = true;
+                    let paths = self.vault_summary.encrypt_needed_paths();
+                    let label = match paths.as_slice() {
+                        [only] => format!("Secrets modified: {only}"),
+                        [first, rest @ ..] => {
+                            format!("Secrets modified: {first} (+{} more)", rest.len())
+                        }
+                        [] => format!("{encrypt_needed} secret file(s) modified"),
+                    };
+                    alerts_col = alerts_col.push(
+                        container(
+                            row![
+                                icons::shield(icon_size::XS, p.warning_fg),
+                                theme::clipped_line(
+                                    text(label).size(type_scale::BADGE).color(p.warning_fg),
+                                    Length::Fill,
+                                ),
+                                tip(
+                                    button(
+                                        row![
+                                            icons::lock(10.0, Color::WHITE),
+                                            text("Encrypt").size(type_scale::BADGE),
+                                        ]
+                                        .spacing(4)
+                                        .align_y(Alignment::Center),
+                                    )
+                                    .padding([2, 8])
+                                    .style(theme::primary_btn(p))
+                                    .on_press(Message::EncryptRepoEnv),
+                                    format!(
+                                        "Encrypt {} into .gitfleet/secrets.age",
+                                        paths.join(", ")
+                                    ),
+                                    tooltip::Position::Top,
+                                    p,
+                                ),
+                                button(text("Open").size(type_scale::BADGE))
+                                    .padding([2, 7])
+                                    .style(theme::subtle_btn(p))
+                                    .on_press(Message::OpenSecretsDrawer { show_keys: false }),
+                            ]
+                            .spacing(space::XS)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 8])
+                        .width(Length::Fill)
+                        .style(theme::pill_box(p.warning_bg, p.warning_fg, p.border_default)),
+                    );
+                } else if restore_needed > 0 {
+                    has_alerts = true;
+                    let paths = self.vault_summary.restore_needed_paths();
+                    let label = match paths.as_slice() {
+                        [only] => format!("Secret missing on disk: {only}"),
+                        [first, rest @ ..] => {
+                            format!("Secrets missing: {first} (+{} more)", rest.len())
+                        }
+                        [] => format!("{restore_needed} secret file(s) missing on disk"),
+                    };
+                    alerts_col = alerts_col.push(
+                        container(
+                            row![
+                                icons::shield(icon_size::XS, p.accent_fg),
+                                theme::clipped_line(
+                                    text(label).size(type_scale::BADGE).color(p.accent_fg),
+                                    Length::Fill,
+                                ),
+                                tip(
+                                    button(text("Restore").size(type_scale::BADGE))
+                                        .padding([2, 8])
+                                        .style(theme::primary_btn(p))
+                                        .on_press(Message::RestoreRepoEnv),
+                                    format!(
+                                        "Decrypt {} from .gitfleet/secrets.age",
+                                        paths.join(", ")
+                                    ),
+                                    tooltip::Position::Top,
+                                    p,
+                                ),
+                                button(text("Open").size(type_scale::BADGE))
+                                    .padding([2, 7])
+                                    .style(theme::subtle_btn(p))
+                                    .on_press(Message::OpenSecretsDrawer { show_keys: false }),
+                            ]
+                            .spacing(space::XS)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 8])
+                        .width(Length::Fill)
+                        .style(theme::pill_box(
+                            p.fill_selected,
+                            p.accent_fg,
+                            p.border_default,
+                        )),
+                    );
+                }
+
                 let footer = row![
                     checkbox("Amend last commit", self.amend_commit)
                         .on_toggle(Message::AmendToggled)
@@ -639,7 +783,7 @@ impl GitFleetApp {
                     row![
                         icon,
                         text(label)
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .color(if active {
                                 p.accent_fg
                             } else {
@@ -993,9 +1137,9 @@ impl GitFleetApp {
             .max()
             .unwrap_or(14);
 
-        let name_min_w = (max_name_chars as f32 * 7.4 + 34.0).clamp(130.0, 360.0);
-        let state_w = 84.0_f32;
-        let dir_min_w = (max_dir_chars as f32 * 6.8 + 18.0).clamp(110.0, 420.0);
+        let name_min_w = (max_name_chars as f32 * 8.0 + 36.0).clamp(140.0, 380.0);
+        let state_w = 96.0_f32;
+        let dir_min_w = (max_dir_chars as f32 * 7.4 + 20.0).clamp(120.0, 440.0);
         let actions_w = if is_wt { 58.0_f32 } else { 0.0_f32 };
         let table_min_w = name_min_w + state_w + dir_min_w + actions_w + 30.0;
         let name_portion = (name_min_w.round() as u16).max(120);
@@ -1081,7 +1225,7 @@ impl GitFleetApp {
                     container(
                         container(
                             text(state_text)
-                                .size(10.5)
+                                .size(type_scale::BADGE)
                                 .color(badge_color)
                                 .wrapping(text::Wrapping::None),
                         )

@@ -1,9 +1,11 @@
 use crate::app::{
     ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, RenameWorkspaceModalState,
+    ScanModalState,
 };
 use crate::preview;
 use gitfleet_core::RepoId;
 use gitfleet_git::ParsedDiff;
+use gitfleet_workspace::DEFAULT_SCAN_DEPTH;
 use iced::Task;
 use iced::widget::{text_editor, text_input};
 use std::path::PathBuf;
@@ -64,6 +66,8 @@ impl GitFleetApp {
         self.repo_submodules.clear();
         self.collapsed_repo_submodules.clear();
         self.rename_workspace_modal = None;
+        self.scan_modal = None;
+        self.scan_request_id = self.scan_request_id.wrapping_add(1);
         self.clear_active_repo_view_state();
         self.diff_title = "No repository selected".into();
     }
@@ -91,16 +95,21 @@ impl GitFleetApp {
                 },
                 Message::AddRepoPath,
             ),
-            Message::PickScanFolder => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .set_title("Scan folder for Git repositories")
-                        .pick_folder()
-                        .await
-                        .map(|h| h.path().to_path_buf())
-                },
-                Message::ScanFolderPath,
-            ),
+            Message::PickScanFolder(target_parent_group) => {
+                self.show_palette = false;
+                self.context_menu = None;
+                Task::perform(
+                    async move {
+                        let picked = rfd::AsyncFileDialog::new()
+                            .set_title("Scan folder for Git repositories")
+                            .pick_folder()
+                            .await
+                            .map(|h| h.path().to_path_buf());
+                        (target_parent_group, picked)
+                    },
+                    |(parent, path)| Message::ScanFolderPath(parent, path),
+                )
+            }
             Message::AddRepoPath(Some(path)) => {
                 match self.service.workspace.add_repo(path, None) {
                     Ok(entry) => {
@@ -116,37 +125,262 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::AddRepoPath(None) => Task::none(),
-            Message::ScanFolderPath(Some(root)) => match self.service.workspace.scan_folder(&root) {
-                Ok(paths) => {
-                    let mut tasks = Vec::new();
-                    let mut first_id = None;
-                    let mut added = 0usize;
-                    for p in paths {
-                        if let Ok(entry) = self.service.workspace.add_repo(p, None) {
-                            if first_id.is_none() {
-                                first_id = Some(entry.id.clone());
-                            }
-                            added += 1;
-                            tasks.push(self.load_status_task(entry.clone()));
-                            tasks.push(self.load_submodules_task(entry));
+            Message::ScanFolderPath(target_parent_group, Some(root)) => {
+                let max_depth = self
+                    .scan_modal
+                    .as_ref()
+                    .map(|m| m.max_depth)
+                    .unwrap_or(DEFAULT_SCAN_DEPTH);
+                if let Some(modal) = &mut self.scan_modal {
+                    modal.scanning = true;
+                }
+                self.scan_request_id = self.scan_request_id.wrapping_add(1);
+                let req_id = self.scan_request_id;
+                self.busy_label = Some("Scanning folder for Git repositories…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            svc.workspace
+                                .scan_folder_preview(&root, max_depth)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Scan task failed: {e}")));
+                        (req_id, target_parent_group, result)
+                    },
+                    |(request_id, target_parent_group, result)| Message::ScanPreviewLoaded {
+                        request_id,
+                        target_parent_group,
+                        result,
+                    },
+                )
+            }
+            Message::ScanFolderPath(_, None) => Task::none(),
+            Message::ScanPreviewLoaded {
+                request_id,
+                target_parent_group,
+                result,
+            } => {
+                if request_id != self.scan_request_id {
+                    return Task::none();
+                }
+                self.busy_label = None;
+                match result {
+                    Ok(scan_res) => {
+                        if scan_res.repos.is_empty() && self.scan_modal.is_none() {
+                            self.toast_is_error = false;
+                            self.toast_message = format!(
+                                "No Git repositories found in '{}'",
+                                scan_res.root.display()
+                            );
+                            return Task::none();
+                        }
+                        self.show_palette = false;
+                        self.context_menu = None;
+                        self.scan_modal =
+                            Some(ScanModalState::from_result(scan_res, target_parent_group));
+                    }
+                    Err(e) => {
+                        if let Some(modal) = &mut self.scan_modal {
+                            modal.scanning = false;
+                        }
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Scan failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::ScanModalSetDepth(depth) => {
+                let Some(modal) = &mut self.scan_modal else {
+                    return Task::none();
+                };
+                if modal.max_depth == depth && !modal.scanning {
+                    return Task::none();
+                }
+                modal.max_depth = depth;
+                modal.scanning = true;
+                let root = modal.root.clone();
+                let parent = modal.normalized_parent_group();
+                self.scan_request_id = self.scan_request_id.wrapping_add(1);
+                let req_id = self.scan_request_id;
+                let svc = self.service.clone();
+                self.busy_label = Some(format!("Scanning folder (depth {depth})…"));
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            svc.workspace
+                                .scan_folder_preview(&root, depth)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Scan task failed: {e}")));
+                        (req_id, parent, result)
+                    },
+                    |(request_id, target_parent_group, result)| Message::ScanPreviewLoaded {
+                        request_id,
+                        target_parent_group,
+                        result,
+                    },
+                )
+            }
+            Message::ScanModalToggleLevel(level_idx) => {
+                if let Some(modal) = &mut self.scan_modal
+                    && let Some(slot) = modal.enabled_levels.get_mut(level_idx)
+                {
+                    *slot = !*slot;
+                    if *slot {
+                        // Restoring a level also clears individually dropped nodes at that exact depth
+                        modal
+                            .skipped_raw_nodes
+                            .retain(|rp| rp.matches('/').count() != level_idx);
+                    }
+                }
+                Task::none()
+            }
+            Message::ScanModalApplyPreset(preset) => {
+                if let Some(modal) = &mut self.scan_modal {
+                    modal.apply_preset(preset);
+                }
+                Task::none()
+            }
+            Message::ScanModalDropGroupNodes(raw_paths) => {
+                if let Some(modal) = &mut self.scan_modal {
+                    for rp in raw_paths {
+                        modal.skipped_raw_nodes.insert(rp);
+                    }
+                }
+                Task::none()
+            }
+            Message::ScanModalRestoreDroppedGroups => {
+                if let Some(modal) = &mut self.scan_modal {
+                    modal.skipped_raw_nodes.clear();
+                }
+                Task::none()
+            }
+            Message::ScanModalParentGroupChanged(val) => {
+                if let Some(modal) = &mut self.scan_modal {
+                    modal.target_parent_group = val;
+                }
+                Task::none()
+            }
+            Message::ScanModalToggleRepo(idx, selected) => {
+                if let Some(modal) = &mut self.scan_modal
+                    && let Some(item) = modal.repos.get_mut(idx)
+                {
+                    item.selected = selected;
+                }
+                Task::none()
+            }
+            Message::ScanModalToggleRepos(indices, selected) => {
+                if let Some(modal) = &mut self.scan_modal {
+                    for idx in indices {
+                        if let Some(item) = modal.repos.get_mut(idx) {
+                            item.selected = selected;
                         }
                     }
-                    self.toast_is_error = false;
-                    self.toast_message = format!("Discovered {added} repositories");
-                    if self.selected_repo.is_none()
-                        && let Some(id) = first_id
-                    {
-                        tasks.push(self.update(Message::SelectRepo(id)));
+                }
+                Task::none()
+            }
+            Message::ScanModalToggleAll(selected) => {
+                if let Some(modal) = &mut self.scan_modal {
+                    let actionable_indices: Vec<usize> = modal
+                        .repos
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, item)| modal.is_repo_actionable(item))
+                        .map(|(idx, _)| idx)
+                        .collect();
+                    for idx in actionable_indices {
+                        if let Some(item) = modal.repos.get_mut(idx) {
+                            item.selected = selected;
+                        }
                     }
-                    Task::batch(tasks)
                 }
-                Err(e) => {
-                    self.toast_is_error = true;
-                    self.toast_message = format!("Scan failed: {e}");
-                    Task::none()
+                Task::none()
+            }
+            Message::ScanModalToggleUpdateExisting(enabled) => {
+                if let Some(modal) = &mut self.scan_modal {
+                    modal.update_existing_groups = enabled;
                 }
-            },
-            Message::ScanFolderPath(None) => Task::none(),
+                Task::none()
+            }
+            Message::CloseScanModal => {
+                self.scan_modal = None;
+                self.scan_request_id = self.scan_request_id.wrapping_add(1);
+                if self
+                    .busy_label
+                    .as_deref()
+                    .is_some_and(|l| l.starts_with("Scanning folder"))
+                {
+                    self.busy_label = None;
+                }
+                Task::none()
+            }
+            Message::ConfirmScanImport => {
+                let Some(modal) = self.scan_modal.take() else {
+                    return Task::none();
+                };
+                let items: Vec<(PathBuf, Option<String>)> = modal
+                    .repos
+                    .iter()
+                    .filter(|item| item.selected && modal.is_repo_actionable(item))
+                    .map(|item| (item.candidate.path.clone(), modal.resolved_group_for(item)))
+                    .collect();
+                if items.is_empty() {
+                    return Task::none();
+                }
+                match self
+                    .service
+                    .workspace
+                    .import_scanned_repos(&items, modal.update_existing_groups)
+                {
+                    Ok(report) => {
+                        let mut tasks = Vec::new();
+                        let first_id = report
+                            .added
+                            .first()
+                            .or_else(|| report.regrouped.first())
+                            .map(|r| r.id.clone());
+                        for entry in &report.added {
+                            tasks.push(self.load_status_task(entry.clone()));
+                            tasks.push(self.load_submodules_task(entry.clone()));
+                        }
+                        let a = report.added.len();
+                        let r = report.regrouped.len();
+                        let g = report.groups_created;
+                        self.toast_is_error = false;
+                        self.toast_message = match (a > 0, r > 0, g > 0) {
+                            (true, true, true) => format!(
+                                "Imported {a} repo(s), regrouped {r} existing ({g} new group(s))"
+                            ),
+                            (true, true, false) => {
+                                format!("Imported {a} repo(s) and regrouped {r} existing")
+                            }
+                            (true, false, true) => {
+                                format!("Imported {a} repo(s) into {g} new group(s)")
+                            }
+                            (true, false, false) => format!("Imported {a} repo(s)"),
+                            (false, true, true) => {
+                                format!("Regrouped {r} repo(s) into {g} new group(s)")
+                            }
+                            (false, true, false) => format!("Updated groups for {r} repo(s)"),
+                            (false, false, _) => "No workspace changes needed".to_string(),
+                        };
+                        if self.selected_repo.is_none()
+                            && let Some(id) = first_id
+                        {
+                            tasks.push(self.update(Message::SelectRepo(id)));
+                        }
+                        Task::batch(tasks)
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Import failed: {e}");
+                        Task::none()
+                    }
+                }
+            }
             Message::SelectRepo(id) => {
                 self.selected_repo = Some(id);
                 self.active_submodule = None;
@@ -468,6 +702,8 @@ impl GitFleetApp {
                 self.show_git_flow_modal = false;
                 self.show_settings_modal = false;
                 self.rename_workspace_modal = None;
+                self.scan_modal = None;
+                self.scan_request_id = self.scan_request_id.wrapping_add(1);
                 self.show_workspace_modal = !self.show_workspace_modal;
                 Task::none()
             }

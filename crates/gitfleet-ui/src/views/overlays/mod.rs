@@ -9,5 +9,6 @@ mod git_flow_modal;
 mod merge_modal;
 mod rename_branch_modal;
 mod rename_workspace_modal;
+mod scan_modal;
 mod settings_modal;
 mod workspace_modal;

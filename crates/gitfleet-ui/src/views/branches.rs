@@ -1,6 +1,6 @@
 use crate::app::{BottomLeftTab, ContextMenuTarget, GitFleetApp, Message, PendingConfirm};
 use crate::icons;
-use crate::theme::{self, Palette, icon_size, type_scale};
+use crate::theme::{self, Palette, tree, type_scale};
 use crate::views::{slim_scroll_h, tip};
 use gitfleet_git::{BranchInfo, WorktreeInfo};
 use iced::widget::{
@@ -16,17 +16,16 @@ const BOLD_FONT: Font = Font {
 };
 
 #[cfg(test)]
-const GROUP_CHECKBOX_X: f32 = 19.0; // chevron (14px) + row spacing (5px)
-const TREE_INDENT_STEP: f32 = 18.0;
+const GROUP_CHECKBOX_X: f32 = tree::lead_x(0);
 
 fn branch_folder_indent(depth: usize) -> f32 {
-    (depth as f32) * TREE_INDENT_STEP
+    tree::chevron_x(depth)
 }
 
 fn branch_leaf_indent(depth: usize) -> f32 {
-    // Shift children inside their parent group so their checkbox aligns under the parent label
-    // rather than flush with the parent group's checkbox (matching SmartGit's branch tree).
-    (depth as f32) * TREE_INDENT_STEP + TREE_INDENT_STEP
+    // Place leaf checkboxes on the shared sidebar tree lead column (`lead_x`), matching sibling
+    // branch folders and Repositories entries at the exact same depth.
+    tree::lead_x(depth)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,40 +264,66 @@ fn render_branch_subtree<'a>(
         let default_expanded = !ctx.is_remote && (child.contains_head() || ctx.auto_expand_small);
         let expanded = default_expanded ^ ctx.toggled.contains(&folder_key);
         let indent = branch_folder_indent(depth);
-        let folder_est_w = indent + 38.0 + (folder.chars().count() + 1) as f32 * 7.2 + 30.0;
+        let count_str = format!("({})", child.count());
+        let folder_est_w = tree::content_x(depth)
+            + 20.0
+            + folder.chars().count() as f32 * 7.5
+            + (count_str.chars().count() + 1) as f32 * 6.9;
         if folder_est_w > *max_row_w {
             *max_row_w = folder_est_w;
         }
-        let chevron: Element<'a, Message> = if expanded {
-            icons::chevron_down(icon_size::XS, p.text_muted).into()
+        let chevron = container(if expanded {
+            icons::chevron_down(tree::CHEVRON_ICON_SIZE, p.text_muted)
         } else {
-            icons::chevron_right(icon_size::XS, p.text_muted).into()
+            icons::chevron_right(tree::CHEVRON_ICON_SIZE, p.text_muted)
+        })
+        .width(Length::Fixed(tree::CHEVRON_W))
+        .center_x(Length::Fixed(tree::CHEVRON_W));
+
+        let folder_color = if ctx.is_remote {
+            p.text_muted
+        } else {
+            p.accent_fg
         };
+        let folder_icon = container(if expanded {
+            icons::folder_open(tree::LEAD_ICON_SIZE, folder_color)
+        } else {
+            icons::folder(tree::LEAD_ICON_SIZE, folder_color)
+        })
+        .width(Length::Fixed(tree::LEAD_W))
+        .center_x(Length::Fixed(tree::LEAD_W));
 
         let folder_btn = button(
             row![
                 chevron,
+                Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
+                folder_icon,
+                Space::with_width(Length::Fixed(tree::LABEL_GAP)),
                 theme::clipped_line(
-                    text(format!("{folder}/"))
-                        .size(type_scale::BODY)
-                        .color(p.text_secondary),
+                    row![
+                        text(folder.clone())
+                            .size(type_scale::BODY)
+                            .color(p.text_secondary),
+                        text(count_str)
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center),
                     Length::Fill,
                 ),
-                text(format!("({})", child.count()))
-                    .size(type_scale::BADGE)
-                    .color(p.text_muted),
             ]
-            .spacing(4)
+            .spacing(0)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)
         .padding(Padding {
-            top: 3.0,
-            right: 5.0,
-            bottom: 3.0,
+            top: tree::ROW_PAD_V,
+            right: 6.0,
+            bottom: tree::ROW_PAD_V,
             left: indent,
         })
-        .style(theme::toolbar_btn(p, false))
+        .style(theme::repo_row_btn(p, false))
         .on_press(Message::ToggleBranchTreeNode(folder_key.clone()));
 
         if ctx.is_remote {
@@ -395,10 +420,11 @@ fn render_branch_subtree<'a>(
         } else {
             (if b.ahead > 0 { 36.0 } else { 0.0 }) + (if b.behind > 0 { 38.0 } else { 0.0 })
         };
-        let leaf_est_w = leaf_indent
-            + 38.0
-            + if b.is_head { 16.0 } else { 0.0 }
-            + (leaf_name.chars().count() + hint_chars) as f32 * 7.2
+        let leaf_est_w = tree::content_x(depth)
+            + 22.0
+            + if b.is_head { 15.0 } else { 0.0 }
+            + leaf_name.chars().count() as f32 * 7.5
+            + hint_chars as f32 * 6.9
             + wt_extra
             + badges_w;
         if leaf_est_w > *max_row_w {
@@ -445,22 +471,27 @@ fn render_branch_subtree<'a>(
         }
 
         let b_name_cb = b.name.clone();
-        let cb = checkbox("", is_checked)
-            .size(12)
-            .spacing(0)
-            .on_toggle(move |_| Message::ToggleGraphBranch(b_name_cb.clone()));
+        let cb = container(
+            checkbox("", is_checked)
+                .size(tree::CHECKBOX_SIZE)
+                .spacing(0)
+                .style(theme::tree_checkbox(p))
+                .on_toggle(move |_| Message::ToggleGraphBranch(b_name_cb.clone())),
+        )
+        .width(Length::Fixed(tree::LEAD_W))
+        .center_x(Length::Fixed(tree::LEAD_W));
 
         let main_btn: Element<'a, Message> = if ctx.is_remote {
             button(leaf_content)
                 .width(Length::Fill)
-                .padding([3, 5])
+                .padding([tree::ROW_PAD_V, tree::ROW_PAD_H])
                 .style(theme::repo_row_btn(p, is_checked))
                 .on_press(Message::ToggleGraphBranch(b.name.clone()))
                 .into()
         } else {
             let btn = button(leaf_content)
                 .width(Length::Fill)
-                .padding([3, 5])
+                .padding([tree::ROW_PAD_V, tree::ROW_PAD_H])
                 .style(theme::repo_row_btn(p, is_selected))
                 .on_press(Message::BranchClicked(b.name.clone()));
             tooltip(
@@ -473,8 +504,8 @@ fn render_branch_subtree<'a>(
         };
 
         let full_row = container(
-            row![cb, main_btn]
-                .spacing(5)
+            row![cb, Space::with_width(Length::Fixed(tree::ROW_BTN_GAP)), main_btn]
+                .spacing(0)
                 .align_y(Alignment::Center),
         )
         .width(Length::Fill)
@@ -575,35 +606,55 @@ impl GitFleetApp {
                 let head_checked = self.graph_checked_branches.is_empty()
                     || self.graph_checked_branches.contains("HEAD");
                 rows.push(
-                    row![
-                        Space::with_width(Length::Fixed(14.0)),
-                        checkbox("", head_checked)
-                            .size(12)
-                            .spacing(0)
-                            .on_toggle(|_| Message::ToggleGraphBranch("HEAD".into())),
-                        theme::clipped_line(
-                            row![
-                                text("HEAD")
-                                    .size(type_scale::BODY)
-                                    .color(p.text_primary),
-                                if !head_oid_short.is_empty() {
-                                    Element::from(
-                                        text(format!("({head_oid_short})"))
-                                            .size(type_scale::BADGE)
-                                            .font(theme::CODE_FONT)
-                                            .color(p.text_muted),
-                                    )
-                                } else {
-                                    Space::with_width(Length::Shrink).into()
-                                },
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                            Length::Fill,
-                        ),
-                    ]
-                    .spacing(5)
-                    .align_y(Alignment::Center)
+                    container(
+                        row![
+                            Space::with_width(Length::Fixed(tree::CHEVRON_W)),
+                            Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
+                            container(
+                                checkbox("", head_checked)
+                                    .size(tree::CHECKBOX_SIZE)
+                                    .spacing(0)
+                                    .style(theme::tree_checkbox(p))
+                                    .on_toggle(|_| Message::ToggleGraphBranch("HEAD".into())),
+                            )
+                            .width(Length::Fixed(tree::LEAD_W))
+                            .center_x(Length::Fixed(tree::LEAD_W)),
+                            Space::with_width(Length::Fixed(tree::ROW_BTN_GAP)),
+                            button(theme::clipped_line(
+                                row![
+                                    text("HEAD")
+                                        .size(type_scale::BODY)
+                                        .color(p.text_primary),
+                                    if !head_oid_short.is_empty() {
+                                        Element::from(
+                                            text(format!("({head_oid_short})"))
+                                                .size(type_scale::CAPTION)
+                                                .font(theme::CODE_FONT)
+                                                .color(p.text_muted),
+                                        )
+                                    } else {
+                                        Space::with_width(Length::Shrink).into()
+                                    },
+                                ]
+                                .spacing(5)
+                                .align_y(Alignment::Center),
+                                Length::Fill,
+                            ))
+                            .width(Length::Fill)
+                            .padding([tree::ROW_PAD_V, tree::ROW_PAD_H])
+                            .style(theme::repo_row_btn(p, false))
+                            .on_press(Message::ToggleGraphBranch("HEAD".into())),
+                        ]
+                        .spacing(0)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding(Padding {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: tree::chevron_x(0),
+                    })
                     .into(),
                 );
 
@@ -616,64 +667,77 @@ impl GitFleetApp {
                         .iter()
                         .all(|n| self.graph_checked_branches.contains(n));
                 let local_expanded = !self.toggled_branch_nodes.contains("local");
-                let local_chevron: Element<'_, Message> = if local_expanded {
-                    icons::chevron_down(icon_size::XS, p.text_secondary).into()
+                let local_chevron = container(if local_expanded {
+                    icons::chevron_down(tree::CHEVRON_ICON_SIZE, p.text_secondary)
                 } else {
-                    icons::chevron_right(icon_size::XS, p.text_secondary).into()
-                };
+                    icons::chevron_right(tree::CHEVRON_ICON_SIZE, p.text_secondary)
+                })
+                .width(Length::Fill)
+                .center_x(Length::Fill);
                 let local_names_cb = local_names.clone();
                 let local_names_ctx = local_names.clone();
-                let local_hdr_row = row![
-                    button(local_chevron)
-                        .padding([3, 1])
-                        .width(Length::Fixed(14.0))
-                        .style(theme::vscode_icon_btn(p, false))
-                        .on_press(Message::ToggleBranchTreeNode("local".into())),
-                    checkbox("", all_local_checked)
-                        .size(12)
-                        .spacing(0)
-                        .on_toggle(move |_| {
-                            Message::ToggleGraphBranchGroup(local_names_cb.clone())
-                        }),
-                    button(
-                        row![
-                            theme::clipped_line(
-                                row![
-                                    text("Local Branches")
-                                        .size(type_scale::BODY)
-                                        .font(BOLD_FONT)
-                                        .color(p.text_primary),
-                                    text(format!("({local_count})"))
-                                        .size(type_scale::CAPTION)
-                                        .color(p.text_muted),
-                                ]
-                                .spacing(4)
-                                .align_y(Alignment::Center),
-                                Length::Fill,
-                            ),
-                        ]
-                        .spacing(5)
-                        .align_y(Alignment::Center),
-                    )
-                    .width(Length::Fill)
-                    .padding([3, 4])
-                    .style(theme::toolbar_btn(p, false))
-                    .on_press(Message::ToggleBranchTreeNode("local".into())),
-                    tip(
-                        button(icons::plus(11.0, p.text_secondary))
-                            .padding([3, 5])
+                let local_hdr_row = container(
+                    row![
+                        button(local_chevron)
+                            .padding([tree::ROW_PAD_V, 0.0])
+                            .width(Length::Fixed(tree::CHEVRON_W))
                             .style(theme::vscode_icon_btn(p, false))
-                            .on_press(Message::OpenCreateBranch {
-                                base_ref: None,
-                                prefix: None,
-                            }),
-                        "Add Branch… (F7)",
-                        tooltip::Position::Right,
-                        p,
-                    ),
-                ]
-                .spacing(5)
-                .align_y(Alignment::Center);
+                            .on_press(Message::ToggleBranchTreeNode("local".into())),
+                        Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
+                        container(
+                            checkbox("", all_local_checked)
+                                .size(tree::CHECKBOX_SIZE)
+                                .spacing(0)
+                                .style(theme::tree_checkbox(p))
+                                .on_toggle(move |_| {
+                                    Message::ToggleGraphBranchGroup(local_names_cb.clone())
+                                }),
+                        )
+                        .width(Length::Fixed(tree::LEAD_W))
+                        .center_x(Length::Fixed(tree::LEAD_W)),
+                        Space::with_width(Length::Fixed(tree::ROW_BTN_GAP)),
+                        button(theme::clipped_line(
+                            row![
+                                text("Local Branches")
+                                    .size(type_scale::BODY)
+                                    .font(BOLD_FONT)
+                                    .color(p.text_primary),
+                                text(format!("({local_count})"))
+                                    .size(type_scale::CAPTION)
+                                    .color(p.text_muted),
+                            ]
+                            .spacing(5)
+                            .align_y(Alignment::Center),
+                            Length::Fill,
+                        ))
+                        .width(Length::Fill)
+                        .padding([tree::ROW_PAD_V, tree::ROW_PAD_H])
+                        .style(theme::repo_row_btn(p, false))
+                        .on_press(Message::ToggleBranchTreeNode("local".into())),
+                        Space::with_width(Length::Fixed(2.0)),
+                        tip(
+                            button(icons::plus(11.0, p.text_secondary))
+                                .padding([3, 5])
+                                .style(theme::vscode_icon_btn(p, false))
+                                .on_press(Message::OpenCreateBranch {
+                                    base_ref: None,
+                                    prefix: None,
+                                }),
+                            "Add Branch… (F7)",
+                            tooltip::Position::Right,
+                            p,
+                        ),
+                    ]
+                    .spacing(0)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: tree::chevron_x(0),
+                });
 
                 rows.push(
                     mouse_area(local_hdr_row)
@@ -710,11 +774,13 @@ impl GitFleetApp {
                 for (remote_name, rtree) in &remote_groups {
                     let rkey = format!("remote:{remote_name}");
                     let rexpanded = self.toggled_branch_nodes.contains(&rkey);
-                    let rchevron: Element<'_, Message> = if rexpanded {
-                        icons::chevron_down(icon_size::XS, p.text_muted).into()
+                    let rchevron = container(if rexpanded {
+                        icons::chevron_down(tree::CHEVRON_ICON_SIZE, p.text_muted)
                     } else {
-                        icons::chevron_right(icon_size::XS, p.text_muted).into()
-                    };
+                        icons::chevron_right(tree::CHEVRON_ICON_SIZE, p.text_muted)
+                    })
+                    .width(Length::Fill)
+                    .center_x(Length::Fill);
                     let mut remote_names = Vec::with_capacity(rtree.count());
                     rtree.collect_names(&mut remote_names);
                     let all_remote_checked = !remote_names.is_empty()
@@ -723,47 +789,57 @@ impl GitFleetApp {
                             .all(|n| self.graph_checked_branches.contains(n));
                     let remote_names_cb = remote_names.clone();
 
-                    rows.push(Space::with_height(Length::Fixed(3.0)).into());
+                    rows.push(Space::with_height(Length::Fixed(4.0)).into());
                     rows.push(
-                        row![
-                            button(rchevron)
-                                .padding([3, 1])
-                                .width(Length::Fixed(14.0))
-                                .style(theme::vscode_icon_btn(p, false))
+                        container(
+                            row![
+                                button(rchevron)
+                                    .padding([tree::ROW_PAD_V, 0.0])
+                                    .width(Length::Fixed(tree::CHEVRON_W))
+                                    .style(theme::vscode_icon_btn(p, false))
+                                    .on_press(Message::ToggleBranchTreeNode(rkey.clone())),
+                                Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
+                                container(
+                                    checkbox("", all_remote_checked)
+                                        .size(tree::CHECKBOX_SIZE)
+                                        .spacing(0)
+                                        .style(theme::tree_checkbox(p))
+                                        .on_toggle(move |_| {
+                                            Message::ToggleGraphBranchGroup(remote_names_cb.clone())
+                                        }),
+                                )
+                                .width(Length::Fixed(tree::LEAD_W))
+                                .center_x(Length::Fixed(tree::LEAD_W)),
+                                Space::with_width(Length::Fixed(tree::ROW_BTN_GAP)),
+                                button(theme::clipped_line(
+                                    row![
+                                        text(remote_name.clone())
+                                            .size(type_scale::BODY)
+                                            .font(BOLD_FONT)
+                                            .color(p.text_secondary),
+                                        text(format!("({})", rtree.count()))
+                                            .size(type_scale::CAPTION)
+                                            .color(p.text_muted),
+                                    ]
+                                    .spacing(5)
+                                    .align_y(Alignment::Center),
+                                    Length::Fill,
+                                ))
+                                .width(Length::Fill)
+                                .padding([tree::ROW_PAD_V, tree::ROW_PAD_H])
+                                .style(theme::repo_row_btn(p, false))
                                 .on_press(Message::ToggleBranchTreeNode(rkey.clone())),
-                            checkbox("", all_remote_checked)
-                                .size(12)
-                                .spacing(0)
-                                .on_toggle(move |_| {
-                                    Message::ToggleGraphBranchGroup(remote_names_cb.clone())
-                                }),
-                            button(
-                                row![
-                                    theme::clipped_line(
-                                        row![
-                                            text(remote_name.clone())
-                                                .size(type_scale::BODY)
-                                                .font(BOLD_FONT)
-                                                .color(p.text_secondary),
-                                            text(format!("({})", rtree.count()))
-                                                .size(type_scale::CAPTION)
-                                                .color(p.text_muted),
-                                        ]
-                                        .spacing(4)
-                                        .align_y(Alignment::Center),
-                                        Length::Fill,
-                                    ),
-                                ]
-                                .spacing(5)
-                                .align_y(Alignment::Center),
-                            )
-                            .width(Length::Fill)
-                            .padding([3, 4])
-                            .style(theme::toolbar_btn(p, false))
-                            .on_press(Message::ToggleBranchTreeNode(rkey.clone())),
-                        ]
-                        .spacing(5)
-                        .align_y(Alignment::Center)
+                            ]
+                            .spacing(0)
+                            .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .padding(Padding {
+                            top: 0.0,
+                            right: 0.0,
+                            bottom: 0.0,
+                            left: tree::chevron_x(0),
+                        })
                         .into(),
                     );
                     if rexpanded {
@@ -929,7 +1005,7 @@ impl GitFleetApp {
                 column![
                     action_bar_slot,
                     slim_scroll_h(
-                        column(rows).spacing(1),
+                        column(rows).spacing(tree::ROW_SPACING),
                         max_branch_w.clamp(180.0, 960.0),
                         p,
                     ),
@@ -947,7 +1023,7 @@ impl GitFleetApp {
                 if self.stashes.is_empty() {
                     list = list.push(
                         text("No stashes. Use 'Save Stash' in toolbar.")
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     );
                 }
@@ -958,28 +1034,30 @@ impl GitFleetApp {
                                 button(theme::clipped_line(
                                     row![
                                         text(st.ref_name.clone())
-                                            .size(10)
+                                            .size(type_scale::CAPTION)
                                             .font(theme::CODE_FONT)
                                             .color(p.accent_fg),
-                                        text(st.message.clone()).size(11).color(p.text_primary),
+                                        text(st.message.clone())
+                                            .size(type_scale::BODY)
+                                            .color(p.text_primary),
                                     ]
                                     .spacing(6),
                                     Length::Fill,
                                 ))
                                 .width(Length::Fill)
-                                .padding([2, 4])
+                                .padding([3, 5])
                                 .style(theme::repo_row_btn(p, false))
                                 .on_press(Message::InspectStash(st.index)),
                                 row![
                                     theme::clipped_line(
                                         text(st.date_relative.clone())
-                                            .size(10)
+                                            .size(type_scale::CAPTION)
                                             .color(p.text_muted),
                                         Length::Fill,
                                     ),
                                     tip(
-                                        button(icons::play(11.0, p.text_primary))
-                                            .padding([3, 5])
+                                        button(icons::play(12.0, p.text_primary))
+                                            .padding([3, 6])
                                             .style(theme::subtle_btn(p))
                                             .on_press(Message::RequestConfirm(
                                                 PendingConfirm::apply_stash(
@@ -993,8 +1071,8 @@ impl GitFleetApp {
                                         p,
                                     ),
                                     tip(
-                                        button(icons::check(11.0, Color::WHITE))
-                                            .padding([3, 5])
+                                        button(icons::check(12.0, Color::WHITE))
+                                            .padding([3, 6])
                                             .style(theme::primary_btn(p))
                                             .on_press(Message::RequestConfirm(
                                                 PendingConfirm::pop_stash(
@@ -1008,8 +1086,8 @@ impl GitFleetApp {
                                         p,
                                     ),
                                     tip(
-                                        button(icons::trash(11.0, p.danger_fg))
-                                            .padding([3, 5])
+                                        button(icons::trash(12.0, p.danger_fg))
+                                            .padding([3, 6])
                                             .style(theme::subtle_btn(p))
                                             .on_press(Message::RequestConfirm(
                                                 PendingConfirm::drop_stash(
@@ -1028,7 +1106,7 @@ impl GitFleetApp {
                             ]
                             .spacing(3),
                         )
-                        .padding(5)
+                        .padding(6)
                         .style(theme::card_box(p)),
                     );
                 }
@@ -1036,8 +1114,8 @@ impl GitFleetApp {
                     .stashes
                     .iter()
                     .map(|st| {
-                        (st.ref_name.chars().count() + st.message.chars().count()) as f32 * 7.0
-                            + 44.0
+                        (st.ref_name.chars().count() + st.message.chars().count()) as f32 * 7.6
+                            + 50.0
                     })
                     .fold(200.0_f32, f32::max)
                     .clamp(200.0, 960.0);
@@ -1049,11 +1127,11 @@ impl GitFleetApp {
                         text_input("New tag (e.g. v1.0.0)…", &self.new_tag_name)
                             .on_input(Message::NewTagNameChanged)
                             .on_submit(Message::CreateTagSubmitted)
-                            .padding([3, 6])
-                            .size(11)
+                            .padding([4, 7])
+                            .size(type_scale::CAPTION)
                             .style(theme::dark_input(p)),
-                        button(text("Create").size(10))
-                            .padding([3, 7])
+                        button(text("Create").size(type_scale::CAPTION))
+                            .padding([4, 8])
                             .style(theme::primary_btn(p))
                             .on_press(Message::CreateTagSubmitted),
                     ]
@@ -1070,10 +1148,10 @@ impl GitFleetApp {
                     col = col.push(
                         container(
                             text(format!("Release CI: {}", wf_names.join(" · ")))
-                                .size(10)
+                                .size(type_scale::CAPTION)
                                 .color(p.warning_fg),
                         )
-                        .padding([3, 6])
+                        .padding([4, 7])
                         .width(Length::Fill)
                         .style(theme::pill_box(p.warning_bg, p.warning_fg, p.border_default)),
                     );
@@ -1085,10 +1163,12 @@ impl GitFleetApp {
                         row![
                             theme::clipped_line(
                                 row![
-                                    icons::tag(11.0, p.warning_fg),
-                                    text(t.name.clone()).size(11).color(p.warning_fg),
+                                    icons::tag(12.0, p.warning_fg),
+                                    text(t.name.clone())
+                                        .size(type_scale::BODY)
+                                        .color(p.warning_fg),
                                     text(t.target_oid.clone())
-                                        .size(10)
+                                        .size(type_scale::CAPTION)
                                         .font(theme::CODE_FONT)
                                         .color(p.text_muted),
                                 ]
@@ -1097,8 +1177,8 @@ impl GitFleetApp {
                                 Length::Fill,
                             ),
                             tip(
-                                button(icons::push(11.0, p.text_primary))
-                                    .padding([3, 5])
+                                button(icons::push(12.0, p.text_primary))
+                                    .padding([3, 6])
                                     .style(theme::subtle_btn(p))
                                     .on_press(Message::RequestConfirm(PendingConfirm::push_tag(
                                         t.name.clone(),
@@ -1108,8 +1188,8 @@ impl GitFleetApp {
                                 p,
                             ),
                             tip(
-                                button(icons::trash(11.0, p.danger_fg))
-                                    .padding([3, 5])
+                                button(icons::trash(12.0, p.danger_fg))
+                                    .padding([3, 6])
                                     .style(theme::subtle_btn(p))
                                     .on_press(Message::RequestConfirm(PendingConfirm::delete_tag(
                                         t.name.clone(),
@@ -1124,13 +1204,17 @@ impl GitFleetApp {
                     );
                 }
                 if self.tags.is_empty() {
-                    list = list.push(text("No tags yet.").size(11).color(p.text_muted));
+                    list = list.push(
+                        text("No tags yet.")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    );
                 }
                 let max_tag_w = self
                     .tags
                     .iter()
                     .map(|t| {
-                        (t.name.chars().count() + t.target_oid.chars().count()) as f32 * 7.0 + 96.0
+                        (t.name.chars().count() + t.target_oid.chars().count()) as f32 * 7.6 + 104.0
                     })
                     .fold(200.0_f32, f32::max)
                     .clamp(200.0, 960.0);
@@ -1142,7 +1226,7 @@ impl GitFleetApp {
                 let mut col = column![
                     row![
                         tip(
-                            button(icons::fetch(12.0, p.text_primary))
+                            button(icons::fetch(13.0, p.text_primary))
                                 .padding([4, 7])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::UpdateSubmodules),
@@ -1151,7 +1235,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::refresh(12.0, p.text_primary))
+                            button(icons::refresh(13.0, p.text_primary))
                                 .padding([4, 7])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::SyncSubmodules),
@@ -1160,7 +1244,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::shield(12.0, p.warning_fg))
+                            button(icons::shield(13.0, p.warning_fg))
                                 .padding([4, 7])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::RunPushPreflight),
@@ -1169,7 +1253,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::push(12.0, Color::WHITE))
+                            button(icons::push(13.0, Color::WHITE))
                                 .padding([4, 7])
                                 .style(theme::primary_btn(p))
                                 .on_press(Message::RunOrderedPush),
@@ -1182,18 +1266,18 @@ impl GitFleetApp {
                     row![
                         text_input("Submodule URL…", &self.new_submodule_url)
                             .on_input(Message::SubmoduleUrlChanged)
-                            .padding([3, 6])
-                            .size(10)
+                            .padding([4, 7])
+                            .size(type_scale::CAPTION)
                             .style(theme::dark_input(p)),
                         text_input("Path…", &self.new_submodule_path)
                             .on_input(Message::SubmodulePathChanged)
                             .on_submit(Message::AddSubmoduleSubmitted)
-                            .padding([3, 6])
-                            .size(10)
-                            .width(Length::Fixed(72.0))
+                            .padding([4, 7])
+                            .size(type_scale::CAPTION)
+                            .width(Length::Fixed(78.0))
                             .style(theme::dark_input(p)),
                         tip(
-                            button(icons::plus(11.0, Color::WHITE))
+                            button(icons::plus(12.0, Color::WHITE))
                                 .padding([4, 6])
                                 .style(theme::primary_btn(p))
                                 .on_press(Message::AddSubmoduleSubmitted),
@@ -1214,10 +1298,10 @@ impl GitFleetApp {
                                 "Orphan gitlinks ({}): click 'Ord Push'",
                                 self.orphan_gitlinks.len()
                             ))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.danger_fg),
                         )
-                        .padding([3, 6])
+                        .padding([4, 7])
                         .width(Length::Fill)
                         .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
                     );
@@ -1229,13 +1313,19 @@ impl GitFleetApp {
                         row![
                             theme::clipped_line(
                                 row![
-                                    text(s.path.clone()).size(11).color(p.text_primary),
+                                    text(s.path.clone())
+                                        .size(type_scale::BODY)
+                                        .color(p.text_primary),
                                     text(s.head_oid.clone().unwrap_or_default())
-                                        .size(10)
+                                        .size(type_scale::CAPTION)
                                         .font(theme::CODE_FONT)
                                         .color(p.accent_fg),
                                     if s.dirty {
-                                        Element::from(text("*").size(11).color(p.warning_fg))
+                                        Element::from(
+                                            text("*")
+                                                .size(type_scale::BODY)
+                                                .color(p.warning_fg),
+                                        )
                                     } else {
                                         Space::with_width(Length::Shrink).into()
                                     },
@@ -1245,8 +1335,8 @@ impl GitFleetApp {
                                 Length::Fill,
                             ),
                             tip(
-                                button(icons::trash(11.0, p.danger_fg))
-                                    .padding([3, 5])
+                                button(icons::trash(12.0, p.danger_fg))
+                                    .padding([3, 6])
                                     .style(theme::subtle_btn(p))
                                     .on_press(Message::RequestConfirm(
                                         PendingConfirm::remove_submodule(s.path.clone()),
@@ -1261,14 +1351,18 @@ impl GitFleetApp {
                     );
                 }
                 if self.submodules.is_empty() {
-                    list = list.push(text("No submodules.").size(11).color(p.text_muted));
+                    list = list.push(
+                        text("No submodules.")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    );
                 }
                 let max_sub_w = self
                     .submodules
                     .iter()
                     .map(|s| {
                         let oid_len = s.head_oid.as_deref().map_or(0, |o| o.chars().count());
-                        (s.path.chars().count() + oid_len) as f32 * 7.0 + 68.0
+                        (s.path.chars().count() + oid_len) as f32 * 7.6 + 76.0
                     })
                     .fold(200.0_f32, f32::max)
                     .clamp(200.0, 960.0);
@@ -1282,11 +1376,11 @@ impl GitFleetApp {
                         text_input("Branch for new worktree…", &self.new_worktree_branch)
                             .on_input(Message::NewWorktreeBranchChanged)
                             .on_submit(Message::AddWorktreeSubmitted)
-                            .padding([3, 6])
-                            .size(10)
+                            .padding([4, 7])
+                            .size(type_scale::CAPTION)
                             .style(theme::dark_input(p)),
                         tip(
-                            button(icons::plus(11.0, Color::WHITE))
+                            button(icons::plus(12.0, Color::WHITE))
                                 .padding([4, 6])
                                 .style(theme::primary_btn(p))
                                 .on_press(Message::AddWorktreeSubmitted),
@@ -1308,11 +1402,13 @@ impl GitFleetApp {
                                 row![
                                     theme::clipped_line(
                                         row![
-                                            text(w.name.clone()).size(11).color(p.text_primary),
+                                            text(w.name.clone())
+                                                .size(type_scale::BODY)
+                                                .color(p.text_primary),
                                             text(
                                                 w.branch.clone().unwrap_or_else(|| "detached".into())
                                             )
-                                            .size(10)
+                                            .size(type_scale::CAPTION)
                                             .color(p.accent_fg),
                                         ]
                                         .spacing(5)
@@ -1320,14 +1416,22 @@ impl GitFleetApp {
                                         Length::Fill,
                                     ),
                                     if w.dirty {
-                                        Element::from(text("dirty").size(9).color(p.warning_fg))
+                                        Element::from(
+                                            text("dirty")
+                                                .size(type_scale::BADGE)
+                                                .color(p.warning_fg),
+                                        )
                                     } else {
-                                        Element::from(text("clean").size(9).color(p.success_fg))
+                                        Element::from(
+                                            text("clean")
+                                                .size(type_scale::BADGE)
+                                                .color(p.success_fg),
+                                        )
                                     },
                                     if !w.is_main {
                                         tip(
-                                            button(icons::trash(11.0, p.danger_fg))
-                                                .padding([3, 5])
+                                            button(icons::trash(12.0, p.danger_fg))
+                                                .padding([3, 6])
                                                 .style(theme::subtle_btn(p))
                                                 .on_press(Message::RequestConfirm(
                                                     PendingConfirm::remove_worktree(w.path.clone()),
@@ -1349,14 +1453,14 @@ impl GitFleetApp {
                                         w.behind,
                                         w.path.display()
                                     ))
-                                    .size(9)
+                                    .size(type_scale::CAPTION)
                                     .color(p.text_muted),
                                     Length::Fill,
                                 ),
                             ]
                             .spacing(2),
                         )
-                        .padding(4)
+                        .padding(5)
                         .style(theme::card_box(p)),
                     );
                 }
@@ -1517,11 +1621,22 @@ mod tests {
 
     #[test]
     fn branch_tree_indentation_shifts_children_inside_groups() {
-        // Direct child of a group (depth 1) must be indented noticeably past the group checkbox
-        assert!(branch_leaf_indent(1) >= GROUP_CHECKBOX_X + 16.0);
-        // Nested folder children (depth 2) indent deeper than direct children (depth 1)
-        assert!(branch_leaf_indent(2) > branch_leaf_indent(1));
-        assert!(branch_folder_indent(2) > branch_folder_indent(1));
+        // Direct child of a group (depth 1) shifts exactly one indent step past the root checkbox
+        assert_eq!(branch_leaf_indent(1), GROUP_CHECKBOX_X + tree::INDENT_STEP);
+        // Nested folder children (depth 2) indent exactly one step deeper than direct children (depth 1)
+        assert_eq!(
+            branch_leaf_indent(2) - branch_leaf_indent(1),
+            tree::INDENT_STEP
+        );
+        assert_eq!(
+            branch_folder_indent(2) - branch_folder_indent(1),
+            tree::INDENT_STEP
+        );
+        // A folder's icon column at depth `d` aligns identically with a sibling leaf's checkbox at depth `d`
+        assert_eq!(
+            branch_folder_indent(1) + tree::CHEVRON_W + tree::CHEVRON_GAP,
+            branch_leaf_indent(1)
+        );
         assert!(branch_leaf_indent(1) > branch_folder_indent(1));
     }
 }

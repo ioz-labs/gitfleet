@@ -223,6 +223,7 @@ impl GitFleetApp {
         );
 
         // 2. Repository Groups card (only real user groups; ungrouped repos live directly at root)
+        let keyring = self.service.security.keyring_summary();
         let mut group_rows = column![].spacing(space::XS);
         let mut sorted_groups = ws.groups.clone();
         sorted_groups.sort();
@@ -239,6 +240,11 @@ impl GitFleetApp {
                 .iter()
                 .filter(|r| r.group.as_deref() == Some(g.as_str()))
                 .count();
+            let assigned_key_name = ws
+                .group_secret_keys
+                .get(g)
+                .and_then(|kid| keyring.find(kid))
+                .map(|k| k.name.clone());
             let mut r = row![
                 icons::folder(icon_size::SM, p.accent_fg),
                 text(g.clone())
@@ -251,10 +257,19 @@ impl GitFleetApp {
                     p.border_subtle,
                     false
                 ),
-                Space::with_width(Length::Fill),
             ]
             .spacing(space::SM)
             .align_y(Alignment::Center);
+            if let Some(key_name) = assigned_key_name {
+                r = r.push(theme::badge(
+                    format!("Key: {}", truncate_chars(&key_name, 16)),
+                    p.success_bg,
+                    p.success_fg,
+                    p.border_subtle,
+                    false,
+                ));
+            }
+            r = r.push(Space::with_width(Length::Fill));
 
             if let Some(sel_id) = &self.selected_repo {
                 r = r.push(

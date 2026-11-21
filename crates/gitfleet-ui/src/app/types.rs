@@ -2,11 +2,16 @@ use gitfleet_core::{RepoId, SessionId};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{DiscardTarget, FileChange, MergeMode, RepoStatusSummary, ResetMode};
 use gitfleet_terminal::TermScreenSnapshot;
+use gitfleet_workspace::{
+    ScanFolderResult, ScanLevelInfo, ScannedRepoCandidate, normalize_group_path,
+    resolve_scanned_repo_group,
+};
 use iced::Point;
+use std::collections::HashSet;
 use std::path::PathBuf;
 pub(crate) const STATUS_BAR_HEIGHT: f32 = crate::theme::layout::STATUS_BAR_HEIGHT;
-pub(crate) const TITLEBAR_HEIGHT: f32 = 36.0;
-pub(crate) const TOOLBAR_HEIGHT: f32 = 40.0;
+pub(crate) const TITLEBAR_HEIGHT: f32 = 38.0;
+pub(crate) const TOOLBAR_HEIGHT: f32 = 42.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResizeTarget {
@@ -153,7 +158,8 @@ pub(crate) enum ConfirmAction {
     DeleteWorkspace { path: PathBuf },
     RemoveSubmodule { path: String },
     RemoveWorktree { path: PathBuf },
-    ResetVaultKey,
+    DeleteVaultKey { key_id: String },
+    DestroyRepoVault,
     ForceCommit { push_after: bool },
     CommitAllWorkingTree { push_after: bool },
     ExecuteMerge { target: String, mode: MergeMode },
@@ -427,15 +433,27 @@ impl PendingConfirm {
         }
     }
 
-    pub(crate) fn reset_vault_key() -> Self {
+    pub(crate) fn delete_vault_key(key_id: String, name: &str) -> Self {
         Self {
-            title: "Reset Age Encryption Key?".into(),
-            message: "WARNING: Replaces your local Age identity key with a brand new key. Existing '.gitfleet/secrets.age' vaults encrypted with the old key will no longer decrypt unless you backed up the old private key!"
+            title: format!("Delete Age Key '{name}'?"),
+            message: "Removes this Age private key from your local keyring and clears any repo/group assignments pointing to it. Vaults encrypted with this key will become locked unless you backed up the private key!"
                 .into(),
-            detail: None,
-            confirm_label: "Reset Key".into(),
+            detail: Some(name.to_string()),
+            confirm_label: "Delete Key".into(),
             is_danger: true,
-            action: ConfirmAction::ResetVaultKey,
+            action: ConfirmAction::DeleteVaultKey { key_id },
+        }
+    }
+
+    pub(crate) fn destroy_repo_vault(repo_name: &str) -> Self {
+        Self {
+            title: format!("Delete Secrets Vault in '{repo_name}'?"),
+            message: "Permanently deletes '.gitfleet/secrets.age' and '.gitfleet/secrets.json' from this repository so the vault and any Locked warning are completely removed. Your local plaintext files (.env / .toml / .yaml) on disk are NOT deleted."
+                .into(),
+            detail: Some(".gitfleet/secrets.age & .gitfleet/secrets.json".into()),
+            confirm_label: "Delete Vault".into(),
+            is_danger: true,
+            action: ConfirmAction::DestroyRepoVault,
         }
     }
 
@@ -756,11 +774,19 @@ impl CommitModalState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextMenuSubmenu {
+    None,
+    MoveToGroup,
+    RepoSecretKey,
+    GroupSecretKey,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ContextMenuState {
     pub(crate) position: Point,
     pub(crate) target: ContextMenuTarget,
-    pub(crate) submenu_open: bool,
+    pub(crate) submenu: ContextMenuSubmenu,
 }
 
 #[derive(Debug, Clone)]
@@ -822,4 +848,354 @@ pub(crate) enum TerminalMenuSubmenu {
     None,
     SplitWithProfile,
     SelectDefaultProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanLevelPreset {
+    All,
+    MaxOne,
+    MaxTwo,
+    Flat,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScanModalRepoItem {
+    pub(crate) candidate: ScannedRepoCandidate,
+    pub(crate) selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ScanModalCounts {
+    pub(crate) total_repos: usize,
+    pub(crate) selected_new: usize,
+    pub(crate) selected_regroup: usize,
+    pub(crate) existing_movable: usize,
+    pub(crate) existing_same: usize,
+    pub(crate) actionable_total: usize,
+    pub(crate) actionable_selected: usize,
+    pub(crate) new_groups_count: usize,
+    pub(crate) active_groups_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScanModalState {
+    pub(crate) root: PathBuf,
+    pub(crate) max_depth: usize,
+    pub(crate) scanning: bool,
+    pub(crate) has_root_level: bool,
+    pub(crate) levels: Vec<ScanLevelInfo>,
+    pub(crate) enabled_levels: Vec<bool>,
+    pub(crate) skipped_raw_nodes: HashSet<String>,
+    pub(crate) target_parent_group: String,
+    pub(crate) update_existing_groups: bool,
+    pub(crate) repos: Vec<ScanModalRepoItem>,
+}
+
+impl ScanModalState {
+    pub(crate) fn from_result(
+        result: ScanFolderResult,
+        target_parent_group: Option<String>,
+    ) -> Self {
+        let new_count = result
+            .repos
+            .iter()
+            .filter(|r| !r.already_in_workspace)
+            .count();
+        let repos = result
+            .repos
+            .into_iter()
+            .map(|candidate| ScanModalRepoItem {
+                candidate,
+                selected: true,
+            })
+            .collect();
+        Self {
+            root: result.root,
+            max_depth: result.max_depth,
+            scanning: false,
+            has_root_level: result.has_root_level,
+            levels: result.levels,
+            enabled_levels: result.default_enabled_levels,
+            skipped_raw_nodes: HashSet::new(),
+            target_parent_group: target_parent_group
+                .map(|g| normalize_group_path(&g))
+                .unwrap_or_default(),
+            // If all discovered repos are already in the workspace, default to regrouping them
+            // so re-scanning an already-imported folder organizes existing repos in one click.
+            update_existing_groups: new_count == 0,
+            repos,
+        }
+    }
+
+    pub(crate) fn normalized_parent_group(&self) -> Option<String> {
+        let norm = normalize_group_path(&self.target_parent_group);
+        if norm.is_empty() {
+            None
+        } else {
+            Some(norm)
+        }
+    }
+
+    pub(crate) fn resolved_group_for(&self, item: &ScanModalRepoItem) -> Option<String> {
+        let parent = self.normalized_parent_group();
+        resolve_scanned_repo_group(
+            &item.candidate.raw_segments,
+            &self.enabled_levels,
+            &self.skipped_raw_nodes,
+            parent.as_deref(),
+        )
+    }
+
+    pub(crate) fn is_repo_actionable(&self, item: &ScanModalRepoItem) -> bool {
+        if !item.candidate.already_in_workspace {
+            true
+        } else {
+            self.update_existing_groups
+                && item.candidate.existing_group != self.resolved_group_for(item)
+        }
+    }
+
+    fn preset_levels(&self, preset: ScanLevelPreset) -> Vec<bool> {
+        let len = self.enabled_levels.len();
+        let mut next = vec![false; len];
+        if len == 0 {
+            return next;
+        }
+        let has_direct_child_repo = self
+            .repos
+            .iter()
+            .any(|r| r.candidate.raw_segments.len() <= 1);
+        match preset {
+            ScanLevelPreset::All => next.fill(true),
+            ScanLevelPreset::Flat => {}
+            ScanLevelPreset::MaxOne => {
+                if self.has_root_level && len > 1 {
+                    if has_direct_child_repo {
+                        next[0] = true;
+                    } else {
+                        next[1] = true;
+                    }
+                } else {
+                    next[0] = true;
+                }
+            }
+            ScanLevelPreset::MaxTwo => {
+                if self.has_root_level && len > 2 {
+                    if has_direct_child_repo {
+                        next[0] = true;
+                        next[1] = true;
+                    } else {
+                        next[1] = true;
+                        next[2] = true;
+                    }
+                } else {
+                    for slot in next.iter_mut().take(2) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
+        next
+    }
+
+    pub(crate) fn apply_preset(&mut self, preset: ScanLevelPreset) {
+        self.skipped_raw_nodes.clear();
+        self.enabled_levels = self.preset_levels(preset);
+    }
+
+    pub(crate) fn is_preset_active(&self, preset: ScanLevelPreset) -> bool {
+        self.skipped_raw_nodes.is_empty() && self.enabled_levels == self.preset_levels(preset)
+    }
+
+    pub(crate) fn counts(&self, existing_ws_groups: &[String]) -> ScanModalCounts {
+        let existing_group_set: HashSet<String> = existing_ws_groups
+            .iter()
+            .map(|g| normalize_group_path(g))
+            .filter(|g| !g.is_empty())
+            .collect();
+
+        let mut c = ScanModalCounts {
+            total_repos: self.repos.len(),
+            ..Default::default()
+        };
+        let mut used_groups: HashSet<String> = HashSet::new();
+        let mut new_groups: HashSet<String> = HashSet::new();
+
+        for item in &self.repos {
+            let target = self.resolved_group_for(item);
+            if item.candidate.already_in_workspace {
+                if item.candidate.existing_group != target {
+                    c.existing_movable += 1;
+                    if self.update_existing_groups {
+                        c.actionable_total += 1;
+                        if item.selected {
+                            c.actionable_selected += 1;
+                            c.selected_regroup += 1;
+                            Self::collect_group_ancestors(
+                                target.as_deref(),
+                                &existing_group_set,
+                                &mut used_groups,
+                                &mut new_groups,
+                            );
+                        }
+                    }
+                } else {
+                    c.existing_same += 1;
+                }
+            } else {
+                c.actionable_total += 1;
+                if item.selected {
+                    c.actionable_selected += 1;
+                    c.selected_new += 1;
+                    Self::collect_group_ancestors(
+                        target.as_deref(),
+                        &existing_group_set,
+                        &mut used_groups,
+                        &mut new_groups,
+                    );
+                }
+            }
+        }
+
+        c.active_groups_count = used_groups.len();
+        c.new_groups_count = new_groups.len();
+        c
+    }
+
+    fn collect_group_ancestors(
+        group: Option<&str>,
+        existing_ws_groups: &HashSet<String>,
+        used_groups: &mut HashSet<String>,
+        new_groups: &mut HashSet<String>,
+    ) {
+        let Some(g) = group else {
+            return;
+        };
+        let mut acc = String::new();
+        for seg in g.split('/').filter(|s| !s.is_empty()) {
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(seg);
+            used_groups.insert(acc.clone());
+            if !existing_ws_groups.contains(&acc) {
+                new_groups.insert(acc.clone());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scan_modal_tests {
+    use super::*;
+    use gitfleet_workspace::{ScanGroupSegment, ScannedRepoCandidate};
+
+    fn sample_modal(already_existing: bool) -> ScanModalState {
+        let mk_seg = |name: &str, raw: &str| ScanGroupSegment {
+            name: name.to_string(),
+            raw_path: raw.to_string(),
+        };
+        let res = ScanFolderResult {
+            root: PathBuf::from("Work"),
+            max_depth: 5,
+            has_root_level: true,
+            levels: vec![
+                ScanLevelInfo {
+                    depth: 0,
+                    is_root_folder: true,
+                    folder_names: vec!["Work".into()],
+                },
+                ScanLevelInfo {
+                    depth: 1,
+                    is_root_folder: false,
+                    folder_names: vec!["backend".into(), "frontend".into()],
+                },
+                ScanLevelInfo {
+                    depth: 2,
+                    is_root_folder: false,
+                    folder_names: vec!["services".into()],
+                },
+            ],
+            default_enabled_levels: vec![false, true, true],
+            repos: vec![
+                ScannedRepoCandidate {
+                    name: "auth".into(),
+                    path: PathBuf::from("Work/backend/services/auth"),
+                    relative_path: "backend/services/auth".into(),
+                    raw_segments: vec![
+                        mk_seg("Work", "Work"),
+                        mk_seg("backend", "Work/backend"),
+                        mk_seg("services", "Work/backend/services"),
+                    ],
+                    already_in_workspace: already_existing,
+                    existing_group: None,
+                },
+                ScannedRepoCandidate {
+                    name: "web".into(),
+                    path: PathBuf::from("Work/frontend/web"),
+                    relative_path: "frontend/web".into(),
+                    raw_segments: vec![
+                        mk_seg("Work", "Work"),
+                        mk_seg("frontend", "Work/frontend"),
+                    ],
+                    already_in_workspace: false,
+                    existing_group: None,
+                },
+            ],
+        };
+        ScanModalState::from_result(res, None)
+    }
+
+    #[test]
+    fn scan_modal_presets_and_group_counts() {
+        let mut modal = sample_modal(false);
+        assert!(modal.is_preset_active(ScanLevelPreset::MaxTwo));
+        let counts = modal.counts(&["frontend".to_string()]);
+        assert_eq!(counts.selected_new, 2);
+        assert_eq!(counts.active_groups_count, 3); // backend, backend/services, frontend
+        assert_eq!(counts.new_groups_count, 2); // backend, backend/services
+
+        // Switch to 1 Level -> drops "services", keeps "backend" and "frontend"
+        modal.apply_preset(ScanLevelPreset::MaxOne);
+        assert!(modal.is_preset_active(ScanLevelPreset::MaxOne));
+        assert_eq!(
+            modal.resolved_group_for(&modal.repos[0]),
+            Some("backend".to_string())
+        );
+        assert_eq!(
+            modal.resolved_group_for(&modal.repos[1]),
+            Some("frontend".to_string())
+        );
+
+        // Switch to Flat -> no auto groups
+        modal.apply_preset(ScanLevelPreset::Flat);
+        assert!(modal.is_preset_active(ScanLevelPreset::Flat));
+        assert_eq!(modal.resolved_group_for(&modal.repos[0]), None);
+        assert_eq!(modal.counts(&[]).new_groups_count, 0);
+
+        // Switch to All -> includes root "Work"
+        modal.apply_preset(ScanLevelPreset::All);
+        assert!(modal.is_preset_active(ScanLevelPreset::All));
+        assert_eq!(
+            modal.resolved_group_for(&modal.repos[0]),
+            Some("Work/backend/services".to_string())
+        );
+    }
+
+    #[test]
+    fn scan_modal_tracks_existing_repo_regrouping_toggle() {
+        let mut modal = sample_modal(true);
+        // Mixed (1 existing + 1 new) -> update_existing_groups defaults to false
+        assert!(!modal.update_existing_groups);
+        let c1 = modal.counts(&[]);
+        assert_eq!(c1.selected_new, 1);
+        assert_eq!(c1.selected_regroup, 0);
+        assert_eq!(c1.existing_movable, 1);
+
+        modal.update_existing_groups = true;
+        let c2 = modal.counts(&[]);
+        assert_eq!(c2.selected_new, 1);
+        assert_eq!(c2.selected_regroup, 1);
+        assert_eq!(c2.actionable_selected, 2);
+    }
 }

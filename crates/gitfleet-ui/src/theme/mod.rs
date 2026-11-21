@@ -8,7 +8,7 @@ pub use components::*;
 pub use dock::*;
 pub use palette::*;
 pub use styles::*;
-pub use tokens::{icon_size, layout, pad, radius, space, type_scale};
+pub use tokens::{icon_size, layout, pad, radius, space, tree, type_scale};
 
 use iced::Font;
 #[cfg(target_os = "windows")]

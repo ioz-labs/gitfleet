@@ -31,7 +31,10 @@ impl GitFleetApp {
         .on_press(Message::StartResize(ResizeTarget::DrawerHeight));
 
         // 2. VS Code-style underline tab helper using Design System tokens
-        let dock_tab = |label: String, badge: Option<String>, tab: DrawerTab| -> Element<'_, Message> {
+        let dock_tab = |label: String,
+                        badge: Option<(String, Option<(Color, Color)>)>,
+                        tab: DrawerTab|
+         -> Element<'_, Message> {
             let is_active = active_tab == tab;
             let mut label_row = row![
                 text(label).size(type_scale::BODY).color(if is_active {
@@ -43,18 +46,13 @@ impl GitFleetApp {
             .spacing(space::XS)
             .align_y(Alignment::Center);
 
-            if let Some(b) = badge {
-                label_row = label_row.push(theme::badge(
-                    b,
-                    if is_active {
-                        p.fill_selected
-                    } else {
-                        p.surface_card
-                    },
-                    if is_active { p.accent_fg } else { p.text_muted },
-                    Color::TRANSPARENT,
-                    false,
-                ));
+            if let Some((b, custom_colors)) = badge {
+                let (bg, fg) = custom_colors.unwrap_or(if is_active {
+                    (p.fill_selected, p.accent_fg)
+                } else {
+                    (p.surface_card, p.text_muted)
+                });
+                label_row = label_row.push(theme::badge(b, bg, fg, Color::TRANSPARENT, false));
             }
 
             let underline = container(Space::new(Length::Fill, Length::Fixed(2.0)))
@@ -78,19 +76,31 @@ impl GitFleetApp {
             .into()
         };
 
-        let term_badge =
-            (self.terminal_tabs.len() > 1).then(|| self.terminal_tabs.len().to_string());
-        let search_badge =
-            (!self.search_results.is_empty()).then(|| self.search_results.len().to_string());
+        let term_badge = (self.terminal_tabs.len() > 1)
+            .then(|| (self.terminal_tabs.len().to_string(), None));
+        let search_badge = (!self.search_results.is_empty())
+            .then(|| (self.search_results.len().to_string(), None));
+        let encrypt_needed = self.vault_summary.encrypt_needed_count();
+        let restore_needed = self.vault_summary.restore_needed_count();
         let secrets_badge = if self.vault_summary.vault_locked {
-            Some("locked".into())
+            Some(("locked".into(), Some((p.warning_bg, p.warning_fg))))
+        } else if encrypt_needed > 0 {
+            Some((
+                format!("{encrypt_needed} mod"),
+                Some((p.warning_bg, p.warning_fg)),
+            ))
+        } else if restore_needed > 0 {
+            Some((
+                format!("{restore_needed} restore"),
+                Some((p.fill_selected, p.accent_fg)),
+            ))
         } else if !self.vault_summary.files.is_empty() {
-            Some(self.vault_summary.files.len().to_string())
+            Some((self.vault_summary.files.len().to_string(), None))
         } else {
             None
         };
         let log_count = self.service.command_log.list().len();
-        let output_badge = (log_count > 0).then(|| log_count.to_string());
+        let output_badge = (log_count > 0).then(|| (log_count.to_string(), None));
 
         let tabs_row = row![
             dock_tab("Terminal".into(), term_badge, DrawerTab::Terminal),

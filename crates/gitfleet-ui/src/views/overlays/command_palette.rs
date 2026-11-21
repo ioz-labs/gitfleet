@@ -20,7 +20,7 @@ impl GitFleetApp {
             ("Workspace: Manage Workspaces, Groups, Clone & Create…", "", Message::ToggleWorkspaceModal),
             ("Workspace: Rename Current Workspace…", "", Message::OpenRenameWorkspaceModal(None)),
             ("Workspace: Add Repository…", "", Message::PickAddRepo),
-            ("Workspace: Scan Folder…", "", Message::PickScanFolder),
+            ("Workspace: Scan Folder & Auto-Group…", "", Message::PickScanFolder(None)),
             ("Workspace: Open Active Repo in Explorer", "", Message::RevealSelectedInExplorer),
             ("Git: Refresh Selected", "F5", Message::RefreshSelected),
             ("Git: Refresh All", "Ctrl+Shift+R", Message::RefreshAll),
@@ -48,6 +48,19 @@ impl GitFleetApp {
             ("Terminal: Split Terminal", "Ctrl+Shift+5", Message::TerminalSplitPane(None)),
             ("Terminal: New External Terminal Window", "", Message::TerminalOpenExternalWindow(None)),
             ("Tools: Secrets Vault (.gitfleet/secrets.age & secrets.json)", "", Message::ToggleDrawer(DrawerTab::Secrets)),
+            ("Secrets: Manage Age Keys & Repo/Group Assignment", "", Message::OpenSecretsDrawer { show_keys: true }),
+            ("Secrets: Encrypt All Modified Files", "", Message::EncryptRepoEnv),
+            ("Secrets: Restore All Files from Vault", "", Message::RestoreRepoEnv),
+            (
+                "Secrets: Delete Vault from Active Repository…",
+                "",
+                Message::RequestConfirm(PendingConfirm::destroy_repo_vault(
+                    self.current_repo()
+                        .as_ref()
+                        .map(|r| r.name.as_str())
+                        .unwrap_or("repository"),
+                )),
+            ),
             ("Tools: 3-Layer Ignore Editor", "", Message::ToggleDrawer(DrawerTab::Ignore)),
             ("Tools: Command Log", "", Message::ToggleDrawer(DrawerTab::CommandLog)),
             ("Tools: Settings & Diagnostics", "", Message::ToggleSettingsModal),

@@ -2,7 +2,7 @@ use gitfleet_git::CommitSummary;
 use iced::widget::canvas::{self, Canvas, Geometry, Path, Stroke};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
 
-pub const ROW_HEIGHT: f32 = 28.0;
+pub const ROW_HEIGHT: f32 = 30.0;
 const LANE_SPACING: f32 = 14.0;
 const LEFT_PAD: f32 = 10.0;
 

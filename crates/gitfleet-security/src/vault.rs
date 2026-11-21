@@ -5,7 +5,8 @@ use crate::formats::{
 };
 use crate::manifest::manifest_file_path;
 use crate::models::{
-    SecretFileFormat, SecretFileSpec, VaultFileState, VaultFileSummary, VaultKeyInfo, VaultSummary,
+    SecretFileFormat, SecretFileSpec, VaultFileState, VaultFileSummary, VaultKeyEntry,
+    VaultKeyInfo, VaultKeyringSummary, VaultSummary,
 };
 use age::secrecy::ExposeSecret;
 use arboard::Clipboard;
@@ -15,7 +16,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroize;
+
+static KEY_ID_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VaultFileEntry {
@@ -31,7 +36,90 @@ pub(crate) struct VaultPayloadV2 {
 
 type LegacyVaultPayloadV1 = BTreeMap<String, BTreeMap<String, String>>;
 
-fn default_identity_file_path() -> Option<PathBuf> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredAgeKey {
+    id: String,
+    name: String,
+    public_key: String,
+    secret_key: String,
+}
+
+impl StoredAgeKey {
+    fn to_entry(&self, default_id: Option<&str>) -> VaultKeyEntry {
+        VaultKeyEntry {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            public_key: self.public_key.clone(),
+            is_default: default_id == Some(self.id.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgeKeyringFile {
+    #[serde(default = "default_keyring_version")]
+    version: u32,
+    #[serde(default)]
+    default_key_id: Option<String>,
+    #[serde(default)]
+    keys: Vec<StoredAgeKey>,
+}
+
+fn default_keyring_version() -> u32 {
+    1
+}
+
+impl Default for AgeKeyringFile {
+    fn default() -> Self {
+        Self {
+            version: default_keyring_version(),
+            default_key_id: None,
+            keys: Vec::new(),
+        }
+    }
+}
+
+impl AgeKeyringFile {
+    fn ensure_valid_default(&mut self) {
+        let valid = self
+            .default_key_id
+            .as_deref()
+            .is_some_and(|id| self.keys.iter().any(|k| k.id == id));
+        if !valid {
+            self.default_key_id = self.keys.first().map(|k| k.id.clone());
+        }
+    }
+
+    fn resolve_key(&self, preferred_id: Option<&str>) -> Option<&StoredAgeKey> {
+        if let Some(id) = preferred_id
+            && let Some(found) = self.keys.iter().find(|k| k.id == id)
+        {
+            return Some(found);
+        }
+        if let Some(def_id) = self.default_key_id.as_deref()
+            && let Some(found) = self.keys.iter().find(|k| k.id == def_id)
+        {
+            return Some(found);
+        }
+        self.keys.first()
+    }
+}
+
+fn next_key_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = KEY_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("key_{nanos:x}_{seq}")
+}
+
+fn default_keyring_file_path() -> Option<PathBuf> {
+    ProjectDirs::from("org", "gitfleet", "gitfleet")
+        .map(|d| d.config_dir().join("secrets-keyring.json"))
+}
+
+fn legacy_identity_file_path() -> Option<PathBuf> {
     ProjectDirs::from("org", "gitfleet", "gitfleet")
         .map(|d| d.config_dir().join("secrets-identity.txt"))
 }
@@ -41,126 +129,330 @@ pub(crate) fn vault_file_path(repo_path: &Path) -> PathBuf {
 }
 
 fn parse_age_identity_text(raw: &str) -> AppResult<age::x25519::Identity> {
-    let line = raw
-        .lines()
-        .map(str::trim)
-        .find(|l| l.starts_with("AGE-SECRET-KEY-"))
-        .ok_or_else(|| {
-            AppError::Security(
-                "Invalid Age identity key. Expected a line starting with 'AGE-SECRET-KEY-'.".into(),
-            )
-        })?;
-    line.parse::<age::x25519::Identity>()
+    if let Ok(kr) = serde_json::from_str::<AgeKeyringFile>(raw)
+        && let Some(k) = kr.resolve_key(None)
+    {
+        return k
+            .secret_key
+            .trim()
+            .parse::<age::x25519::Identity>()
+            .map_err(|e| AppError::Security(format!("Failed parsing Age key: {e}")));
+    }
+
+    let extracted = raw.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let start = trimmed.find("AGE-SECRET-KEY-")?;
+        let rest = &trimmed[start..];
+        let token: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        if token.len() > "AGE-SECRET-KEY-".len() {
+            Some(token)
+        } else {
+            None
+        }
+    });
+
+    let token = extracted.ok_or_else(|| {
+        AppError::Security(
+            "Invalid Age identity key. Expected a string starting with 'AGE-SECRET-KEY-'.".into(),
+        )
+    })?;
+    token
+        .parse::<age::x25519::Identity>()
         .map_err(|e| AppError::Security(format!("Failed parsing Age key: {e}")))
 }
 
+fn default_key_name_for(existing_count: usize, fallback_prefix: &str) -> String {
+    if existing_count == 0 {
+        fallback_prefix.to_string()
+    } else {
+        format!("{fallback_prefix} {}", existing_count + 1)
+    }
+}
+
 impl SecurityService {
-    fn identity_file_path(&self) -> Option<PathBuf> {
+    fn keyring_file_path(&self) -> Option<PathBuf> {
         self.identity_override
             .clone()
-            .or_else(default_identity_file_path)
+            .or_else(default_keyring_file_path)
     }
 
-    fn load_identity(&self) -> AppResult<age::x25519::Identity> {
-        let path = self
-            .identity_file_path()
-            .ok_or_else(|| AppError::Security("Cannot resolve config directory".into()))?;
-        if !path.exists() {
-            return Err(AppError::Security(
-                "No Age identity key exists yet. Click 'Create Key' or 'Import Key' first.".into(),
-            ));
+    fn load_keyring(&self) -> AppResult<AgeKeyringFile> {
+        let Some(path) = self.keyring_file_path() else {
+            return Ok(AgeKeyringFile::default());
+        };
+
+        if path.exists() {
+            let mut raw = std::fs::read_to_string(&path)?;
+            if let Ok(mut kr) = serde_json::from_str::<AgeKeyringFile>(&raw) {
+                raw.zeroize();
+                kr.ensure_valid_default();
+                return Ok(kr);
+            }
+            // Legacy plain-text Age file at this exact path (e.g. test override or old file)
+            let parsed = parse_age_identity_text(&raw);
+            raw.zeroize();
+            if let Ok(identity) = parsed {
+                let id = next_key_id();
+                let mut kr = AgeKeyringFile {
+                    version: 1,
+                    default_key_id: Some(id.clone()),
+                    keys: vec![StoredAgeKey {
+                        id,
+                        name: "Default".to_string(),
+                        public_key: identity.to_public().to_string(),
+                        secret_key: identity.to_string().expose_secret().to_string(),
+                    }],
+                };
+                kr.ensure_valid_default();
+                return Ok(kr);
+            }
+            return Ok(AgeKeyringFile::default());
         }
-        let mut raw = std::fs::read_to_string(&path)?;
-        let parsed = parse_age_identity_text(&raw);
-        raw.zeroize();
-        parsed
+
+        // Lossless one-time migration from legacy single-key `secrets-identity.txt`
+        if self.identity_override.is_none()
+            && let Some(legacy_path) = legacy_identity_file_path()
+            && legacy_path.exists()
+            && let Ok(mut raw) = std::fs::read_to_string(&legacy_path)
+        {
+            let parsed = parse_age_identity_text(&raw);
+            raw.zeroize();
+            if let Ok(identity) = parsed {
+                let id = next_key_id();
+                let kr = AgeKeyringFile {
+                    version: 1,
+                    default_key_id: Some(id.clone()),
+                    keys: vec![StoredAgeKey {
+                        id,
+                        name: "Default".to_string(),
+                        public_key: identity.to_public().to_string(),
+                        secret_key: identity.to_string().expose_secret().to_string(),
+                    }],
+                };
+                let _ = self.save_keyring(&kr);
+                return Ok(kr);
+            }
+        }
+
+        Ok(AgeKeyringFile::default())
+    }
+
+    fn save_keyring(&self, keyring: &AgeKeyringFile) -> AppResult<()> {
+        let path = self
+            .keyring_file_path()
+            .ok_or_else(|| AppError::Security("Cannot resolve config directory".into()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut json = serde_json::to_string_pretty(keyring)?;
+        json.push('\n');
+        std::fs::write(&path, &json)?;
+        json.zeroize();
+        Ok(())
+    }
+
+    pub fn keyring_summary(&self) -> VaultKeyringSummary {
+        let path = self.keyring_file_path();
+        let kr = self.load_keyring().unwrap_or_default();
+        let def_id = kr.default_key_id.as_deref();
+        let keys = kr.keys.iter().map(|k| k.to_entry(def_id)).collect();
+        VaultKeyringSummary {
+            keys,
+            default_key_id: kr.default_key_id,
+            keyring_path: path,
+        }
     }
 
     pub fn key_info(&self) -> VaultKeyInfo {
-        let path = self.identity_file_path();
-        if let Ok(id) = self.load_identity() {
+        let summary = self.keyring_summary();
+        if let Some(def) = summary.default_key() {
             VaultKeyInfo {
                 state: "ready".to_string(),
-                public_key: Some(id.to_public().to_string()),
-                key_path: path,
+                public_key: Some(def.public_key.clone()),
+                key_path: summary.keyring_path,
             }
         } else {
             VaultKeyInfo {
                 state: "none".to_string(),
                 public_key: None,
-                key_path: path,
+                key_path: summary.keyring_path,
             }
         }
     }
 
-    pub fn create_key(&self) -> AppResult<VaultKeyInfo> {
-        let path = self
-            .identity_file_path()
-            .ok_or_else(|| AppError::Security("Cannot resolve config directory".into()))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+    pub fn create_named_key(&self, name: &str) -> AppResult<VaultKeyEntry> {
+        let mut kr = self.load_keyring()?;
+        let trimmed = name.trim();
+        let final_name = if trimmed.is_empty() {
+            default_key_name_for(kr.keys.len(), "Default")
+        } else {
+            trimmed.to_string()
+        };
+
         let identity = age::x25519::Identity::generate();
         let pub_key = identity.to_public().to_string();
-        let mut content = format!(
-            "# GitFleet Age Identity Key\n# public key: {pub_key}\n{}\n",
-            identity.to_string().expose_secret()
-        );
-        std::fs::write(&path, &content)?;
-        content.zeroize();
+        let id = next_key_id();
+        let stored = StoredAgeKey {
+            id: id.clone(),
+            name: final_name,
+            public_key: pub_key,
+            secret_key: identity.to_string().expose_secret().to_string(),
+        };
+        if kr.default_key_id.is_none() {
+            kr.default_key_id = Some(id.clone());
+        }
+        kr.keys.push(stored);
+        kr.ensure_valid_default();
+        self.save_keyring(&kr)?;
+
+        let def_id = kr.default_key_id.as_deref();
+        kr.keys
+            .iter()
+            .find(|k| k.id == id)
+            .map(|k| k.to_entry(def_id))
+            .ok_or_else(|| AppError::Security("Created key missing from keyring".into()))
+    }
+
+    pub fn create_key(&self) -> AppResult<VaultKeyInfo> {
+        let entry = self.create_named_key("")?;
         Ok(VaultKeyInfo {
             state: "ready".to_string(),
-            public_key: Some(pub_key),
-            key_path: Some(path),
+            public_key: Some(entry.public_key),
+            key_path: self.keyring_file_path(),
         })
+    }
+
+    pub fn import_named_key(&self, name: &str, raw_input: &str) -> AppResult<VaultKeyEntry> {
+        let identity = parse_age_identity_text(raw_input)?;
+        let pub_key = identity.to_public().to_string();
+        let trimmed = name.trim();
+
+        let mut kr = self.load_keyring()?;
+        if let Some(existing) = kr.keys.iter_mut().find(|k| k.public_key == pub_key) {
+            if !trimmed.is_empty() {
+                existing.name = trimmed.to_string();
+            }
+            let existing_id = existing.id.clone();
+            kr.ensure_valid_default();
+            self.save_keyring(&kr)?;
+            let def_id = kr.default_key_id.as_deref();
+            return kr
+                .keys
+                .iter()
+                .find(|k| k.id == existing_id)
+                .map(|k| k.to_entry(def_id))
+                .ok_or_else(|| AppError::Security("Imported key missing from keyring".into()));
+        }
+
+        let final_name = if trimmed.is_empty() {
+            default_key_name_for(kr.keys.len(), "Imported Key")
+        } else {
+            trimmed.to_string()
+        };
+        let id = next_key_id();
+        let stored = StoredAgeKey {
+            id: id.clone(),
+            name: final_name,
+            public_key: pub_key,
+            secret_key: identity.to_string().expose_secret().to_string(),
+        };
+        if kr.default_key_id.is_none() {
+            kr.default_key_id = Some(id.clone());
+        }
+        kr.keys.push(stored);
+        kr.ensure_valid_default();
+        self.save_keyring(&kr)?;
+
+        let def_id = kr.default_key_id.as_deref();
+        kr.keys
+            .iter()
+            .find(|k| k.id == id)
+            .map(|k| k.to_entry(def_id))
+            .ok_or_else(|| AppError::Security("Imported key missing from keyring".into()))
     }
 
     pub fn import_key(&self, raw_input: &str) -> AppResult<VaultKeyInfo> {
-        let identity = parse_age_identity_text(raw_input)?;
-        let path = self
-            .identity_file_path()
-            .ok_or_else(|| AppError::Security("Cannot resolve config directory".into()))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let pub_key = identity.to_public().to_string();
-        let mut content = format!(
-            "# GitFleet Age Identity Key (imported)\n# public key: {pub_key}\n{}\n",
-            identity.to_string().expose_secret()
-        );
-        std::fs::write(&path, &content)?;
-        content.zeroize();
+        let entry = self.import_named_key("", raw_input)?;
         Ok(VaultKeyInfo {
             state: "ready".to_string(),
-            public_key: Some(pub_key),
-            key_path: Some(path),
+            public_key: Some(entry.public_key),
+            key_path: self.keyring_file_path(),
         })
     }
 
+    pub fn rename_key(&self, key_id: &str, new_name: &str) -> AppResult<()> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Security("Key name cannot be empty.".into()));
+        }
+        let mut kr = self.load_keyring()?;
+        let Some(k) = kr.keys.iter_mut().find(|k| k.id == key_id) else {
+            return Err(AppError::Security("Age key not found in keyring.".into()));
+        };
+        k.name = trimmed.to_string();
+        self.save_keyring(&kr)
+    }
+
+    pub fn set_default_key(&self, key_id: &str) -> AppResult<()> {
+        let mut kr = self.load_keyring()?;
+        if !kr.keys.iter().any(|k| k.id == key_id) {
+            return Err(AppError::Security("Age key not found in keyring.".into()));
+        }
+        kr.default_key_id = Some(key_id.to_string());
+        self.save_keyring(&kr)
+    }
+
+    pub fn delete_key(&self, key_id: &str) -> AppResult<()> {
+        let mut kr = self.load_keyring()?;
+        let before = kr.keys.len();
+        kr.keys.retain(|k| k.id != key_id);
+        if kr.keys.len() == before {
+            return Err(AppError::Security("Age key not found in keyring.".into()));
+        }
+        kr.ensure_valid_default();
+        self.save_keyring(&kr)
+    }
+
     pub fn reset_key(&self) -> AppResult<()> {
-        if let Some(path) = self.identity_file_path()
+        if let Some(path) = self.keyring_file_path()
             && path.exists()
         {
             std::fs::remove_file(path)?;
         }
+        if self.identity_override.is_none()
+            && let Some(legacy) = legacy_identity_file_path()
+            && legacy.exists()
+        {
+            let _ = std::fs::remove_file(legacy);
+        }
         Ok(())
     }
 
-    pub fn copy_public_key(&self) -> AppResult<String> {
-        let info = self.key_info();
-        let pk = info
-            .public_key
-            .ok_or_else(|| AppError::Security("No key created yet".into()))?;
+    pub fn copy_key_public(&self, key_id: &str) -> AppResult<String> {
+        let kr = self.load_keyring()?;
+        let k = kr
+            .keys
+            .iter()
+            .find(|k| k.id == key_id)
+            .ok_or_else(|| AppError::Security("Age key not found in keyring.".into()))?;
         let mut cb =
             Clipboard::new().map_err(|e| AppError::Security(format!("Clipboard error: {e}")))?;
-        cb.set_text(pk.clone())
+        cb.set_text(k.public_key.clone())
             .map_err(|e| AppError::Security(format!("Clipboard error: {e}")))?;
-        Ok(pk)
+        Ok(k.public_key.clone())
     }
 
-    pub fn copy_private_key(&self) -> AppResult<()> {
-        let identity = self.load_identity()?;
-        let mut secret = identity.to_string().expose_secret().to_string();
+    pub fn copy_key_private(&self, key_id: &str) -> AppResult<()> {
+        let kr = self.load_keyring()?;
+        let k = kr
+            .keys
+            .iter()
+            .find(|k| k.id == key_id)
+            .ok_or_else(|| AppError::Security("Age key not found in keyring.".into()))?;
+        let mut secret = k.secret_key.clone();
         let mut cb =
             Clipboard::new().map_err(|e| AppError::Security(format!("Clipboard error: {e}")))?;
         let res = cb
@@ -170,8 +462,39 @@ impl SecurityService {
         res
     }
 
-    pub(crate) fn encrypt_payload(&self, repo_path: &Path, payload: &VaultPayloadV2) -> AppResult<()> {
-        let identity = self.load_identity()?;
+    pub fn copy_public_key(&self) -> AppResult<String> {
+        let kr = self.load_keyring()?;
+        let k = kr
+            .resolve_key(None)
+            .ok_or_else(|| AppError::Security("No key created yet".into()))?;
+        self.copy_key_public(&k.id)
+    }
+
+    pub fn copy_private_key(&self) -> AppResult<()> {
+        let kr = self.load_keyring()?;
+        let k = kr
+            .resolve_key(None)
+            .ok_or_else(|| AppError::Security("No key created yet".into()))?;
+        self.copy_key_private(&k.id)
+    }
+
+    pub(crate) fn encrypt_payload_with_key(
+        &self,
+        repo_path: &Path,
+        payload: &VaultPayloadV2,
+        target_key_id: Option<&str>,
+    ) -> AppResult<VaultKeyEntry> {
+        let kr = self.load_keyring()?;
+        let chosen = kr.resolve_key(target_key_id).ok_or_else(|| {
+            AppError::Security(
+                "No Age key exists yet. Create or import a key in Secrets → Keys first.".into(),
+            )
+        })?;
+        let identity = chosen
+            .secret_key
+            .trim()
+            .parse::<age::x25519::Identity>()
+            .map_err(|e| AppError::Security(format!("Stored Age key invalid: {e}")))?;
         let recipient = identity.to_public();
         let mut plaintext = serde_json::to_vec_pretty(payload)?;
 
@@ -191,64 +514,109 @@ impl SecurityService {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(target, encrypted)?;
-        Ok(())
+        Ok(chosen.to_entry(kr.default_key_id.as_deref()))
     }
 
-    pub(crate) fn decrypt_payload(&self, repo_path: &Path) -> AppResult<VaultPayloadV2> {
+    pub(crate) fn decrypt_payload_with_key(
+        &self,
+        repo_path: &Path,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<(VaultPayloadV2, Option<VaultKeyEntry>)> {
         let target = vault_file_path(repo_path);
         if !target.exists() {
-            return Ok(VaultPayloadV2 {
-                version: 2,
-                files: BTreeMap::new(),
-            });
+            return Ok((
+                VaultPayloadV2 {
+                    version: 2,
+                    files: BTreeMap::new(),
+                },
+                None,
+            ));
         }
-        let identity = self.load_identity()?;
-        let ciphertext = std::fs::read(&target)?;
-        let decryptor = age::Decryptor::new(&ciphertext[..])
-            .map_err(|e| AppError::Security(format!("Age decryptor error: {e}")))?;
-        let mut decrypted = Vec::new();
-        let mut reader = decryptor
-            .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(|e| AppError::Security(format!("Age decrypt failed (wrong key?): {e}")))?;
-        reader.read_to_end(&mut decrypted)?;
 
-        let parsed = if let Ok(v2) = serde_json::from_slice::<VaultPayloadV2>(&decrypted)
-            && v2.version >= 2
+        let kr = self.load_keyring()?;
+        let manifest_hint = self
+            .load_manifest(repo_path)
+            .ok()
+            .and_then(|m| m.key_name);
+        if kr.keys.is_empty() {
+            let msg = match manifest_hint {
+                Some(name) => format!(
+                    "No Age key in keyring (repo expects key '{name}'). Import or create a key first."
+                ),
+                None => "No Age key in keyring yet. Click 'Keys' to create or import a key.".into(),
+            };
+            return Err(AppError::Security(msg));
+        }
+
+        let ciphertext = std::fs::read(&target)?;
+        // Order candidates: preferred key first, then default key, then all remaining keys
+        let mut ordered: Vec<&StoredAgeKey> = Vec::with_capacity(kr.keys.len());
+        if let Some(pid) = preferred_key_id
+            && let Some(k) = kr.keys.iter().find(|k| k.id == pid)
         {
-            Ok(v2)
-        } else if let Ok(v1) = serde_json::from_slice::<LegacyVaultPayloadV1>(&decrypted) {
-            let mut files = BTreeMap::new();
-            for (name, kvs) in v1 {
-                let mut raw = String::new();
-                for (k, v) in kvs {
-                    raw.push_str(&format!("{k}={v}\n"));
-                }
-                let format =
-                    SecretFileFormat::detect_from_path(&name).unwrap_or(SecretFileFormat::Env);
-                files.insert(name, VaultFileEntry { format, raw });
+            ordered.push(k);
+        }
+        if let Some(did) = kr.default_key_id.as_deref()
+            && let Some(k) = kr.keys.iter().find(|k| k.id == did)
+            && !ordered.iter().any(|o| o.id == k.id)
+        {
+            ordered.push(k);
+        }
+        for k in &kr.keys {
+            if !ordered.iter().any(|o| o.id == k.id) {
+                ordered.push(k);
             }
-            Ok(VaultPayloadV2 { version: 2, files })
-        } else {
-            Err(AppError::Security(
-                "Unrecognized encrypted vault format in .gitfleet/secrets.age".into(),
-            ))
+        }
+
+        for candidate in ordered {
+            let Ok(identity) = candidate.secret_key.trim().parse::<age::x25519::Identity>() else {
+                continue;
+            };
+            let decryptor = age::Decryptor::new(&ciphertext[..])
+                .map_err(|e| AppError::Security(format!("Age decryptor error: {e}")))?;
+            let Ok(mut reader) = decryptor.decrypt(std::iter::once(&identity as &dyn age::Identity))
+            else {
+                continue;
+            };
+            let mut decrypted = Vec::new();
+            reader.read_to_end(&mut decrypted)?;
+            let parsed = parse_vault_payload(&decrypted);
+            decrypted.zeroize();
+            return Ok((parsed?, Some(candidate.to_entry(kr.default_key_id.as_deref()))));
+        }
+
+        let msg = match manifest_hint {
+            Some(name) => format!(
+                "No matching key in keyring (repo expects key '{name}'). Import that Age secret key."
+            ),
+            None => "Age decrypt failed — none of the keys in your keyring match this vault.".into(),
         };
-        decrypted.zeroize();
-        parsed
+        Err(AppError::Security(msg))
     }
 
-    pub fn vault_summary(&self, repo_path: &Path) -> AppResult<VaultSummary> {
+    pub fn vault_summary_with_key(
+        &self,
+        repo_path: &Path,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<VaultSummary> {
         let has_manifest = manifest_file_path(repo_path).exists();
         let has_vault = vault_file_path(repo_path).exists();
         let manifest = self.load_manifest(repo_path).unwrap_or_default();
+        let manifest_key_name = manifest.key_name.clone();
 
-        let (payload_opt, vault_locked, lock_error) = if has_vault {
-            match self.decrypt_payload(repo_path) {
-                Ok(p) => (Some(p), false, None),
-                Err(e) => (None, true, Some(e.to_string())),
+        let (payload_opt, unlocked_key, vault_locked, lock_error) = if has_vault {
+            match self.decrypt_payload_with_key(repo_path, preferred_key_id) {
+                Ok((p, matched)) => (Some(p), matched, false, None),
+                Err(e) => {
+                    let msg = match e {
+                        AppError::Security(s) => s,
+                        other => other.to_string(),
+                    };
+                    (None, None, true, Some(msg))
+                }
             }
         } else {
-            (None, false, None)
+            (None, None, false, None)
         };
 
         let mut specs: BTreeMap<String, (SecretFileFormat, bool, bool)> = BTreeMap::new();
@@ -319,15 +687,23 @@ impl SecurityService {
             has_vault,
             vault_locked,
             lock_error,
+            unlocked_by_key_id: unlocked_key.as_ref().map(|k| k.id.clone()),
+            unlocked_by_key_name: unlocked_key.map(|k| k.name),
+            manifest_key_name,
             files,
         })
     }
 
-    pub fn encrypt_selected_files(
+    pub fn vault_summary(&self, repo_path: &Path) -> AppResult<VaultSummary> {
+        self.vault_summary_with_key(repo_path, None)
+    }
+
+    pub fn encrypt_selected_files_with_key(
         &self,
         repo_path: &Path,
         only_paths: Option<&[String]>,
-    ) -> AppResult<usize> {
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<(usize, VaultKeyEntry)> {
         let mut manifest = self.load_manifest(repo_path)?;
 
         if manifest.files.is_empty() && only_paths.is_none() {
@@ -379,7 +755,6 @@ impl SecurityService {
                     format: fmt,
                 });
             }
-            self.save_manifest(repo_path, &manifest)?;
             list
         } else {
             manifest.files.clone()
@@ -387,18 +762,21 @@ impl SecurityService {
 
         if targets.is_empty() {
             return Err(AppError::Security(
-                "No secret files selected yet. Click '+ Add File' to choose .env, .toml, or .yaml files."
+                "No secret files selected yet. Click 'Choose Files' to pick .env, .toml, or .yaml files."
                     .into(),
             ));
         }
 
-        let mut payload = if vault_file_path(repo_path).exists() {
-            self.decrypt_payload(repo_path)?
+        let (mut payload, matched_existing) = if vault_file_path(repo_path).exists() {
+            self.decrypt_payload_with_key(repo_path, preferred_key_id)?
         } else {
-            VaultPayloadV2 {
-                version: 2,
-                files: BTreeMap::new(),
-            }
+            (
+                VaultPayloadV2 {
+                    version: 2,
+                    files: BTreeMap::new(),
+                },
+                None,
+            )
         };
 
         let mut encrypted_count = 0usize;
@@ -425,16 +803,51 @@ impl SecurityService {
             ));
         }
 
-        self.encrypt_payload(repo_path, &payload)?;
-        Ok(encrypted_count)
+        // Priority: explicit repo/group assignment > key that already unlocked existing vault > default key
+        let effective_key_id = preferred_key_id
+            .or_else(|| matched_existing.as_ref().map(|k| k.id.as_str()));
+        let used_key = self.encrypt_payload_with_key(repo_path, &payload, effective_key_id)?;
+
+        manifest.key_name = Some(used_key.name.clone());
+        self.save_manifest(repo_path, &manifest)?;
+        Ok((encrypted_count, used_key))
     }
 
-    pub fn restore_selected_files(
+    pub fn encrypt_selected_files(
         &self,
         repo_path: &Path,
         only_paths: Option<&[String]>,
     ) -> AppResult<usize> {
-        let payload = self.decrypt_payload(repo_path)?;
+        self.encrypt_selected_files_with_key(repo_path, only_paths, None)
+            .map(|(n, _)| n)
+    }
+
+    /// Re-encrypts an existing `.gitfleet/secrets.age` vault under a different key from the local
+    /// keyring without requiring the plaintext files to exist on disk.
+    pub fn rekey_vault(&self, repo_path: &Path, target_key_id: &str) -> AppResult<VaultKeyEntry> {
+        if !vault_file_path(repo_path).exists() {
+            return Err(AppError::Security(
+                "No .gitfleet/secrets.age vault exists in this repository yet.".into(),
+            ));
+        }
+        let (payload, _) = self.decrypt_payload_with_key(repo_path, None)?;
+        let used_key = self.encrypt_payload_with_key(repo_path, &payload, Some(target_key_id))?;
+        if manifest_file_path(repo_path).exists()
+            && let Ok(mut manifest) = self.load_manifest(repo_path)
+        {
+            manifest.key_name = Some(used_key.name.clone());
+            let _ = self.save_manifest(repo_path, &manifest);
+        }
+        Ok(used_key)
+    }
+
+    pub fn restore_selected_files_with_key(
+        &self,
+        repo_path: &Path,
+        only_paths: Option<&[String]>,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<usize> {
+        let (payload, _) = self.decrypt_payload_with_key(repo_path, preferred_key_id)?;
         if payload.files.is_empty() {
             return Err(AppError::Security(
                 "No encrypted files found in .gitfleet/secrets.age.".into(),
@@ -483,6 +896,14 @@ impl SecurityService {
         Ok(restored)
     }
 
+    pub fn restore_selected_files(
+        &self,
+        repo_path: &Path,
+        only_paths: Option<&[String]>,
+    ) -> AppResult<usize> {
+        self.restore_selected_files_with_key(repo_path, only_paths, None)
+    }
+
     pub fn encrypt_env_files(&self, repo_path: &Path) -> AppResult<usize> {
         self.encrypt_selected_files(repo_path, None)
     }
@@ -493,7 +914,7 @@ impl SecurityService {
 
     pub fn reveal_secret(&self, repo_path: &Path, file: &str, key: &str) -> AppResult<String> {
         let norm = normalize_repo_rel_path(repo_path, file)?;
-        let payload = self.decrypt_payload(repo_path)?;
+        let (payload, _) = self.decrypt_payload_with_key(repo_path, None)?;
         let entry = payload
             .files
             .get(&norm)
@@ -505,13 +926,14 @@ impl SecurityService {
             .ok_or_else(|| AppError::Security(format!("Secret key '{key}' not found in '{norm}'")))
     }
 
-    pub fn set_secret_value(
+    pub fn set_secret_value_with_key(
         &self,
         repo_path: &Path,
         file: &str,
         key: &str,
         value: &str,
-    ) -> AppResult<()> {
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<VaultKeyEntry> {
         let norm = normalize_repo_rel_path(repo_path, file)?;
         let key = key.trim();
         if key.is_empty() {
@@ -531,13 +953,16 @@ impl SecurityService {
                 ))
             })?;
 
-        let mut payload = if vault_file_path(repo_path).exists() {
-            self.decrypt_payload(repo_path)?
+        let (mut payload, matched_existing) = if vault_file_path(repo_path).exists() {
+            self.decrypt_payload_with_key(repo_path, preferred_key_id)?
         } else {
-            VaultPayloadV2 {
-                version: 2,
-                files: BTreeMap::new(),
-            }
+            (
+                VaultPayloadV2 {
+                    version: 2,
+                    files: BTreeMap::new(),
+                },
+                None,
+            )
         };
 
         let current_raw = payload
@@ -555,13 +980,28 @@ impl SecurityService {
                 raw: updated_raw,
             },
         );
-        self.encrypt_payload(repo_path, &payload)?;
+
+        let effective_key_id = preferred_key_id
+            .or_else(|| matched_existing.as_ref().map(|k| k.id.as_str()));
+        let used_key = self.encrypt_payload_with_key(repo_path, &payload, effective_key_id)?;
 
         if !manifest.files.iter().any(|f| f.path == norm) {
             manifest.files.push(SecretFileSpec { path: norm, format });
-            self.save_manifest(repo_path, &manifest)?;
         }
-        Ok(())
+        manifest.key_name = Some(used_key.name.clone());
+        self.save_manifest(repo_path, &manifest)?;
+        Ok(used_key)
+    }
+
+    pub fn set_secret_value(
+        &self,
+        repo_path: &Path,
+        file: &str,
+        key: &str,
+        value: &str,
+    ) -> AppResult<()> {
+        self.set_secret_value_with_key(repo_path, file, key, value, None)
+            .map(|_| ())
     }
 
     pub fn copy_secret_value(&self, repo_path: &Path, file: &str, key: &str) -> AppResult<()> {
@@ -573,5 +1013,29 @@ impl SecurityService {
             .map_err(|e| AppError::Security(format!("Clipboard error: {e}")));
         val.zeroize();
         res
+    }
+}
+
+fn parse_vault_payload(decrypted: &[u8]) -> AppResult<VaultPayloadV2> {
+    if let Ok(v2) = serde_json::from_slice::<VaultPayloadV2>(decrypted)
+        && v2.version >= 2
+    {
+        Ok(v2)
+    } else if let Ok(v1) = serde_json::from_slice::<LegacyVaultPayloadV1>(decrypted) {
+        let mut files = BTreeMap::new();
+        for (name, kvs) in v1 {
+            let mut raw = String::new();
+            for (k, v) in kvs {
+                raw.push_str(&format!("{k}={v}\n"));
+            }
+            let format =
+                SecretFileFormat::detect_from_path(&name).unwrap_or(SecretFileFormat::Env);
+            files.insert(name, VaultFileEntry { format, raw });
+        }
+        Ok(VaultPayloadV2 { version: 2, files })
+    } else {
+        Err(AppError::Security(
+            "Unrecognized encrypted vault format in .gitfleet/secrets.age".into(),
+        ))
     }
 }

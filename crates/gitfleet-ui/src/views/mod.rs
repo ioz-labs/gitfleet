@@ -35,15 +35,19 @@ impl GitFleetApp {
 
 pub(crate) fn tip<'a>(
     content: impl Into<Element<'a, Message>>,
-    label: &'a str,
+    label: impl text::IntoFragment<'a>,
     position: tooltip::Position,
     p: Palette,
 ) -> Element<'a, Message> {
     tooltip(
         content,
-        container(text(label).size(11).color(p.text_primary))
-            .padding([4, 8])
-            .style(theme::tooltip_box(p)),
+        container(
+            text(label)
+                .size(theme::type_scale::CAPTION)
+                .color(p.text_primary),
+        )
+        .padding([5, 9])
+        .style(theme::tooltip_box(p)),
         position,
     )
     .gap(5)

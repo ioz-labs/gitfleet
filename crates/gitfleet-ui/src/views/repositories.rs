@@ -1,6 +1,6 @@
 use crate::app::{ContextMenuTarget, GitFleetApp, Message, PendingConfirm, RepoFilter};
 use crate::icons;
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, tree, type_scale};
 use crate::views::{slim_scroll_h, tip};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_workspace::RepoEntry;
@@ -10,18 +10,6 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Padding};
 use std::collections::BTreeMap;
-
-/// Shared horizontal grid geometry for the Repositories tree so groups, subgroups,
-/// repositories (both grouped and root-level), and submodules align on exact columns.
-const TREE_BASE_LEFT: f32 = 4.0;
-const TREE_INDENT_STEP: f32 = 16.0;
-const TREE_CHEVRON_W: f32 = 16.0;
-const TREE_ICON_W: f32 = 16.0;
-const TREE_COL_GAP: f32 = 6.0;
-
-fn tree_left_x(depth: usize) -> f32 {
-    TREE_BASE_LEFT + (depth as f32) * TREE_INDENT_STEP
-}
 
 #[derive(Default)]
 struct RepoGroupNode {
@@ -102,70 +90,76 @@ impl GitFleetApp {
         let changed = st.map(|s| s.total_changes()).unwrap_or(0);
         let id_check = repo.id.clone();
 
-        let left_x = tree_left_x(depth);
+        let left_x = tree::chevron_x(depth);
         let branch_chars = if repo.available {
             branch.chars().count() + 2
         } else {
             9
         };
-        let repo_est_w = left_x
-            + 76.0
-            + (repo.name.chars().count() + branch_chars + 1) as f32 * 7.8
-            + if changed > 0 { 28.0 } else { 0.0 }
-            + if !repo.available { 52.0 } else { 0.0 };
+        let repo_est_w = tree::content_x(depth)
+            + 28.0
+            + repo.name.chars().count() as f32 * 7.5
+            + branch_chars as f32 * 6.9
+            + if changed > 0 { 26.0 } else { 0.0 }
+            + if !repo.available { 54.0 } else { 0.0 };
         if repo_est_w > *max_row_w {
             *max_row_w = repo_est_w;
         }
         let sub_toggle: Element<'a, Message> = if has_subs {
             button(
                 container(if subs_expanded {
-                    icons::chevron_down(14.0, p.text_secondary)
+                    icons::chevron_down(tree::CHEVRON_ICON_SIZE, p.text_secondary)
                 } else {
-                    icons::chevron_right(14.0, p.text_muted)
+                    icons::chevron_right(tree::CHEVRON_ICON_SIZE, p.text_muted)
                 })
                 .width(Length::Fill)
                 .center_x(Length::Fill),
             )
-            .padding([3, 0])
-            .width(Length::Fixed(TREE_CHEVRON_W))
+            .padding([tree::ROW_PAD_V, 0.0])
+            .width(Length::Fixed(tree::CHEVRON_W))
             .style(theme::vscode_icon_btn(p, false))
             .on_press(Message::ToggleRepoSubmodules(repo.id.clone()))
             .into()
         } else {
-            Space::with_width(Length::Fixed(TREE_CHEVRON_W)).into()
+            Space::with_width(Length::Fixed(tree::CHEVRON_W)).into()
         };
 
         let bulk_box = container(
             checkbox("", checked)
-                .size(14)
+                .size(tree::CHECKBOX_SIZE)
                 .spacing(0)
+                .style(theme::tree_checkbox(p))
                 .on_toggle(move |v| Message::ToggleBulkSelect(id_check.clone(), v)),
         )
-        .width(Length::Fixed(TREE_ICON_W))
-        .center_x(Length::Fixed(TREE_ICON_W));
+        .width(Length::Fixed(tree::LEAD_W))
+        .center_x(Length::Fixed(tree::LEAD_W));
 
         let mut repo_row = row![
             sub_toggle,
+            Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
             bulk_box,
+            Space::with_width(Length::Fixed(tree::ROW_BTN_GAP)),
             theme::pressable_row(
                 p,
                 selected,
-                Padding::from([4, 6]),
+                Padding::from([tree::ROW_PAD_V, tree::ROW_PAD_H]),
                 row![
-                    container(Space::new(8, 8)).style(theme::dot_box(dot_color)),
+                    container(Space::new(7, 7)).style(theme::dot_box(dot_color)),
                     theme::clipped_line(
                         row![
-                            text(repo.name.clone()).size(13).color(if is_being_dragged {
-                                p.text_muted
-                            } else {
-                                p.text_primary
-                            }),
+                            text(repo.name.clone())
+                                .size(type_scale::BODY)
+                                .color(if is_being_dragged {
+                                    p.text_muted
+                                } else {
+                                    p.text_primary
+                                }),
                             text(if repo.available {
                                 format!("({branch})")
                             } else {
                                 "[missing]".to_string()
                             })
-                            .size(11.5)
+                            .size(type_scale::CAPTION)
                             .color(if repo.available {
                                 p.text_muted
                             } else {
@@ -179,7 +173,7 @@ impl GitFleetApp {
                     if changed > 0 {
                         Element::from(
                             text(format!("{changed}"))
-                                .size(11.5)
+                                .size(type_scale::BADGE)
                                 .color(p.warning_fg),
                         )
                     } else {
@@ -191,16 +185,18 @@ impl GitFleetApp {
                 Message::RepoMouseDown(repo.id.clone(), repo.name.clone()),
             ),
         ]
-        .spacing(TREE_COL_GAP)
+        .spacing(0)
         .align_y(Alignment::Center);
 
         if !repo.available {
-            repo_row = repo_row.push(
-                button(text("Locate").size(10).color(p.warning_fg))
-                    .padding([2, 5])
-                    .style(theme::subtle_btn(p))
-                    .on_press(Message::LocateRepo(repo.id.clone())),
-            );
+            repo_row = repo_row
+                .push(Space::with_width(Length::Fixed(4.0)))
+                .push(
+                    button(text("Locate").size(type_scale::BADGE).color(p.warning_fg))
+                        .padding([2, 5])
+                        .style(theme::subtle_btn(p))
+                        .on_press(Message::LocateRepo(repo.id.clone())),
+                );
         }
 
         let padded_repo_row = container(repo_row)
@@ -229,8 +225,8 @@ impl GitFleetApp {
         out.push(row_mouse.into());
 
         if subs_expanded {
-            let sub_indent =
-                left_x + TREE_CHEVRON_W + TREE_COL_GAP + TREE_ICON_W + TREE_COL_GAP + 8.0;
+            let sub_depth = depth + 1;
+            let sub_btn_left = (tree::lead_x(sub_depth) - tree::ROW_PAD_H).max(0.0);
             for sub in subs {
                 let sub_key = Self::submodule_repo_id(&repo.id, &sub.path);
                 let sub_st = self.statuses.get(&sub_key);
@@ -245,9 +241,10 @@ impl GitFleetApp {
                     .or(sub.branch.as_deref())
                     .or(sub.head_oid.as_deref())
                     .unwrap_or(if sub.initialized { "detached" } else { "uninit" });
-                let sub_est_w = sub_indent
-                    + 42.0
-                    + (sub.path.chars().count() + sub_ref.chars().count() + 3) as f32 * 7.4
+                let sub_est_w = tree::content_x(sub_depth)
+                    + 22.0
+                    + sub.path.chars().count() as f32 * 7.5
+                    + (sub_ref.chars().count() + 2) as f32 * 6.9
                     + if sub_changed > 0 || sub_dirty { 24.0 } else { 0.0 };
                 if sub_est_w > *max_row_w {
                     *max_row_w = sub_est_w;
@@ -262,18 +259,21 @@ impl GitFleetApp {
 
                 let sub_btn = button(
                     row![
-                        icons::repo_stack(14.0, sub_icon_color),
+                        container(icons::repo_stack(tree::LEAD_ICON_SIZE, sub_icon_color))
+                            .width(Length::Fixed(tree::LEAD_W))
+                            .center_x(Length::Fixed(tree::LEAD_W)),
+                        Space::with_width(Length::Fixed(tree::LABEL_GAP)),
                         theme::clipped_line(
                             row![
                                 text(sub.path.clone())
-                                    .size(12.5)
+                                    .size(type_scale::BODY)
                                     .color(if sub.initialized {
                                         p.text_primary
                                     } else {
                                         p.text_muted
                                     }),
                                 text(format!("({sub_ref})"))
-                                    .size(11.5)
+                                    .size(type_scale::CAPTION)
                                     .color(if !sub.initialized {
                                         p.danger_fg
                                     } else {
@@ -286,30 +286,46 @@ impl GitFleetApp {
                         ),
                         if sub_changed > 0 {
                             Element::from(
-                                text(format!("{sub_changed}"))
-                                    .size(11.0)
-                                    .color(p.warning_fg),
+                                container(
+                                    text(format!("{sub_changed}"))
+                                        .size(type_scale::BADGE)
+                                        .color(p.warning_fg),
+                                )
+                                .padding(Padding {
+                                    top: 0.0,
+                                    right: 0.0,
+                                    bottom: 0.0,
+                                    left: 5.0,
+                                }),
                             )
                         } else if sub_dirty {
                             Element::from(
-                                container(Space::new(7, 7))
-                                    .style(theme::dot_box(p.warning_fg)),
+                                container(
+                                    container(Space::new(7, 7))
+                                        .style(theme::dot_box(p.warning_fg)),
+                                )
+                                .padding(Padding {
+                                    top: 0.0,
+                                    right: 0.0,
+                                    bottom: 0.0,
+                                    left: 5.0,
+                                }),
                             )
                         } else {
                             Space::with_width(Length::Shrink).into()
                         },
                     ]
-                    .spacing(6)
+                    .spacing(0)
                     .align_y(Alignment::Center),
                 )
                 .width(Length::Fill)
-                .padding([3, 6])
+                .padding([tree::ROW_PAD_V, tree::ROW_PAD_H])
                 .style(theme::repo_row_btn(p, sub_selected))
                 .on_press(Message::SelectSubmodule(repo.id.clone(), sub.path.clone()));
 
                 let mut sub_tip = column![
                     text(format!("Submodule: {}", sub.path))
-                        .size(11)
+                        .size(type_scale::BODY)
                         .color(p.text_primary),
                     text(format!(
                         "Ref: {sub_ref}{}",
@@ -318,12 +334,16 @@ impl GitFleetApp {
                             .map(|o| format!("  ({o})"))
                             .unwrap_or_default()
                     ))
-                    .size(10.5)
+                    .size(type_scale::CAPTION)
                     .color(p.accent_fg),
                 ]
                 .spacing(2);
                 if !sub.url.is_empty() {
-                    sub_tip = sub_tip.push(text(sub.url.clone()).size(10).color(p.text_muted));
+                    sub_tip = sub_tip.push(
+                        text(sub.url.clone())
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    );
                 }
                 sub_tip = sub_tip.push(
                     text(if !sub.initialized {
@@ -333,7 +353,7 @@ impl GitFleetApp {
                     } else {
                         "Click to open submodule in GitFleet"
                     })
-                    .size(10)
+                    .size(type_scale::CAPTION)
                     .color(if sub_dirty {
                         p.warning_fg
                     } else {
@@ -343,7 +363,7 @@ impl GitFleetApp {
 
                 out.push(
                     row![
-                        Space::with_width(Length::Fixed(sub_indent)),
+                        Space::with_width(Length::Fixed(sub_btn_left)),
                         tooltip(
                             sub_btn,
                             container(sub_tip)
@@ -389,25 +409,36 @@ impl GitFleetApp {
                     .drag_hover_group
                     .as_ref()
                     .is_some_and(|(_, t)| t.as_deref() == Some(full_path.as_str()));
-            let left_x = tree_left_x(depth);
-            let grp_est_w = left_x + 56.0 + seg_name.chars().count() as f32 * 7.6 + 34.0;
+            let left_x = tree::chevron_x(depth);
+            let count_str = format!("({total})");
+            let grp_est_w = tree::content_x(depth)
+                + 20.0
+                + seg_name.chars().count() as f32 * 7.5
+                + (count_str.chars().count() + 1) as f32 * 6.9;
             if grp_est_w > *max_row_w {
                 *max_row_w = grp_est_w;
             }
 
             let chevron = container(if is_collapsed {
-                icons::chevron_right(14.0, p.text_muted)
+                icons::chevron_right(tree::CHEVRON_ICON_SIZE, p.text_muted)
             } else {
-                icons::chevron_down(14.0, p.text_muted)
+                icons::chevron_down(tree::CHEVRON_ICON_SIZE, p.text_muted)
             })
-            .width(Length::Fixed(TREE_CHEVRON_W))
-            .center_x(Length::Fixed(TREE_CHEVRON_W));
+            .width(Length::Fixed(tree::CHEVRON_W))
+            .center_x(Length::Fixed(tree::CHEVRON_W));
 
             let folder_icon = container(if is_collapsed {
-                icons::folder(14.0, if is_drop_target { p.success_fg } else { p.accent_fg })
+                icons::folder(
+                    tree::LEAD_ICON_SIZE,
+                    if is_drop_target {
+                        p.success_fg
+                    } else {
+                        p.accent_fg
+                    },
+                )
             } else {
                 icons::folder_open(
-                    14.0,
+                    tree::LEAD_ICON_SIZE,
                     if is_drop_target {
                         p.success_fg
                     } else {
@@ -415,22 +446,33 @@ impl GitFleetApp {
                     },
                 )
             })
-            .width(Length::Fixed(TREE_ICON_W))
-            .center_x(Length::Fixed(TREE_ICON_W));
+            .width(Length::Fixed(tree::LEAD_W))
+            .center_x(Length::Fixed(tree::LEAD_W));
 
             let mut header_row = row![
                 chevron,
+                Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
                 folder_icon,
+                Space::with_width(Length::Fixed(tree::LABEL_GAP)),
                 theme::clipped_line(
-                    text(seg_name.clone()).size(12).color(if is_drop_target {
-                        p.accent_fg
-                    } else {
-                        p.text_secondary
-                    }),
+                    row![
+                        text(seg_name.clone())
+                            .size(type_scale::BODY)
+                            .color(if is_drop_target {
+                                p.accent_fg
+                            } else {
+                                p.text_secondary
+                            }),
+                        text(count_str)
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center),
                     Length::Fill,
                 ),
             ]
-            .spacing(TREE_COL_GAP)
+            .spacing(0)
             .align_y(Alignment::Center);
 
             if is_drop_target {
@@ -441,16 +483,14 @@ impl GitFleetApp {
                     p.accent_primary,
                     false,
                 ));
-            } else {
-                header_row = header_row.push(text(format!("{total}")).size(11).color(p.text_muted));
             }
 
             let group_btn = button(header_row)
                 .width(Length::Fill)
                 .padding(Padding {
-                    top: 3.0,
+                    top: tree::ROW_PAD_V,
                     right: 6.0,
-                    bottom: 3.0,
+                    bottom: tree::ROW_PAD_V,
                     left: left_x,
                 })
                 .style(theme::repo_row_btn(p, is_drop_target))
@@ -498,7 +538,9 @@ impl GitFleetApp {
         let header = row![
             theme::clipped_line(
                 tip(
-                    text("Repositories").size(12).color(p.text_muted),
+                    text("Repositories")
+                        .size(type_scale::BODY)
+                        .color(p.text_muted),
                     "Right-click any group, repository, or empty space for context menu",
                     tooltip::Position::Bottom,
                     p,
@@ -518,8 +560,8 @@ impl GitFleetApp {
                 button(icons::folder_search(15.0, p.text_secondary))
                     .padding([4, 6])
                     .style(theme::vscode_icon_btn(p, false))
-                    .on_press(Message::PickScanFolder),
-                "Recursively scan a folder for Git repositories",
+                    .on_press(Message::PickScanFolder(None)),
+                "Scan a folder for Git repositories and auto-create groups",
                 tooltip::Position::Bottom,
                 p,
             ),
@@ -529,8 +571,8 @@ impl GitFleetApp {
 
         let filter = text_input("Filter repos…", &self.filter_query)
             .on_input(Message::FilterChanged)
-            .padding([4, 7])
-            .size(12)
+            .padding([5, 8])
+            .size(type_scale::BODY)
             .style(theme::dark_input(p));
 
         let dirty_cnt = repos
@@ -549,7 +591,7 @@ impl GitFleetApp {
         let pills = row![
             button(
                 text(format!("All ({})", repos.len()))
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None)
             )
             .padding([3, 8])
@@ -557,7 +599,7 @@ impl GitFleetApp {
             .on_press(Message::SetRepoFilter(RepoFilter::All)),
             button(
                 text(format!("Dirty ({dirty_cnt})"))
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None)
             )
             .padding([3, 8])
@@ -568,7 +610,7 @@ impl GitFleetApp {
             .on_press(Message::SetRepoFilter(RepoFilter::Dirty)),
             button(
                 text(format!("Sync ({sync_cnt})"))
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None)
             )
             .padding([3, 8])
@@ -607,7 +649,7 @@ impl GitFleetApp {
             if let Some(parent) = &self.new_group_parent {
                 creator_col = creator_col.push(
                     text(format!("Creating subgroup inside '{parent}'"))
-                        .size(10)
+                        .size(type_scale::CAPTION)
                         .color(p.accent_fg),
                 );
             }
@@ -617,15 +659,15 @@ impl GitFleetApp {
                         .id(self.inline_group_input_id.clone())
                         .on_input(Message::NewGroupNameChanged)
                         .on_submit(Message::AddGroupSubmitted)
-                        .padding([3, 6])
-                        .size(11)
+                        .padding([4, 7])
+                        .size(type_scale::CAPTION)
                         .style(theme::dark_input(p)),
-                    button(text("Create").size(10))
-                        .padding([3, 7])
+                    button(text("Create").size(type_scale::CAPTION))
+                        .padding([4, 8])
                         .style(theme::primary_btn(p))
                         .on_press(Message::AddGroupSubmitted),
-                    button(icons::close_x(11.0, p.text_secondary))
-                        .padding([4, 5])
+                    button(icons::close_x(12.0, p.text_secondary))
+                        .padding([4, 6])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::ToggleInlineGroupCreator),
                 ]
@@ -642,15 +684,15 @@ impl GitFleetApp {
                             "Relocate {} missing sibling repo(s)?",
                             reloc.affected_repo_ids.len()
                         ))
-                        .size(10)
+                        .size(type_scale::CAPTION)
                         .color(p.warning_fg),
                         row![
-                            button(text("Apply All").size(10))
-                                .padding([2, 6])
+                            button(text("Apply All").size(type_scale::CAPTION))
+                                .padding([3, 7])
                                 .style(theme::primary_btn(p))
                                 .on_press(Message::ApplyPrefixRelocation),
-                            button(text("Dismiss").size(10))
-                                .padding([2, 6])
+                            button(text("Dismiss").size(type_scale::CAPTION))
+                                .padding([3, 7])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::DismissPrefixRelocation),
                         ]
@@ -691,7 +733,7 @@ impl GitFleetApp {
                         } else {
                             "Drop here to remove from group (root)"
                         })
-                        .size(10.5)
+                        .size(type_scale::CAPTION)
                         .color(if is_drop_target {
                             p.accent_fg
                         } else {
@@ -732,7 +774,7 @@ impl GitFleetApp {
             );
         }
 
-        let rows_col = column(rows).spacing(2);
+        let rows_col = column(rows).spacing(tree::ROW_SPACING);
         let min_content_w = max_row_w.clamp(180.0, 960.0);
 
         let scroll_area = mouse_area(
@@ -757,7 +799,7 @@ impl GitFleetApp {
                 container(
                     row![
                         text(format!("{bulk_count} sel"))
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .color(p.accent_fg),
                         Space::with_width(Length::Fill),
                         tip(

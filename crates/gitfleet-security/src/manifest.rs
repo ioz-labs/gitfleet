@@ -42,6 +42,12 @@ impl SecurityService {
         }
         let normalized = SecretsManifest {
             version: 1,
+            key_name: manifest
+                .key_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             files: dedup
                 .into_iter()
                 .map(|(path, format)| SecretFileSpec { path, format })
@@ -92,16 +98,58 @@ impl SecurityService {
         let rel = normalize_repo_rel_path(repo_path, rel_path)?;
         let mut manifest = self.load_manifest(repo_path)?;
         manifest.files.retain(|f| f.path != rel);
-        self.save_manifest(repo_path, &manifest)?;
 
-        if remove_from_vault && vault_file_path(repo_path).exists() {
-            if let Ok(mut payload) = self.decrypt_payload(repo_path) {
-                if payload.files.remove(&rel).is_some() {
-                    let _ = self.encrypt_payload(repo_path, &payload);
-                }
+        let vault_path = vault_file_path(repo_path);
+        if remove_from_vault
+            && vault_path.exists()
+            && let Ok((mut payload, matched_key)) = self.decrypt_payload_with_key(repo_path, None)
+        {
+            let removed = payload.files.remove(&rel).is_some();
+            if payload.files.is_empty() && manifest.files.is_empty() {
+                let _ = std::fs::remove_file(&vault_path);
+            } else if removed {
+                let target_id = matched_key.as_ref().map(|k| k.id.as_str());
+                let _ = self.encrypt_payload_with_key(repo_path, &payload, target_id);
             }
         }
+
+        if manifest.files.is_empty() && !vault_path.exists() {
+            let mpath = manifest_file_path(repo_path);
+            if mpath.exists() {
+                let _ = std::fs::remove_file(&mpath);
+            }
+            if let Some(dir) = mpath.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
+            manifest.key_name = None;
+        } else {
+            self.save_manifest(repo_path, &manifest)?;
+        }
+
         Ok(manifest)
+    }
+
+    /// Completely removes this repository's Secrets Vault artifacts (`.gitfleet/secrets.age` and
+    /// `.gitfleet/secrets.json`, plus `.gitfleet/` if empty). Works even when the vault is locked.
+    /// Never modifies or deletes local plaintext secret files (`.env`, `.toml`, `.yaml`) on disk.
+    pub fn destroy_repo_vault(&self, repo_path: &Path) -> AppResult<usize> {
+        let mut removed = 0usize;
+        let vault_path = vault_file_path(repo_path);
+        if vault_path.exists() {
+            std::fs::remove_file(&vault_path)?;
+            removed += 1;
+        }
+        let mpath = manifest_file_path(repo_path);
+        if mpath.exists() {
+            std::fs::remove_file(&mpath)?;
+            removed += 1;
+        }
+        if let Some(dir) = mpath.parent()
+            && dir.exists()
+        {
+            let _ = std::fs::remove_dir(dir);
+        }
+        Ok(removed)
     }
 
     /// Discovers candidate `.env*`, `.toml`, `.yaml`, `.yml` files in the repo (including gitignored files)

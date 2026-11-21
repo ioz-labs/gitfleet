@@ -1,5 +1,5 @@
 use crate::theme::Palette;
-use iced::widget::{button, container, rule, scrollable, text_editor, text_input};
+use iced::widget::{button, checkbox, container, rule, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector};
 pub fn app_bg(p: Palette) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
@@ -429,6 +429,52 @@ pub fn repo_row_btn(p: Palette, selected: bool) -> impl Fn(&Theme, button::Statu
                 radius: 5.0.into(),
             },
             ..Default::default()
+        }
+    }
+}
+
+/// Calm, VS Code / SmartGit-inspired checkbox for sidebar trees (muted border when unchecked,
+/// accent highlight when checked or hovered).
+pub fn tree_checkbox(p: Palette) -> impl Fn(&Theme, checkbox::Status) -> checkbox::Style {
+    move |_, status| {
+        let (is_checked, is_hovered, is_disabled) = match status {
+            checkbox::Status::Active { is_checked } => (is_checked, false, false),
+            checkbox::Status::Hovered { is_checked } => (is_checked, true, false),
+            checkbox::Status::Disabled { is_checked } => (is_checked, false, true),
+        };
+        let background = if is_checked {
+            if is_hovered {
+                p.accent_hover
+            } else {
+                p.accent_primary
+            }
+        } else if is_hovered {
+            p.fill_hover
+        } else {
+            p.surface_input
+        };
+        let border_color = if is_checked || is_hovered {
+            p.accent_primary
+        } else {
+            p.border_strong
+        };
+        checkbox::Style {
+            background: Background::Color(if is_disabled {
+                p.surface_panel
+            } else {
+                background
+            }),
+            icon_color: Color::WHITE,
+            border: Border {
+                radius: 3.0.into(),
+                width: 1.0,
+                color: if is_disabled {
+                    p.border_subtle
+                } else {
+                    border_color
+                },
+            },
+            text_color: Some(p.text_primary),
         }
     }
 }

@@ -148,6 +148,10 @@ pub(crate) struct GitFleetApp {
     pub(crate) commit_modal: Option<CommitModalState>,
     pub(crate) commit_modal_editor: text_editor::Content,
 
+    // Scan Folder & Auto-Group Preview Modal
+    pub(crate) scan_modal: Option<ScanModalState>,
+    pub(crate) scan_request_id: u64,
+
     // Interactive Conflict Solver
     pub(crate) conflict_file_path: Option<String>,
     pub(crate) conflict_parsed: ParsedConflictFile,
@@ -192,8 +196,12 @@ pub(crate) struct GitFleetApp {
     pub(crate) secret_candidates: Vec<SecretFileSpec>,
     pub(crate) show_secret_picker: bool,
     pub(crate) secret_add_path_input: String,
+    pub(crate) show_key_manager: bool,
+    pub(crate) new_key_name_input: String,
     pub(crate) show_import_key_bar: bool,
+    pub(crate) import_key_name_input: String,
     pub(crate) import_key_input: String,
+    pub(crate) renaming_key: Option<(String, String)>,
     pub(crate) revealed_secrets: HashMap<(String, String), String>,
     pub(crate) secret_file_input: String,
     pub(crate) secret_key_input: String,
@@ -269,7 +277,7 @@ impl GitFleetApp {
             .filter(|id| ws.repos.iter().any(|r| &r.id == id))
             .or_else(|| ws.repos.first().map(|r| r.id.clone()));
 
-        let app = Self {
+        let mut app = Self {
             theme_mode: if ws.ui.light_theme {
                 ThemeMode::Light
             } else {
@@ -369,6 +377,8 @@ impl GitFleetApp {
             rename_workspace_input_id: text_input::Id::unique(),
             commit_modal: None,
             commit_modal_editor: text_editor::Content::new(),
+            scan_modal: None,
+            scan_request_id: 0,
             conflict_file_path: None,
             conflict_parsed: ParsedConflictFile::default(),
             conflict_active_hunk: None,
@@ -404,8 +414,12 @@ impl GitFleetApp {
             secret_candidates: Vec::new(),
             show_secret_picker: false,
             secret_add_path_input: String::new(),
+            show_key_manager: false,
+            new_key_name_input: String::new(),
             show_import_key_bar: false,
+            import_key_name_input: String::new(),
             import_key_input: String::new(),
+            renaming_key: None,
             revealed_secrets: HashMap::new(),
             secret_file_input: ".env".into(),
             secret_key_input: String::new(),
@@ -424,7 +438,7 @@ impl GitFleetApp {
             terminal_expanded: false,
             drawer_height: crate::theme::layout::DOCK_DEFAULT_HEIGHT,
             active_resize: None,
-            sidebar_width: 292.0,
+            sidebar_width: 304.0,
             left_split_ratio: 0.52,
             right_split_ratio: 0.54,
             top_right_split_ratio: 0.56,
@@ -469,6 +483,7 @@ impl GitFleetApp {
             if app.service.settings().watch_filesystem {
                 app.service.scheduler.watch_repo(&repo.path);
             }
+            app.refresh_vault_summary();
             tasks.push(app.load_log_task(repo.clone()));
             tasks.push(app.load_branches_task(repo.clone()));
             tasks.push(app.load_stashes_task(repo.clone()));
@@ -532,9 +547,43 @@ impl GitFleetApp {
                 path: sub_path,
                 group: parent.group,
                 pinned: parent.pinned,
+                secret_key_id: parent.secret_key_id,
             });
         }
         Some(parent)
+    }
+
+    /// Returns the workspace-assigned secret key binding (`Repo` override or nearest ancestor `Group`)
+    /// for the currently selected repository (submodules inherit from their parent repository).
+    pub(crate) fn active_repo_secret_key_binding(
+        &self,
+    ) -> Option<(String, gitfleet_workspace::SecretKeyBindingSource)> {
+        let id = self.selected_repo.as_ref()?;
+        self.service.workspace.resolve_repo_secret_key(id)
+    }
+
+    /// Resolves the effective Age key entry & human-readable source label for the currently active repo.
+    pub(crate) fn resolve_active_repo_effective_key(
+        &self,
+    ) -> Option<(gitfleet_security::VaultKeyEntry, String)> {
+        let keyring = self.service.security.keyring_summary();
+        if let Some((key_id, source)) = self.active_repo_secret_key_binding()
+            && let Some(entry) = keyring.find(&key_id)
+        {
+            let label = match source {
+                gitfleet_workspace::SecretKeyBindingSource::Repo => "Repo".to_string(),
+                gitfleet_workspace::SecretKeyBindingSource::Group(g) => format!("Group: {g}"),
+            };
+            return Some((entry.clone(), label));
+        }
+        if let Some(unlocked_id) = self.vault_summary.unlocked_by_key_id.as_deref()
+            && let Some(entry) = keyring.find(unlocked_id)
+        {
+            return Some((entry.clone(), "Vault".to_string()));
+        }
+        keyring
+            .default_key()
+            .map(|entry| (entry.clone(), "Default".to_string()))
     }
 
     pub(crate) fn filtered_repos(&self, repos: &[RepoEntry]) -> Vec<RepoEntry> {
@@ -572,6 +621,7 @@ impl GitFleetApp {
             || self.rename_branch_modal.is_some()
             || self.rename_workspace_modal.is_some()
             || self.commit_modal.is_some()
+            || self.scan_modal.is_some()
     }
 
     pub(crate) fn default_terminal_profile_id(&self) -> String {
@@ -625,7 +675,7 @@ impl GitFleetApp {
             1
         };
         let font_name = self.active_terminal_font();
-        let font_size = self.service.settings().terminal_font_size.clamp(9, 24) as f32;
+        let font_size = self.service.settings().terminal_font_size.clamp(12, 24) as f32;
         let (cell_w, cell_h) = crate::terminal::cell_metrics(&font_name, font_size);
         let drawer_h: f32 = self.drawer_height.max(160.0);
         let approx_w = ((self.window_size.width - 36.0) / pane_count as f32).max(260.0);

@@ -1,8 +1,9 @@
 use crate::app::{
-    BottomViewMode, ContextMenuState, ContextMenuTarget, GitFleetApp, Message, PendingConfirm,
+    BottomViewMode, ContextMenuState, ContextMenuSubmenu, ContextMenuTarget, GitFleetApp, Message,
+    PendingConfirm,
 };
 use crate::icons;
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, type_scale};
 use crate::views::{slim_scroll, truncate_chars};
 use gitfleet_git::{ConflictStrategy, FileChangeKind, ResetMode};
 use iced::widget::{Space, button, column, container, horizontal_rule, mouse_area, row, text};
@@ -15,7 +16,7 @@ impl GitFleetApp {
                 row![
                     icon,
                     text(label)
-                        .size(11)
+                        .size(type_scale::BODY)
                         .color(if danger { p.danger_fg } else { p.text_primary }),
                 ]
                 .spacing(8)
@@ -36,7 +37,7 @@ impl GitFleetApp {
                 items = items.push(
                     container(
                         text(format!("Workspace: {}", truncate_chars(&ws.name, 22)))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     )
                     .padding([2, 10]),
@@ -84,7 +85,7 @@ impl GitFleetApp {
                 items = items.push(
                     container(
                         text(format!("Working Tree ({changed} changed)"))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     )
                     .padding([2, 10]),
@@ -117,7 +118,7 @@ impl GitFleetApp {
             }
             ContextMenuTarget::RepositoriesPane => {
                 items = items.push(
-                    container(text("Repositories").size(10).color(p.text_muted))
+                    container(text("Repositories").size(type_scale::CAPTION).color(p.text_muted))
                         .padding([2, 10]),
                 );
                 items = items.push(ctx_btn(
@@ -135,8 +136,8 @@ impl GitFleetApp {
                 ));
                 items = items.push(ctx_btn(
                     icons::folder_search(12.0, p.text_secondary).into(),
-                    "Scan Folder for Repositories…".into(),
-                    Message::PickScanFolder,
+                    "Scan Folder & Auto-Group…".into(),
+                    Message::PickScanFolder(None),
                     false,
                 ));
                 items = items.push(ctx_btn(
@@ -154,12 +155,23 @@ impl GitFleetApp {
                 ));
             }
             ContextMenuTarget::Group { name } => {
+                let close_sub = |el: Element<'static, Message>| -> Element<'static, Message> {
+                    mouse_area(el)
+                        .on_enter(Message::SetContextSubmenu(ContextMenuSubmenu::None))
+                        .into()
+                };
                 let is_collapsed = ws.ui.collapsed_groups.contains(name);
+                let keyring = self.service.security.keyring_summary();
+                let explicit_group_key = ws.group_secret_keys.get(name).map(String::as_str);
+                let assigned_key_hint = explicit_group_key
+                    .and_then(|kid| keyring.find(kid))
+                    .map(|k| truncate_chars(&k.name, 14));
+
                 items = items.push(
-                    container(text(format!("Group: {name}")).size(10).color(p.text_muted))
+                    container(text(format!("Group: {name}")).size(type_scale::CAPTION).color(p.text_muted))
                         .padding([2, 10]),
                 );
-                items = items.push(ctx_btn(
+                items = items.push(close_sub(ctx_btn(
                     if is_collapsed {
                         icons::chevron_down(12.0, p.text_secondary).into()
                     } else {
@@ -172,45 +184,132 @@ impl GitFleetApp {
                     },
                     Message::ToggleGroupCollapse(name.clone()),
                     false,
-                ));
-                items = items.push(ctx_btn(
+                )));
+                items = items.push(close_sub(ctx_btn(
                     icons::folder_plus(12.0, p.accent_fg).into(),
                     "New Subgroup…".into(),
                     Message::OpenInlineGroupInput(Some(name.clone())),
                     false,
-                ));
-                items = items.push(ctx_btn(
+                )));
+                items = items.push(close_sub(ctx_btn(
                     icons::plus(12.0, p.text_secondary).into(),
                     "New Top-Level Group…".into(),
                     Message::OpenInlineGroupInput(None),
                     false,
-                ));
+                )));
 
                 if let Some(active) = self.current_repo()
                     && !Self::is_submodule_repo_id(&active.id)
                     && active.group.as_deref() != Some(name.as_str())
                 {
-                    items = items.push(ctx_btn(
+                    items = items.push(close_sub(ctx_btn(
                         icons::folder(12.0, p.accent_fg).into(),
                         format!("Move '{}' Here", truncate_chars(&active.name, 18)),
                         Message::AssignRepoGroup(active.id, Some(name.clone())),
                         false,
-                    ));
+                    )));
                 }
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
-                items = items.push(ctx_btn(
+                items = items.push(close_sub(ctx_btn(
                     icons::folder_plus(12.0, p.text_secondary).into(),
                     "Add Local Repository…".into(),
                     Message::PickAddRepo,
                     false,
-                ));
+                )));
+                items = items.push(close_sub(ctx_btn(
+                    icons::folder_search(12.0, p.accent_fg).into(),
+                    "Scan Folder into Group…".into(),
+                    Message::PickScanFolder(Some(name.clone())),
+                    false,
+                )));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
-                items = items.push(ctx_btn(
+
+                let key_sub_open = menu.submenu == ContextMenuSubmenu::GroupSecretKey;
+                let mut key_row = row![
+                    icons::key(12.0, p.success_fg),
+                    text("Secret Key").size(type_scale::BODY).color(p.text_primary),
+                    Space::with_width(Length::Fill),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                if let Some(hint) = assigned_key_hint {
+                    key_row = key_row.push(text(hint).size(type_scale::CAPTION).color(p.text_muted));
+                }
+                key_row = key_row.push(icons::chevron_right(11.0, p.text_muted));
+                let key_trigger = button(key_row)
+                    .width(Length::Fill)
+                    .padding([5, 10])
+                    .style(theme::repo_row_btn(p, key_sub_open))
+                    .on_press(Message::SetContextSubmenu(if key_sub_open {
+                        ContextMenuSubmenu::None
+                    } else {
+                        ContextMenuSubmenu::GroupSecretKey
+                    }));
+                items = items.push(
+                    mouse_area(key_trigger)
+                        .on_enter(Message::SetContextSubmenu(ContextMenuSubmenu::GroupSecretKey)),
+                );
+
+                if key_sub_open {
+                    let mut sub_items = column![
+                        container(text("Group Secret Key").size(type_scale::CAPTION).color(p.text_muted))
+                            .padding([2, 10]),
+                    ]
+                    .spacing(2);
+                    sub_items = sub_items.push(ctx_btn(
+                        if explicit_group_key.is_none() {
+                            icons::check(12.0, p.success_fg).into()
+                        } else {
+                            icons::close_x(11.0, p.text_muted).into()
+                        },
+                        "Inherit (Parent / Default)".into(),
+                        Message::SetGroupSecretKey(name.clone(), None),
+                        false,
+                    ));
+                    if !keyring.keys.is_empty() {
+                        sub_items = sub_items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    }
+                    for k in &keyring.keys {
+                        let is_cur = explicit_group_key == Some(k.id.as_str());
+                        let label = if k.is_default {
+                            format!("{} (default)", truncate_chars(&k.name, 18))
+                        } else {
+                            truncate_chars(&k.name, 22)
+                        };
+                        sub_items = sub_items.push(ctx_btn(
+                            if is_cur {
+                                icons::check(12.0, p.success_fg).into()
+                            } else {
+                                icons::key(12.0, p.accent_fg).into()
+                            },
+                            label,
+                            Message::SetGroupSecretKey(name.clone(), Some(k.id.clone())),
+                            false,
+                        ));
+                    }
+                    sub_items = sub_items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    sub_items = sub_items.push(ctx_btn(
+                        icons::settings(12.0, p.text_secondary).into(),
+                        "Manage Keys…".into(),
+                        Message::OpenSecretsDrawer { show_keys: true },
+                        false,
+                    ));
+                    submenu_card = Some(iced::widget::opaque(
+                        container(slim_scroll(sub_items, p).height(Length::Shrink))
+                            .padding(6)
+                            .width(Length::Fixed(248.0))
+                            .max_height(360.0)
+                            .style(theme::context_menu_box(p)),
+                    ));
+                }
+
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(close_sub(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
                     format!("Delete Group '{}'…", truncate_chars(name, 18)),
                     Message::RequestConfirm(PendingConfirm::delete_group(name.clone())),
                     true,
-                ));
+                )));
             }
             ContextMenuTarget::Repo {
                 id,
@@ -220,13 +319,25 @@ impl GitFleetApp {
             } => {
                 let close_sub = |el: Element<'static, Message>| -> Element<'static, Message> {
                     mouse_area(el)
-                        .on_enter(Message::SetContextSubmenu(false))
+                        .on_enter(Message::SetContextSubmenu(ContextMenuSubmenu::None))
                         .into()
                 };
+                let keyring = self.service.security.keyring_summary();
+                let explicit_repo_key = ws
+                    .repos
+                    .iter()
+                    .find(|r| &r.id == id)
+                    .and_then(|r| r.secret_key_id.as_deref());
+                let resolved_repo_key_hint = self
+                    .service
+                    .workspace
+                    .resolve_repo_secret_key(id)
+                    .and_then(|(kid, _)| keyring.find(&kid).map(|k| truncate_chars(&k.name, 14)));
+
                 items = items.push(
                     container(
                         text(truncate_chars(name, 26))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     )
                     .padding([2, 10]),
@@ -264,10 +375,11 @@ impl GitFleetApp {
                 )));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
 
+                let move_sub_open = menu.submenu == ContextMenuSubmenu::MoveToGroup;
                 let move_trigger = button(
                     row![
                         icons::folder(12.0, p.accent_fg),
-                        text("Move to").size(11).color(p.text_primary),
+                        text("Move to").size(type_scale::BODY).color(p.text_primary),
                         Space::with_width(Length::Fill),
                         icons::chevron_right(11.0, p.text_muted),
                     ]
@@ -276,17 +388,47 @@ impl GitFleetApp {
                 )
                 .width(Length::Fill)
                 .padding([5, 10])
-                .style(theme::repo_row_btn(p, menu.submenu_open))
-                .on_press(Message::SetContextSubmenu(!menu.submenu_open));
+                .style(theme::repo_row_btn(p, move_sub_open))
+                .on_press(Message::SetContextSubmenu(if move_sub_open {
+                    ContextMenuSubmenu::None
+                } else {
+                    ContextMenuSubmenu::MoveToGroup
+                }));
 
                 items = items.push(
                     mouse_area(move_trigger)
-                        .on_enter(Message::SetContextSubmenu(true)),
+                        .on_enter(Message::SetContextSubmenu(ContextMenuSubmenu::MoveToGroup)),
                 );
 
-                if menu.submenu_open {
+                let key_sub_open = menu.submenu == ContextMenuSubmenu::RepoSecretKey;
+                let mut key_row = row![
+                    icons::key(12.0, p.success_fg),
+                    text("Secret Key").size(type_scale::BODY).color(p.text_primary),
+                    Space::with_width(Length::Fill),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                if let Some(hint) = resolved_repo_key_hint {
+                    key_row = key_row.push(text(hint).size(type_scale::CAPTION).color(p.text_muted));
+                }
+                key_row = key_row.push(icons::chevron_right(11.0, p.text_muted));
+                let key_trigger = button(key_row)
+                    .width(Length::Fill)
+                    .padding([5, 10])
+                    .style(theme::repo_row_btn(p, key_sub_open))
+                    .on_press(Message::SetContextSubmenu(if key_sub_open {
+                        ContextMenuSubmenu::None
+                    } else {
+                        ContextMenuSubmenu::RepoSecretKey
+                    }));
+                items = items.push(
+                    mouse_area(key_trigger)
+                        .on_enter(Message::SetContextSubmenu(ContextMenuSubmenu::RepoSecretKey)),
+                );
+
+                if move_sub_open {
                     let mut sub_items = column![
-                        container(text("Move to Group").size(10).color(p.text_muted))
+                        container(text("Move to Group").size(type_scale::CAPTION).color(p.text_muted))
                             .padding([2, 10]),
                     ]
                     .spacing(2);
@@ -341,7 +483,59 @@ impl GitFleetApp {
                     submenu_card = Some(iced::widget::opaque(
                         container(slim_scroll(sub_items, p).height(Length::Shrink))
                             .padding(6)
-                            .width(Length::Fixed(214.0))
+                            .width(Length::Fixed(240.0))
+                            .max_height(360.0)
+                            .style(theme::context_menu_box(p)),
+                    ));
+                } else if key_sub_open {
+                    let mut sub_items = column![
+                        container(text("Repo Secret Key").size(type_scale::CAPTION).color(p.text_muted))
+                            .padding([2, 10]),
+                    ]
+                    .spacing(2);
+                    sub_items = sub_items.push(ctx_btn(
+                        if explicit_repo_key.is_none() {
+                            icons::check(12.0, p.success_fg).into()
+                        } else {
+                            icons::close_x(11.0, p.text_muted).into()
+                        },
+                        "Inherit (Group / Default)".into(),
+                        Message::SetRepoSecretKey(id.clone(), None),
+                        false,
+                    ));
+                    if !keyring.keys.is_empty() {
+                        sub_items = sub_items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    }
+                    for k in &keyring.keys {
+                        let is_cur = explicit_repo_key == Some(k.id.as_str());
+                        let label = if k.is_default {
+                            format!("{} (default)", truncate_chars(&k.name, 18))
+                        } else {
+                            truncate_chars(&k.name, 22)
+                        };
+                        sub_items = sub_items.push(ctx_btn(
+                            if is_cur {
+                                icons::check(12.0, p.success_fg).into()
+                            } else {
+                                icons::key(12.0, p.accent_fg).into()
+                            },
+                            label,
+                            Message::SetRepoSecretKey(id.clone(), Some(k.id.clone())),
+                            false,
+                        ));
+                    }
+                    sub_items = sub_items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    sub_items = sub_items.push(ctx_btn(
+                        icons::settings(12.0, p.text_secondary).into(),
+                        "Manage Keys…".into(),
+                        Message::OpenSecretsDrawer { show_keys: true },
+                        false,
+                    ));
+
+                    submenu_card = Some(iced::widget::opaque(
+                        container(slim_scroll(sub_items, p).height(Length::Shrink))
+                            .padding(6)
+                            .width(Length::Fixed(248.0))
                             .max_height(360.0)
                             .style(theme::context_menu_box(p)),
                     ));
@@ -389,7 +583,7 @@ impl GitFleetApp {
                 items = items.push(
                     container(
                         text(format!("Commit {short_oid}"))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .font(theme::CODE_FONT)
                             .color(p.accent_fg),
                     )
@@ -530,7 +724,7 @@ impl GitFleetApp {
                 items = items.push(
                     container(
                         text(truncate_chars(name, 26))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     )
                     .padding([2, 10]),
@@ -700,7 +894,7 @@ impl GitFleetApp {
             }
             ContextMenuTarget::LocalBranchesGroup { local_names } => {
                 items = items.push(
-                    container(text("Local Branches").size(10).color(p.text_muted))
+                    container(text("Local Branches").size(type_scale::CAPTION).color(p.text_muted))
                         .padding([2, 10]),
                 );
                 items = items.push(ctx_btn(
@@ -732,7 +926,7 @@ impl GitFleetApp {
                 items = items.push(
                     container(
                         text(truncate_chars(prefix, 26))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     )
                     .padding([2, 10]),
@@ -760,7 +954,7 @@ impl GitFleetApp {
             } => {
                 let fname = file.path.rsplit('/').next().unwrap_or(&file.path);
                 items = items.push(
-                    container(text(truncate_chars(fname, 26)).size(10).color(p.text_muted))
+                    container(text(truncate_chars(fname, 26)).size(type_scale::CAPTION).color(p.text_muted))
                         .padding([2, 10]),
                 );
                 let in_multi_sel = self.selected_changed_files.len() > 1
@@ -878,7 +1072,7 @@ impl GitFleetApp {
             }
         }
 
-        let menu_w = 248.0_f32;
+        let menu_w = 272.0_f32;
 
         let main_card = iced::widget::opaque(
             container(slim_scroll(items, p).height(Length::Shrink))

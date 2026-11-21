@@ -1,7 +1,7 @@
 use directories::ProjectDirs;
 use gitfleet_core::{AppError, AppEvent, AppResult, EventBus, RepoId};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -14,6 +14,9 @@ pub struct RepoEntry {
     #[serde(default)]
     pub pinned: bool,
     pub available: bool,
+    /// Optional explicit Age key ID override for this repository's Secrets Vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -34,6 +37,10 @@ pub struct WorkspaceConfig {
     pub file_path: Option<PathBuf>,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// Per-group Age key assignments (`normalized group path` -> `key_id`).
+    /// Subgroups and repositories automatically inherit from the nearest assigned ancestor group.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub group_secret_keys: HashMap<String, String>,
     #[serde(default)]
     pub repos: Vec<RepoEntry>,
     #[serde(default)]
@@ -46,10 +53,52 @@ impl Default for WorkspaceConfig {
             name: "Home Workspace".to_string(),
             file_path: None,
             groups: Vec::new(),
+            group_secret_keys: HashMap::new(),
             repos: Vec::new(),
             ui: WorkspaceUiState::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretKeyBindingSource {
+    Repo,
+    Group(String),
+}
+
+/// Walks up a normalized group path (e.g. `"CompanyA/Backend/Services"` → `"CompanyA/Backend"` → `"CompanyA"`)
+/// and returns the nearest assigned `(key_id, matched_group_path)`.
+pub fn resolve_group_secret_key(
+    group_secret_keys: &HashMap<String, String>,
+    group: Option<&str>,
+) -> Option<(String, String)> {
+    let mut cur = group.map(normalize_group_path).filter(|g| !g.is_empty())?;
+    loop {
+        if let Some(key_id) = group_secret_keys.get(&cur)
+            && !key_id.trim().is_empty()
+        {
+            return Some((key_id.clone(), cur));
+        }
+        cur = parent_group_path(&cur)?;
+    }
+}
+
+/// Resolves the workspace-configured Age key binding for `repo` (`Repo` override takes priority over
+/// the nearest assigned ancestor `Group`).
+pub fn resolve_repo_secret_key_in(
+    cfg: &WorkspaceConfig,
+    repo: &RepoEntry,
+) -> Option<(String, SecretKeyBindingSource)> {
+    if let Some(key_id) = repo
+        .secret_key_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some((key_id.to_string(), SecretKeyBindingSource::Repo));
+    }
+    resolve_group_secret_key(&cfg.group_secret_keys, repo.group.as_deref())
+        .map(|(id, grp)| (id, SecretKeyBindingSource::Group(grp)))
 }
 
 /// Normalizes a hierarchical group path (e.g. `" work / backend/api "` -> `"work/backend/api"`).
@@ -110,6 +159,250 @@ pub struct PrefixRelocation {
     pub old_prefix: PathBuf,
     pub new_prefix: PathBuf,
     pub affected_repo_ids: Vec<RepoId>,
+}
+
+/// Default recursive folder scan depth when discovering Git repositories.
+pub const DEFAULT_SCAN_DEPTH: usize = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanGroupSegment {
+    /// Display folder name for this group level (e.g. `"backend"`).
+    pub name: String,
+    /// Stable raw path key from the scanned root (e.g. `"MyCompany/backend"`),
+    /// enabling individual group nodes to be dropped without affecting siblings.
+    pub raw_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedRepoCandidate {
+    pub name: String,
+    pub path: PathBuf,
+    /// Display path relative to the scanned root (e.g. `"backend/services/api"` or `"."`).
+    pub relative_path: String,
+    /// Candidate group segments ordered from outermost (level 0) to innermost.
+    /// When `ScanFolderResult::has_root_level` is true, index 0 is the scanned root folder's name.
+    pub raw_segments: Vec<ScanGroupSegment>,
+    /// True if this repository is already registered in the active workspace.
+    pub already_in_workspace: bool,
+    /// Normalized existing group in the workspace if `already_in_workspace` is true.
+    pub existing_group: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanLevelInfo {
+    pub depth: usize,
+    pub is_root_folder: bool,
+    /// Sorted unique folder names appearing at this depth level.
+    pub folder_names: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanFolderResult {
+    pub root: PathBuf,
+    pub max_depth: usize,
+    pub has_root_level: bool,
+    pub levels: Vec<ScanLevelInfo>,
+    pub default_enabled_levels: Vec<bool>,
+    pub repos: Vec<ScannedRepoCandidate>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScanImportReport {
+    pub added: Vec<RepoEntry>,
+    pub regrouped: Vec<RepoEntry>,
+    pub groups_created: usize,
+}
+
+/// Resolves the final normalized group path for a scanned repository given the enabled depth
+/// levels, any individually skipped raw group nodes, and an optional target parent group prefix.
+pub fn resolve_scanned_repo_group(
+    raw_segments: &[ScanGroupSegment],
+    enabled_levels: &[bool],
+    skipped_raw_nodes: &HashSet<String>,
+    parent_group: Option<&str>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(parent) = parent_group {
+        let norm = normalize_group_path(parent);
+        if !norm.is_empty() {
+            parts.push(norm);
+        }
+    }
+    for (idx, seg) in raw_segments.iter().enumerate() {
+        if enabled_levels.get(idx).copied().unwrap_or(true)
+            && !skipped_raw_nodes.contains(&seg.raw_path)
+        {
+            parts.push(seg.name.clone());
+        }
+    }
+    let joined = normalize_group_path(&parts.join("/"));
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
+/// Builds a structured scan preview (with folder levels and smart default toggles) from a list
+/// of discovered repository paths under `root`.
+pub fn build_scan_result(
+    root: &Path,
+    discovered: Vec<PathBuf>,
+    existing_repos: &[RepoEntry],
+    max_depth: usize,
+) -> ScanFolderResult {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut existing_by_key: HashMap<String, Option<String>> =
+        HashMap::with_capacity(existing_repos.len());
+    for repo in existing_repos {
+        let norm_group = repo
+            .group
+            .as_deref()
+            .map(normalize_group_path)
+            .filter(|g| !g.is_empty());
+        existing_by_key.insert(normalize_path_key(&repo.path), norm_group);
+    }
+
+    // Deduplicate and deterministically sort discovered paths
+    let mut unique_paths: Vec<PathBuf> = Vec::with_capacity(discovered.len());
+    let mut seen_keys: HashSet<String> = HashSet::with_capacity(discovered.len());
+    let mut sorted_discovered = discovered;
+    sorted_discovered.sort();
+    for p in sorted_discovered {
+        let key = normalize_path_key(&p);
+        if seen_keys.insert(key) {
+            unique_paths.push(p);
+        }
+    }
+
+    let root_folder_name: Option<String> = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let root_is_repo = unique_paths.len() == 1 && same_workspace_path(&unique_paths[0], root);
+    let has_root_level = root_folder_name.is_some() && !root_is_repo && !unique_paths.is_empty();
+
+    let mut repos = Vec::with_capacity(unique_paths.len());
+    for repo_path in unique_paths {
+        let rel_owned: PathBuf = repo_path
+            .strip_prefix(root)
+            .map(Path::to_path_buf)
+            .ok()
+            .or_else(|| {
+                repo_path
+                    .canonicalize()
+                    .ok()
+                    .and_then(|cp| cp.strip_prefix(&canonical_root).ok().map(Path::to_path_buf))
+            })
+            .unwrap_or_default();
+
+        let components: Vec<String> = rel_owned
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => {
+                    let trimmed = s.to_string_lossy().trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+
+        let (relative_path, parent_dirs): (String, &[String]) = if components.is_empty() {
+            (".".to_string(), &[])
+        } else {
+            let rel_str = components.join("/");
+            (rel_str, &components[..components.len().saturating_sub(1)])
+        };
+
+        let mut raw_segments = Vec::new();
+        let mut raw_acc = String::new();
+        if has_root_level
+            && let Some(root_name) = &root_folder_name
+        {
+            raw_acc.push_str(root_name);
+            raw_segments.push(ScanGroupSegment {
+                name: root_name.clone(),
+                raw_path: raw_acc.clone(),
+            });
+        }
+        for dir_seg in parent_dirs {
+            if !raw_acc.is_empty() {
+                raw_acc.push('/');
+            }
+            raw_acc.push_str(dir_seg);
+            raw_segments.push(ScanGroupSegment {
+                name: dir_seg.clone(),
+                raw_path: raw_acc.clone(),
+            });
+        }
+
+        let name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        let path_key = normalize_path_key(&repo_path);
+        let (already_in_workspace, existing_group) = match existing_by_key.get(&path_key) {
+            Some(grp) => (true, grp.clone()),
+            None => (false, None),
+        };
+
+        repos.push(ScannedRepoCandidate {
+            name,
+            path: repo_path,
+            relative_path,
+            raw_segments,
+            already_in_workspace,
+            existing_group,
+        });
+    }
+
+    let max_level_count = repos
+        .iter()
+        .map(|r| r.raw_segments.len())
+        .max()
+        .unwrap_or(0);
+    let mut levels = Vec::with_capacity(max_level_count);
+    for depth in 0..max_level_count {
+        let mut names = BTreeSet::new();
+        for r in &repos {
+            if let Some(seg) = r.raw_segments.get(depth) {
+                names.insert(seg.name.clone());
+            }
+        }
+        levels.push(ScanLevelInfo {
+            depth,
+            is_root_folder: has_root_level && depth == 0,
+            folder_names: names.into_iter().collect(),
+        });
+    }
+
+    let mut default_enabled_levels = vec![true; levels.len()];
+    if has_root_level && levels.len() > 1 {
+        let has_direct_child_repo = repos.iter().any(|r| r.raw_segments.len() <= 1);
+        if !has_direct_child_repo {
+            // Every discovered repo already lives inside a subfolder (e.g. scanning D:\Projects
+            // containing client-a/api, client-b/web): omit the redundant outer container folder
+            // by default while keeping it one click away as Level 0.
+            default_enabled_levels[0] = false;
+        }
+    }
+
+    ScanFolderResult {
+        root: root.to_path_buf(),
+        max_depth,
+        has_root_level,
+        levels,
+        default_enabled_levels,
+        repos,
+    }
 }
 
 pub fn config_dir() -> Option<PathBuf> {
@@ -613,6 +906,7 @@ impl WorkspaceService {
             name,
             file_path: file_path.clone(),
             groups: Vec::new(),
+            group_secret_keys: HashMap::new(),
             repos: Vec::new(),
             ui: WorkspaceUiState::default(),
         };
@@ -751,6 +1045,12 @@ impl WorkspaceService {
                     *c = next;
                 }
             }
+            let rewritten_keys: HashMap<String, String> = guard
+                .group_secret_keys
+                .drain()
+                .map(|(g, key_id)| (rewrite(&g).unwrap_or(g), key_id))
+                .collect();
+            guard.group_secret_keys = rewritten_keys;
         }
         self.auto_save();
         Ok(())
@@ -763,6 +1063,9 @@ impl WorkspaceService {
             guard
                 .groups
                 .retain(|g| g != name && !g.starts_with(&prefix));
+            guard
+                .group_secret_keys
+                .retain(|g, _| g != name && !g.starts_with(&prefix));
             guard
                 .ui
                 .collapsed_groups
@@ -798,7 +1101,10 @@ impl WorkspaceService {
     pub fn add_repo(&self, path: PathBuf, group: Option<String>) -> AppResult<RepoEntry> {
         let normalized = path.canonicalize().unwrap_or(path);
         if let Ok(guard) = self.state.read()
-            && let Some(existing) = guard.repos.iter().find(|r| r.path == normalized)
+            && let Some(existing) = guard
+                .repos
+                .iter()
+                .find(|r| same_workspace_path(&r.path, &normalized))
         {
             return Ok(existing.clone());
         }
@@ -818,6 +1124,7 @@ impl WorkspaceService {
             path: normalized,
             group: target_group.clone(),
             pinned: false,
+            secret_key_id: None,
         };
         if let Ok(mut guard) = self.state.write() {
             if let Some(g) = &target_group {
@@ -874,6 +1181,90 @@ impl WorkspaceService {
             Ok(())
         } else {
             Err(AppError::RepoNotFound(repo_id.0.clone()))
+        }
+    }
+
+    /// Assigns (or clears with `None`) an explicit Age secret key ID on a single repository.
+    pub fn set_repo_secret_key(
+        &self,
+        repo_id: &RepoId,
+        key_id: Option<String>,
+    ) -> AppResult<()> {
+        let cleaned = key_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let mut found = false;
+        if let Ok(mut guard) = self.state.write()
+            && let Some(repo) = guard.repos.iter_mut().find(|r| &r.id == repo_id)
+        {
+            repo.secret_key_id = cleaned;
+            found = true;
+        }
+        if found {
+            self.auto_save();
+            Ok(())
+        } else {
+            Err(AppError::RepoNotFound(repo_id.0.clone()))
+        }
+    }
+
+    /// Assigns (or clears with `None`) an Age secret key ID on a repository group. All nested
+    /// subgroups and repositories inherit this key unless overridden more specifically.
+    pub fn set_group_secret_key(
+        &self,
+        group_name: &str,
+        key_id: Option<String>,
+    ) -> AppResult<()> {
+        let norm_group = normalize_group_path(group_name);
+        if norm_group.is_empty() {
+            return Ok(());
+        }
+        let cleaned = key_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Ok(mut guard) = self.state.write() {
+            match cleaned {
+                Some(id) => {
+                    ensure_group_ancestors(&mut guard.groups, &norm_group);
+                    guard.group_secret_keys.insert(norm_group, id);
+                }
+                None => {
+                    guard.group_secret_keys.remove(&norm_group);
+                }
+            }
+        }
+        self.auto_save();
+        Ok(())
+    }
+
+    /// Resolves the assigned secret key for `repo_id` (explicit repo override → nearest ancestor group).
+    pub fn resolve_repo_secret_key(
+        &self,
+        repo_id: &RepoId,
+    ) -> Option<(String, SecretKeyBindingSource)> {
+        let guard = self.state.read().ok()?;
+        let repo = guard.repos.iter().find(|r| &r.id == repo_id)?;
+        resolve_repo_secret_key_in(&guard, repo)
+    }
+
+    /// Removes any repo or group secret key bindings referencing a deleted `key_id`.
+    pub fn clear_secret_key_bindings(&self, key_id: &str) {
+        let mut changed = false;
+        if let Ok(mut guard) = self.state.write() {
+            let before = guard.group_secret_keys.len();
+            guard.group_secret_keys.retain(|_, v| v != key_id);
+            if guard.group_secret_keys.len() != before {
+                changed = true;
+            }
+            for repo in &mut guard.repos {
+                if repo.secret_key_id.as_deref() == Some(key_id) {
+                    repo.secret_key_id = None;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.auto_save();
         }
     }
 
@@ -947,15 +1338,52 @@ impl WorkspaceService {
         Ok(updated)
     }
 
-    /// Recursively discovers Git repositories up to depth 3, skipping heavy build folders.
+    /// Recursively discovers Git repositories up to `DEFAULT_SCAN_DEPTH`, skipping heavy build folders.
     pub fn scan_folder(&self, root: &Path) -> AppResult<Vec<PathBuf>> {
+        self.scan_folder_with_depth(root, DEFAULT_SCAN_DEPTH)
+    }
+
+    /// Recursively discovers Git repositories up to `max_depth`, skipping heavy build folders.
+    pub fn scan_folder_with_depth(&self, root: &Path, max_depth: usize) -> AppResult<Vec<PathBuf>> {
         let mut discovered = Vec::new();
-        scan_recursive(root, 0, 3, &mut discovered);
+        scan_recursive(root, 0, max_depth, &mut discovered);
+        discovered.sort();
         self.events.publish(AppEvent::WorkspaceDiscovery {
             found: discovered.len(),
             finished: true,
         });
         Ok(discovered)
+    }
+
+    /// Recursively discovers Git repositories and builds a structured group-level preview against
+    /// the current workspace.
+    pub fn scan_folder_preview(&self, root: &Path, max_depth: usize) -> AppResult<ScanFolderResult> {
+        let discovered = self.scan_folder_with_depth(root, max_depth)?;
+        let existing = self.current().repos;
+        Ok(build_scan_result(root, discovered, &existing, max_depth))
+    }
+
+    /// Batch-imports scanned repositories with their resolved groups (creating ancestor groups
+    /// automatically), saving the workspace once. When `update_existing_groups` is true, existing
+    /// repositories whose target group differs are moved to the resolved group as well.
+    pub fn import_scanned_repos(
+        &self,
+        items: &[(PathBuf, Option<String>)],
+        update_existing_groups: bool,
+    ) -> AppResult<ScanImportReport> {
+        let (report, changed_ids) = if let Ok(mut guard) = self.state.write() {
+            import_scanned_repos_into(&mut guard, items, update_existing_groups)
+        } else {
+            (ScanImportReport::default(), Vec::new())
+        };
+
+        if !changed_ids.is_empty() {
+            self.auto_save();
+            for repo_id in changed_ids {
+                self.events.publish(AppEvent::RepoChanged { repo_id });
+            }
+        }
+        Ok(report)
     }
 
     pub fn set_ui_state(&self, ui: WorkspaceUiState) -> AppResult<()> {
@@ -1048,6 +1476,76 @@ impl Drop for WorkspaceService {
             let _ = std::fs::remove_file(lp);
         }
     }
+}
+
+fn import_scanned_repos_into(
+    cfg: &mut WorkspaceConfig,
+    items: &[(PathBuf, Option<String>)],
+    update_existing_groups: bool,
+) -> (ScanImportReport, Vec<RepoId>) {
+    let mut report = ScanImportReport::default();
+    let mut changed_ids = Vec::new();
+    let groups_before = cfg.groups.len();
+
+    let mut existing_index: HashMap<String, usize> = HashMap::with_capacity(cfg.repos.len());
+    for (idx, repo) in cfg.repos.iter().enumerate() {
+        existing_index.insert(normalize_path_key(&repo.path), idx);
+    }
+
+    for (path, group) in items {
+        let normalized_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let key = normalize_path_key(&normalized_path);
+        let target_group = group
+            .as_deref()
+            .map(normalize_group_path)
+            .filter(|g| !g.is_empty());
+
+        if let Some(&idx) = existing_index.get(&key) {
+            if update_existing_groups {
+                let current_group = cfg.repos[idx]
+                    .group
+                    .as_deref()
+                    .map(normalize_group_path)
+                    .filter(|g| !g.is_empty());
+                if current_group != target_group {
+                    if let Some(g) = &target_group {
+                        ensure_group_ancestors(&mut cfg.groups, g);
+                    }
+                    cfg.repos[idx].group = target_group;
+                    let updated = cfg.repos[idx].clone();
+                    changed_ids.push(updated.id.clone());
+                    report.regrouped.push(updated);
+                }
+            }
+            continue;
+        }
+
+        if let Some(g) = &target_group {
+            ensure_group_ancestors(&mut cfg.groups, g);
+        }
+        let name = normalized_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        let entry = RepoEntry {
+            id: RepoId::new(),
+            name,
+            available: normalized_path.exists(),
+            path: normalized_path,
+            group: target_group,
+            pinned: false,
+            secret_key_id: None,
+        };
+        let next_idx = cfg.repos.len();
+        existing_index.insert(key, next_idx);
+        changed_ids.push(entry.id.clone());
+        report.added.push(entry.clone());
+        cfg.repos.push(entry);
+    }
+
+    report.groups_created = cfg.groups.len().saturating_sub(groups_before);
+    (report, changed_ids)
 }
 
 fn scan_recursive(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
@@ -1145,6 +1643,7 @@ mod tests {
             name: "Home Workspace".to_string(),
             file_path: Some(home_path.clone()),
             groups: Vec::new(),
+            group_secret_keys: HashMap::new(),
             repos: vec![RepoEntry {
                 id: RepoId::new(),
                 name: "repo-a".to_string(),
@@ -1152,6 +1651,7 @@ mod tests {
                 group: None,
                 pinned: false,
                 available: false,
+                secret_key_id: None,
             }],
             ui: WorkspaceUiState::default(),
         };
@@ -1162,6 +1662,7 @@ mod tests {
             name: "Work".to_string(),
             file_path: Some(work_path.clone()),
             groups: Vec::new(),
+            group_secret_keys: HashMap::new(),
             repos: Vec::new(),
             ui: WorkspaceUiState::default(),
         };
@@ -1210,6 +1711,7 @@ mod tests {
             name: "Client A".to_string(),
             file_path: Some(inactive_path.clone()),
             groups: vec!["Backend".to_string()],
+            group_secret_keys: HashMap::new(),
             repos: vec![RepoEntry {
                 id: RepoId::new(),
                 name: "api".to_string(),
@@ -1217,6 +1719,7 @@ mod tests {
                 group: Some("Backend".to_string()),
                 pinned: true,
                 available: false,
+                secret_key_id: None,
             }],
             ui: WorkspaceUiState::default(),
         };
@@ -1272,5 +1775,240 @@ mod tests {
         assert_eq!(home_reloaded.name, "Main Workspace");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn builds_scan_preview_levels_and_resolves_dropped_levels() {
+        let root = std::env::temp_dir().join(format!(
+            "gitfleet_scan_preview_{}",
+            std::process::id()
+        ));
+        let scan_root = root.join("MyCompany");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let auth = scan_root.join("backend").join("services").join("auth");
+        let billing = scan_root.join("backend").join("services").join("billing");
+        let web = scan_root.join("frontend").join("web");
+        for repo in [&auth, &billing, &web] {
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+        }
+
+        let mut discovered = Vec::new();
+        scan_recursive(&scan_root, 0, DEFAULT_SCAN_DEPTH, &mut discovered);
+        discovered.sort();
+        assert_eq!(discovered.len(), 3);
+
+        let preview = build_scan_result(&scan_root, discovered.clone(), &[], DEFAULT_SCAN_DEPTH);
+        assert!(preview.has_root_level);
+        assert_eq!(preview.levels.len(), 3);
+        assert!(preview.levels[0].is_root_folder);
+        assert_eq!(preview.levels[0].folder_names, vec!["MyCompany"]);
+        assert_eq!(preview.levels[1].folder_names, vec!["backend", "frontend"]);
+        assert_eq!(preview.levels[2].folder_names, vec!["services"]);
+        // All repos live inside subfolders -> omit redundant outer root folder by default
+        assert_eq!(preview.default_enabled_levels, vec![false, true, true]);
+
+        let auth_cand = preview.repos.iter().find(|r| r.name == "auth").unwrap();
+        let web_cand = preview.repos.iter().find(|r| r.name == "web").unwrap();
+
+        // Default resolution: backend/services & frontend
+        let empty_skip = HashSet::new();
+        assert_eq!(
+            resolve_scanned_repo_group(
+                &auth_cand.raw_segments,
+                &preview.default_enabled_levels,
+                &empty_skip,
+                None,
+            ),
+            Some("backend/services".to_string())
+        );
+        assert_eq!(
+            resolve_scanned_repo_group(
+                &web_cand.raw_segments,
+                &preview.default_enabled_levels,
+                &empty_skip,
+                None,
+            ),
+            Some("frontend".to_string())
+        );
+
+        // Drop level 2 ("services") -> compact 1-level groups
+        let one_level = vec![false, true, false];
+        assert_eq!(
+            resolve_scanned_repo_group(&auth_cand.raw_segments, &one_level, &empty_skip, None),
+            Some("backend".to_string())
+        );
+
+        // Enable root level + drop individual raw node "MyCompany/backend/services"
+        let all_levels = vec![true, true, true];
+        let mut skipped = HashSet::new();
+        skipped.insert("MyCompany/backend/services".to_string());
+        assert_eq!(
+            resolve_scanned_repo_group(&auth_cand.raw_segments, &all_levels, &skipped, None),
+            Some("MyCompany/backend".to_string())
+        );
+
+        // Flat (all levels off) with explicit parent group prefix
+        let flat = vec![false, false, false];
+        assert_eq!(
+            resolve_scanned_repo_group(&auth_cand.raw_segments, &flat, &empty_skip, Some("Work")),
+            Some("Work".to_string())
+        );
+        assert_eq!(
+            resolve_scanned_repo_group(&auth_cand.raw_segments, &flat, &empty_skip, None),
+            None
+        );
+
+        // Direct child repo in root -> root level is ON by default so direct children stay grouped
+        let docs = scan_root.join("docs");
+        std::fs::create_dir_all(docs.join(".git")).unwrap();
+        let mut discovered_mixed = Vec::new();
+        scan_recursive(&scan_root, 0, DEFAULT_SCAN_DEPTH, &mut discovered_mixed);
+        let preview_mixed = build_scan_result(&scan_root, discovered_mixed, &[], DEFAULT_SCAN_DEPTH);
+        assert_eq!(preview_mixed.default_enabled_levels, vec![true, true, true]);
+
+        // Flat folder of direct child repos -> only Level 0 exists and is ON by default
+        let flat_root = root.join("goatering");
+        std::fs::create_dir_all(flat_root.join("api").join(".git")).unwrap();
+        std::fs::create_dir_all(flat_root.join("web").join(".git")).unwrap();
+        let mut flat_discovered = Vec::new();
+        scan_recursive(&flat_root, 0, DEFAULT_SCAN_DEPTH, &mut flat_discovered);
+        let flat_preview = build_scan_result(&flat_root, flat_discovered, &[], DEFAULT_SCAN_DEPTH);
+        assert_eq!(flat_preview.levels.len(), 1);
+        assert_eq!(flat_preview.default_enabled_levels, vec![true]);
+
+        // Scanning a folder that IS a git repo itself produces 0 group levels
+        let single_preview = build_scan_result(&auth, vec![auth.clone()], &[], DEFAULT_SCAN_DEPTH);
+        assert!(!single_preview.has_root_level);
+        assert!(single_preview.levels.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn batch_imports_and_regroups_scanned_repos_with_ancestor_groups() {
+        let root = std::env::temp_dir().join(format!(
+            "gitfleet_scan_import_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let api = root.join("backend").join("services").join("api");
+        let web = root.join("frontend").join("web");
+        std::fs::create_dir_all(api.join(".git")).unwrap();
+        std::fs::create_dir_all(web.join(".git")).unwrap();
+
+        let mut cfg = WorkspaceConfig::default();
+        // Pre-add `api` ungrouped at root
+        cfg.repos.push(RepoEntry {
+            id: RepoId::new(),
+            name: "api".to_string(),
+            path: api.canonicalize().unwrap(),
+            group: None,
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        });
+
+        // With update_existing_groups = false: `web` is added with group `frontend`, `api` untouched
+        let (rep1, _) = import_scanned_repos_into(
+            &mut cfg,
+            &[
+                (api.clone(), Some("backend/services".to_string())),
+                (web.clone(), Some("frontend".to_string())),
+            ],
+            false,
+        );
+        assert_eq!(rep1.added.len(), 1);
+        assert_eq!(rep1.regrouped.len(), 0);
+        assert_eq!(rep1.groups_created, 1);
+        assert_eq!(cfg.groups, vec!["frontend".to_string()]);
+        assert_eq!(cfg.repos[0].group, None);
+        assert_eq!(cfg.repos[1].group, Some("frontend".to_string()));
+
+        // With update_existing_groups = true: `api` moves to `backend/services` and ancestor groups created
+        let (rep2, _) = import_scanned_repos_into(
+            &mut cfg,
+            &[
+                (api.clone(), Some("backend/services".to_string())),
+                (web.clone(), Some("frontend".to_string())),
+            ],
+            true,
+        );
+        assert_eq!(rep2.added.len(), 0);
+        assert_eq!(rep2.regrouped.len(), 1);
+        assert_eq!(rep2.groups_created, 2);
+        assert!(cfg.groups.contains(&"backend".to_string()));
+        assert!(cfg.groups.contains(&"backend/services".to_string()));
+        assert_eq!(cfg.repos[0].group, Some("backend/services".to_string()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolves_repo_and_nested_group_secret_key_inheritance() {
+        let mut cfg = WorkspaceConfig::default();
+        cfg.group_secret_keys
+            .insert("company".to_string(), "key_company".to_string());
+        cfg.group_secret_keys
+            .insert("company/payments".to_string(), "key_payments".to_string());
+
+        let inherited_repo = RepoEntry {
+            id: RepoId::new(),
+            name: "auth".into(),
+            path: PathBuf::from("auth"),
+            group: Some("company/backend/services".into()),
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        assert_eq!(
+            resolve_repo_secret_key_in(&cfg, &inherited_repo),
+            Some((
+                "key_company".to_string(),
+                SecretKeyBindingSource::Group("company".to_string())
+            ))
+        );
+
+        let subgroup_repo = RepoEntry {
+            id: RepoId::new(),
+            name: "billing".into(),
+            path: PathBuf::from("billing"),
+            group: Some("company/payments/v2".into()),
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        assert_eq!(
+            resolve_repo_secret_key_in(&cfg, &subgroup_repo),
+            Some((
+                "key_payments".to_string(),
+                SecretKeyBindingSource::Group("company/payments".to_string())
+            ))
+        );
+
+        let override_repo = RepoEntry {
+            id: RepoId::new(),
+            name: "special".into(),
+            path: PathBuf::from("special"),
+            group: Some("company/payments".into()),
+            pinned: false,
+            available: true,
+            secret_key_id: Some("key_special".into()),
+        };
+        assert_eq!(
+            resolve_repo_secret_key_in(&cfg, &override_repo),
+            Some(("key_special".to_string(), SecretKeyBindingSource::Repo))
+        );
+
+        let root_repo = RepoEntry {
+            id: RepoId::new(),
+            name: "personal".into(),
+            path: PathBuf::from("personal"),
+            group: None,
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        assert_eq!(resolve_repo_secret_key_in(&cfg, &root_repo), None);
     }
 }

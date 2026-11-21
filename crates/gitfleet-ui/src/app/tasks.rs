@@ -176,19 +176,21 @@ impl GitFleetApp {
         )
     }
 
-    pub(crate) fn refresh_vault_and_ignore(&mut self) {
+    /// Lightweight refresh of `vault_summary` only (preserves `ignore_editor` and revealed secrets)
+    /// so external edits to `.env` / `.toml` / `.yaml` immediately surface Modified indicators.
+    pub(crate) fn refresh_vault_summary(&mut self) {
         let Some(repo) = self.current_repo() else {
+            self.vault_summary = gitfleet_security::VaultSummary::default();
             return;
         };
+        let preferred_key = self
+            .active_repo_secret_key_binding()
+            .map(|(key_id, _)| key_id);
         self.vault_summary = self
             .service
             .security
-            .vault_summary(&repo.path)
+            .vault_summary_with_key(&repo.path, preferred_key.as_deref())
             .unwrap_or_default();
-        self.secret_candidates = self
-            .service
-            .security
-            .discover_candidate_files(&repo.path);
         if let Some(first) = self.vault_summary.files.first()
             && (self.secret_file_input.trim().is_empty()
                 || (self.secret_file_input == ".env"
@@ -196,6 +198,17 @@ impl GitFleetApp {
         {
             self.secret_file_input = first.path.clone();
         }
+    }
+
+    pub(crate) fn refresh_vault_and_ignore(&mut self) {
+        let Some(repo) = self.current_repo() else {
+            return;
+        };
+        self.refresh_vault_summary();
+        self.secret_candidates = self
+            .service
+            .security
+            .discover_candidate_files(&repo.path);
         self.revealed_secrets.clear();
         if let Ok(snap) = self.service.security.ignore_snapshot(&repo.path) {
             let text = match self.ignore_layer {

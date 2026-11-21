@@ -17,7 +17,7 @@ impl GitFleetApp {
             .map(|pr| pr.label)
             .unwrap_or_else(|| default_pid.clone());
         let font_name = self.active_terminal_font();
-        let font_size = self.service.settings().terminal_font_size.clamp(9, 24) as f32;
+        let font_size = self.service.settings().terminal_font_size.clamp(12, 24) as f32;
         let is_dark = self.theme_mode == ThemeMode::Dark;
 
         let term_bg = if is_dark {

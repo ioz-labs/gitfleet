@@ -1,7 +1,7 @@
 use crate::app::{
-    BottomViewMode, CherryPickModalState, ConfirmAction, ContextMenuState, DiscardFileEntry,
-    DiscardModalState, DrawerTab, GitFleetApp, Message, ResizeTarget, STATUS_BAR_HEIGHT,
-    TITLEBAR_HEIGHT, TOOLBAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
+    BottomViewMode, CherryPickModalState, ConfirmAction, ContextMenuState, ContextMenuSubmenu,
+    DiscardFileEntry, DiscardModalState, DrawerTab, GitFleetApp, Message, ResizeTarget,
+    STATUS_BAR_HEIGHT, TITLEBAR_HEIGHT, TOOLBAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
 };
 use crate::theme::ThemeMode;
 use chrono::Utc;
@@ -107,6 +107,18 @@ impl GitFleetApp {
                 }
                 if self.commit_modal.is_some() {
                     self.commit_modal = None;
+                    return Task::none();
+                }
+                if self.scan_modal.is_some() {
+                    self.scan_modal = None;
+                    self.scan_request_id = self.scan_request_id.wrapping_add(1);
+                    if self
+                        .busy_label
+                        .as_deref()
+                        .is_some_and(|l| l.starts_with("Scanning folder"))
+                    {
+                        self.busy_label = None;
+                    }
                     return Task::none();
                 }
                 if self.context_menu.is_some() {
@@ -272,6 +284,7 @@ impl GitFleetApp {
                     && self.service.scheduler.take_fs_dirty()
                     && let Some(repo) = self.current_repo()
                 {
+                    self.refresh_vault_summary();
                     return self.load_status_task(repo);
                 }
                 if self.service.scheduler.take_scheduled_fetch_due() {
@@ -479,6 +492,7 @@ impl GitFleetApp {
                     || self.discard_modal.is_some()
                     || self.rename_branch_modal.is_some()
                     || self.rename_workspace_modal.is_some()
+                    || self.scan_modal.is_some()
                 {
                     return Task::none();
                 }
@@ -488,13 +502,13 @@ impl GitFleetApp {
                 self.context_menu = Some(ContextMenuState {
                     position: self.cursor_pos,
                     target,
-                    submenu_open: false,
+                    submenu: ContextMenuSubmenu::None,
                 });
                 Task::none()
             }
-            Message::SetContextSubmenu(open) => {
+            Message::SetContextSubmenu(sub) => {
                 if let Some(menu) = &mut self.context_menu {
-                    menu.submenu_open = open;
+                    menu.submenu = sub;
                 }
                 Task::none()
             }
@@ -548,7 +562,10 @@ impl GitFleetApp {
                     ConfirmAction::RemoveWorktree { path } => {
                         self.update(Message::RemoveWorktree(path))
                     }
-                    ConfirmAction::ResetVaultKey => self.update(Message::ResetVaultKey),
+                    ConfirmAction::DeleteVaultKey { key_id } => {
+                        self.update(Message::DeleteVaultKey(key_id))
+                    }
+                    ConfirmAction::DestroyRepoVault => self.update(Message::DestroyRepoVault),
                     ConfirmAction::ForceCommit { push_after } => self.execute_commit(push_after),
                     ConfirmAction::CommitAllWorkingTree { push_after } => {
                         self.execute_commit_all(push_after)

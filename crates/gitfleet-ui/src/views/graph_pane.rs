@@ -1,7 +1,7 @@
 use crate::app::{ContextMenuTarget, GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm};
 use crate::graph;
 use crate::icons;
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, type_scale};
 use crate::views::slim_scroll_h;
 use gitfleet_git::{BranchInfo, ResetMode};
 use iced::widget::{
@@ -38,8 +38,8 @@ impl GraphRefPillKind {
                 branch,
                 is_head,
             } => {
-                (remote_label.chars().count() + branch.chars().count()) as f32 * 6.4
-                    + if *is_head { 46.0 } else { 36.0 }
+                (remote_label.chars().count() + branch.chars().count()) as f32 * 7.2
+                    + if *is_head { 50.0 } else { 40.0 }
             }
             Self::Local {
                 branch,
@@ -49,23 +49,23 @@ impl GraphRefPillKind {
                 upstream_gone,
                 upstream_remote,
             } => {
-                let mut extra = if *is_head { 26.0 } else { 14.0 };
+                let mut extra = if *is_head { 30.0 } else { 16.0 };
                 if *upstream_gone {
                     let rem = upstream_remote.as_deref().unwrap_or("origin");
-                    extra += (rem.chars().count() + 3) as f32 * 6.4;
+                    extra += (rem.chars().count() + 3) as f32 * 7.2;
                 } else {
                     if *ahead > 0 {
-                        extra += (ahead.to_string().len() + 2) as f32 * 6.4;
+                        extra += (ahead.to_string().len() + 2) as f32 * 7.2;
                     }
                     if *behind > 0 {
-                        extra += (behind.to_string().len() + 2) as f32 * 6.4;
+                        extra += (behind.to_string().len() + 2) as f32 * 7.2;
                     }
                 }
-                branch.chars().count() as f32 * 6.4 + extra
+                branch.chars().count() as f32 * 7.2 + extra
             }
-            Self::Remote(name) => name.chars().count() as f32 * 6.4 + 16.0,
-            Self::DetachedHead => 56.0,
-            Self::Tag(name) => name.chars().count() as f32 * 6.4 + 22.0,
+            Self::Remote(name) => name.chars().count() as f32 * 7.2 + 18.0,
+            Self::DetachedHead => 64.0,
+            Self::Tag(name) => name.chars().count() as f32 * 7.2 + 28.0,
         }
     }
 }
@@ -244,21 +244,21 @@ fn render_graph_ref_pill<'a>(
             let border_c = if *is_head { p.accent_fg } else { lane_c };
             let mut right_row = row![].spacing(4).align_y(Alignment::Center);
             if *is_head {
-                right_row = right_row.push(icons::play_triangle(8.0, p.accent_fg));
+                right_row = right_row.push(icons::play_triangle(9.0, p.accent_fg));
             }
             right_row = right_row.push(
                 text(branch.clone())
-                    .size(10.5)
+                    .size(type_scale::BADGE)
                     .color(if *is_head { p.text_primary } else { lane_c })
                     .wrapping(text::Wrapping::None),
             );
             let left_part = container(
                 text(format!("{remote_label} ="))
-                    .size(10)
+                    .size(type_scale::BADGE)
                     .color(p.text_secondary)
                     .wrapping(text::Wrapping::None),
             )
-            .padding([1, 5])
+            .padding([1, 6])
             .style(move |_| container::Style {
                 background: Some(Background::Color(p.surface_card)),
                 border: Border {
@@ -314,7 +314,7 @@ fn render_graph_ref_pill<'a>(
                 let rem = upstream_remote.as_deref().unwrap_or("origin");
                 inner = inner.push(
                     text(format!("? {rem}"))
-                        .size(10)
+                        .size(type_scale::BADGE)
                         .font(theme::CODE_FONT)
                         .color(p.danger_fg)
                         .wrapping(text::Wrapping::None),
@@ -323,7 +323,7 @@ fn render_graph_ref_pill<'a>(
                 if *ahead > 0 {
                     inner = inner.push(
                         text(format!("+{ahead}"))
-                            .size(10)
+                            .size(type_scale::BADGE)
                             .font(theme::CODE_FONT)
                             .color(p.success_fg)
                             .wrapping(text::Wrapping::None),
@@ -332,7 +332,7 @@ fn render_graph_ref_pill<'a>(
                 if *behind > 0 {
                     inner = inner.push(
                         text(format!("-{behind}"))
-                            .size(10)
+                            .size(type_scale::BADGE)
                             .font(theme::CODE_FONT)
                             .color(p.warning_fg)
                             .wrapping(text::Wrapping::None),
@@ -340,11 +340,11 @@ fn render_graph_ref_pill<'a>(
                 }
             }
             if *is_head {
-                inner = inner.push(icons::play_triangle(8.0, p.accent_fg));
+                inner = inner.push(icons::play_triangle(9.0, p.accent_fg));
             }
             inner = inner.push(
                 text(branch.clone())
-                    .size(10.5)
+                    .size(type_scale::BADGE)
                     .color(if *is_head { p.text_primary } else { lane_c })
                     .wrapping(text::Wrapping::None),
             );
@@ -359,7 +359,7 @@ fn render_graph_ref_pill<'a>(
         }
         GraphRefPillKind::Remote(name) => container(
             text(name.clone())
-                .size(10.5)
+                .size(type_scale::BADGE)
                 .color(p.violet_fg)
                 .wrapping(text::Wrapping::None),
         )
@@ -375,9 +375,9 @@ fn render_graph_ref_pill<'a>(
         .into(),
         GraphRefPillKind::DetachedHead => container(
             row![
-                icons::play_triangle(8.0, p.danger_fg),
+                icons::play_triangle(9.0, p.danger_fg),
                 text("HEAD")
-                    .size(10.5)
+                    .size(type_scale::BADGE)
                     .color(p.danger_fg)
                     .wrapping(text::Wrapping::None),
             ]
@@ -389,7 +389,7 @@ fn render_graph_ref_pill<'a>(
         .into(),
         GraphRefPillKind::Tag(name) => container(
             text(format!("tag: {name}"))
-                .size(10)
+                .size(type_scale::BADGE)
                 .color(p.warning_fg)
                 .wrapping(text::Wrapping::None),
         )
@@ -418,18 +418,18 @@ impl GitFleetApp {
         let header = row![
             button(
                 text("Graph")
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None)
             )
-            .padding([3, 8])
+            .padding([3, 9])
             .style(theme::filter_pill_btn(p, self.graph_tab == GraphTab::Graph))
             .on_press(Message::SetGraphTab(GraphTab::Graph)),
             button(
                 text("Reflog")
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None)
             )
-            .padding([3, 8])
+            .padding([3, 9])
             .style(theme::filter_pill_btn(p, self.graph_tab == GraphTab::Reflog))
             .on_press(Message::SetGraphTab(GraphTab::Reflog)),
             button(
@@ -440,10 +440,10 @@ impl GitFleetApp {
                 } else {
                     "Current".to_string()
                 })
-                .size(11)
+                .size(type_scale::CAPTION)
                 .wrapping(text::Wrapping::None)
             )
-            .padding([3, 8])
+            .padding([3, 9])
             .style(theme::filter_pill_btn(
                 p,
                 !self.graph_checked_branches.is_empty() || self.graph_all_branches
@@ -455,10 +455,10 @@ impl GitFleetApp {
                 } else {
                     "Date"
                 })
-                .size(11)
+                .size(type_scale::CAPTION)
                 .wrapping(text::Wrapping::None)
             )
-            .padding([3, 8])
+            .padding([3, 9])
             .style(theme::filter_pill_btn(p, !self.graph_topo_order))
             .on_press(Message::ToggleGraphOrder),
             Space::with_width(Length::Fill),
@@ -466,36 +466,38 @@ impl GitFleetApp {
                 text_input("Filter commits…", &self.commit_filter)
                     .on_input(Message::CommitFilterChanged)
                     .padding([4, 8])
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .width(Length::Fill)
                     .style(theme::dark_input(p)),
             )
             .width(Length::Fill)
-            .max_width(164.0),
+            .max_width(180.0),
         ]
         .spacing(4)
         .align_y(Alignment::Center);
 
         if self.graph_tab == GraphTab::Reflog {
-            let mut rf_col = column![].spacing(3);
+            let mut rf_col = column![].spacing(4);
             for entry in &self.reflog {
                 rf_col = rf_col.push(
                     row![
                         text(entry.short_oid.clone())
-                            .size(11)
+                            .size(type_scale::CAPTION)
                             .font(theme::CODE_FONT)
                             .color(p.accent_fg),
                         text(entry.selector.clone())
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .font(theme::CODE_FONT)
                             .color(p.text_muted),
                         text(format!("{}: {}", entry.action, entry.message))
-                            .size(11)
+                            .size(type_scale::BODY)
                             .color(p.text_primary),
                         Space::with_width(Length::Fill),
-                        text(entry.date_relative.clone()).size(10).color(p.text_muted),
-                        button(text("Reset").size(10))
-                            .padding([2, 6])
+                        text(entry.date_relative.clone())
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                        button(text("Reset").size(type_scale::CAPTION))
+                            .padding([3, 7])
                             .style(theme::subtle_btn(p))
                             .on_press(Message::RequestConfirm(PendingConfirm::reset_commit(
                                 entry.short_oid.clone(),
@@ -508,7 +510,11 @@ impl GitFleetApp {
                 );
             }
             if self.reflog.is_empty() {
-                rf_col = rf_col.push(text("No reflog entries.").size(11).color(p.text_muted));
+                rf_col = rf_col.push(
+                    text("No reflog entries.")
+                        .size(type_scale::CAPTION)
+                        .color(p.text_muted),
+                );
             }
             let min_reflog_w = self
                 .reflog
@@ -519,8 +525,8 @@ impl GitFleetApp {
                         + e.action.chars().count()
                         + e.message.chars().count()
                         + e.date_relative.chars().count()) as f32
-                        * 7.0
-                        + 120.0
+                        * 7.8
+                        + 136.0
                 })
                 .fold(480.0_f32, f32::max)
                 .clamp(480.0, 1400.0);
@@ -618,7 +624,7 @@ impl GitFleetApp {
                     !self.commits.is_empty(),
                 ),
                 text(wt_label)
-                    .size(12)
+                    .size(type_scale::BODY)
                     .color(if wt_changes > 0 {
                         p.warning_fg
                     } else {
@@ -671,7 +677,7 @@ impl GitFleetApp {
             let mut commit_line = row![
                 graph_widget,
                 text(c.short_oid.clone())
-                    .size(11)
+                    .size(type_scale::CAPTION)
                     .font(theme::CODE_FONT)
                     .color(p.text_muted),
             ]
@@ -708,36 +714,38 @@ impl GitFleetApp {
             let (initials, avatar_color) = theme::author_avatar_info(&c.author);
             let avatar_badge = container(
                 text(initials.clone())
-                    .size(10)
+                    .size(type_scale::BADGE)
                     .color(Color::WHITE)
                     .wrapping(text::Wrapping::None),
             )
-            .width(Length::Fixed(22.0))
-            .height(Length::Fixed(18.0))
-            .center_x(Length::Fixed(22.0))
-            .center_y(Length::Fixed(18.0))
+            .width(Length::Fixed(26.0))
+            .height(Length::Fixed(20.0))
+            .center_x(Length::Fixed(26.0))
+            .center_y(Length::Fixed(20.0))
             .style(theme::avatar_box(avatar_color));
 
             let avatar_tip_card = container(
                 row![
-                    container(text(initials).size(11).color(Color::WHITE))
-                        .width(Length::Fixed(28.0))
-                        .height(Length::Fixed(28.0))
-                        .center_x(Length::Fixed(28.0))
-                        .center_y(Length::Fixed(28.0))
+                    container(text(initials).size(type_scale::CAPTION).color(Color::WHITE))
+                        .width(Length::Fixed(30.0))
+                        .height(Length::Fixed(30.0))
+                        .center_x(Length::Fixed(30.0))
+                        .center_y(Length::Fixed(30.0))
                         .style(theme::avatar_box(avatar_color)),
                     column![
-                        text(c.author.clone()).size(12).color(p.text_primary),
+                        text(c.author.clone())
+                            .size(type_scale::BODY)
+                            .color(p.text_primary),
                         text(if c.author_email.is_empty() {
                             "(no email)".to_string()
                         } else {
                             c.author_email.clone()
                         })
-                        .size(11)
+                        .size(type_scale::CAPTION)
                         .font(theme::CODE_FONT)
                         .color(p.accent_fg),
                         text(format!("{} ({}) · {}", c.date_display, c.date_relative, c.short_oid))
-                            .size(10)
+                            .size(type_scale::CAPTION)
                             .color(p.text_muted),
                     ]
                     .spacing(2),
@@ -745,7 +753,7 @@ impl GitFleetApp {
                 .spacing(8)
                 .align_y(Alignment::Center),
             )
-            .padding([6, 9])
+            .padding([7, 10])
             .style(theme::tooltip_box(p));
 
             let avatar_with_tooltip = tooltip(avatar_badge, avatar_tip_card, tooltip::Position::Left)
@@ -754,17 +762,21 @@ impl GitFleetApp {
 
             commit_line = commit_line
                 .push(theme::clipped_line(
-                    text(c.summary.clone()).size(12).color(p.text_primary),
+                    text(c.summary.clone())
+                        .size(type_scale::BODY)
+                        .color(p.text_primary),
                     Length::Fill,
                 ))
                 .push(
                     row![
                         avatar_with_tooltip,
                         container(theme::clipped_line(
-                            text(c.date_display.clone()).size(11).color(p.text_muted),
+                            text(c.date_display.clone())
+                                .size(type_scale::CAPTION)
+                                .color(p.text_muted),
                             Length::Shrink,
                         ))
-                        .width(Length::Fixed(116.0))
+                        .width(Length::Fixed(130.0))
                         .align_x(iced::alignment::Horizontal::Left),
                     ]
                     .spacing(6)
