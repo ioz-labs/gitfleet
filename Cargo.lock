@@ -1849,7 +1849,6 @@ dependencies = [
  "gitfleet-workspace",
  "serde",
  "serde_json",
- "tokio",
  "which",
 ]
 
@@ -1877,7 +1876,6 @@ dependencies = [
 name = "gitfleet-git"
 version = "0.4.0"
 dependencies = [
- "async-trait",
  "chrono",
  "gitfleet-core",
  "serde",
@@ -1891,7 +1889,6 @@ dependencies = [
  "gitfleet-core",
  "notify",
  "serde",
- "tokio",
 ]
 
 [[package]]
@@ -1930,7 +1927,6 @@ dependencies = [
  "gitfleet-core",
  "portable-pty",
  "serde",
- "tokio",
  "vt100",
  "which",
 ]
@@ -1947,7 +1943,6 @@ dependencies = [
  "gitfleet-core",
  "gitfleet-docs",
  "gitfleet-git",
- "gitfleet-scheduler",
  "gitfleet-search",
  "gitfleet-security",
  "gitfleet-terminal",
@@ -1967,12 +1962,10 @@ dependencies = [
 name = "gitfleet-workspace"
 version = "0.4.0"
 dependencies = [
- "async-trait",
  "directories",
  "gitfleet-core",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

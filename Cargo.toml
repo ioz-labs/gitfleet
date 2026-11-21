@@ -36,7 +36,6 @@ gitfleet-app = { path = "crates/gitfleet-app" }
 
 # Async & concurrency
 tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
 
 # Serialization & data
 serde = { version = "1", features = ["derive"] }

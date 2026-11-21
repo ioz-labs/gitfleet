@@ -17,7 +17,6 @@ gitfleet-app.workspace = true
 gitfleet-core.workspace = true
 gitfleet-docs.workspace = true
 gitfleet-git.workspace = true
-gitfleet-scheduler.workspace = true
 gitfleet-search.workspace = true
 gitfleet-security.workspace = true
 gitfleet-terminal.workspace = true

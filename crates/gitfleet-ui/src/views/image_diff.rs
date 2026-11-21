@@ -1200,8 +1200,8 @@ pub(crate) fn render_image_diff<'a>(
                 )
                 .push(
                     container(
-                        slider(0.0..=1.0, st.onion, ImageDiffMsg::OnionChanged)
-                            .step(0.01)
+                        slider(0.0_f32..=1.0_f32, st.onion, ImageDiffMsg::OnionChanged)
+                            .step(0.01_f32)
                             .width(Length::Fixed(120.0)),
                     )
                     .align_y(alignment::Vertical::Center),
