@@ -1,0 +1,1091 @@
+use directories::ProjectDirs;
+use gitfleet_core::{AppError, AppEvent, AppResult, EventBus, RepoId};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoEntry {
+    pub id: RepoId,
+    pub name: String,
+    pub path: PathBuf,
+    pub group: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceUiState {
+    pub selected_repo_id: Option<RepoId>,
+    pub collapsed_groups: Vec<String>,
+    pub active_tab: Option<String>,
+    #[serde(default)]
+    pub compact_density: bool,
+    #[serde(default)]
+    pub light_theme: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    pub name: String,
+    #[serde(default)]
+    pub file_path: Option<PathBuf>,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub repos: Vec<RepoEntry>,
+    #[serde(default)]
+    pub ui: WorkspaceUiState,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            name: "Home Workspace".to_string(),
+            file_path: None,
+            groups: Vec::new(),
+            repos: Vec::new(),
+            ui: WorkspaceUiState::default(),
+        }
+    }
+}
+
+/// Normalizes a hierarchical group path (e.g. `" work / backend/api "` -> `"work/backend/api"`).
+pub fn normalize_group_path(raw: &str) -> String {
+    raw.replace('\\', "/")
+        .split('/')
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Returns the parent group path for a nested group (e.g. `"a/b/c"` -> `Some("a/b")`).
+pub fn parent_group_path(group: &str) -> Option<String> {
+    group
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .filter(|p| !p.is_empty())
+}
+
+fn ensure_group_ancestors(groups: &mut Vec<String>, normalized: &str) {
+    let mut acc = String::new();
+    for seg in normalized.split('/').filter(|s| !s.is_empty()) {
+        if !acc.is_empty() {
+            acc.push('/');
+        }
+        acc.push_str(seg);
+        if !groups.contains(&acc) {
+            groups.push(acc.clone());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentWorkspace {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceListItem {
+    pub name: String,
+    pub path: PathBuf,
+    pub repo_count: usize,
+    pub is_current: bool,
+    pub is_home: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOwnership {
+    pub is_owner: bool,
+    pub owner_pid: Option<u32>,
+    pub lock_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrefixRelocation {
+    pub old_prefix: PathBuf,
+    pub new_prefix: PathBuf,
+    pub affected_repo_ids: Vec<RepoId>,
+}
+
+pub fn config_dir() -> Option<PathBuf> {
+    ProjectDirs::from("org", "gitfleet", "gitfleet").map(|dirs| dirs.config_dir().to_path_buf())
+}
+
+pub fn home_workspace_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("home-workspace.json"))
+}
+
+pub fn workspaces_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("workspaces"))
+}
+
+fn slugify_workspace_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !slug.is_empty() {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = slug.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "workspace".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn unique_workspace_path_in(dir: &Path, name: &str) -> PathBuf {
+    let base = slugify_workspace_name(name);
+    let candidate = dir.join(format!("{base}.gitfleet.json"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 2..=999 {
+        let next = dir.join(format!("{base}-{n}.gitfleet.json"));
+        if !next.exists() {
+            return next;
+        }
+    }
+    dir.join(format!(
+        "{base}-{}.gitfleet.json",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    ))
+}
+
+fn recent_workspaces_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("recent-workspaces.json"))
+}
+
+fn lock_file_for(workspace_path: &Path) -> PathBuf {
+    let mut p = workspace_path.as_os_str().to_os_string();
+    p.push(".lock");
+    PathBuf::from(p)
+}
+
+fn normalize_path_key(p: &Path) -> String {
+    let resolved = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let s = resolved.to_string_lossy();
+    #[cfg(windows)]
+    {
+        s.strip_prefix(r"\\?\")
+            .unwrap_or(&s)
+            .replace('/', "\\")
+            .to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        s.into_owned()
+    }
+}
+
+fn same_workspace_path(a: &Path, b: &Path) -> bool {
+    normalize_path_key(a) == normalize_path_key(b)
+}
+
+fn read_recent_workspaces_file(path: &Path) -> Vec<RecentWorkspace> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn list_workspaces_in(
+    cur: &WorkspaceConfig,
+    home_path: Option<PathBuf>,
+    ws_dir: Option<PathBuf>,
+    cfg_dir: Option<PathBuf>,
+    recents: Vec<RecentWorkspace>,
+) -> Vec<WorkspaceListItem> {
+    let cur_path = cur.file_path.clone().or_else(|| home_path.clone());
+    let mut seen: Vec<String> = Vec::new();
+    let mut items: Vec<WorkspaceListItem> = Vec::new();
+
+    let mut push_path = |path: PathBuf, fallback_name: Option<String>| {
+        let key = normalize_path_key(&path);
+        if seen.iter().any(|s| s == &key) {
+            return;
+        }
+        let is_current = cur_path
+            .as_deref()
+            .is_some_and(|cp| same_workspace_path(cp, &path));
+        let is_home = home_path
+            .as_deref()
+            .is_some_and(|hp| same_workspace_path(hp, &path));
+
+        if is_current {
+            seen.push(key);
+            items.push(WorkspaceListItem {
+                name: cur.name.clone(),
+                path,
+                repo_count: cur.repos.len(),
+                is_current: true,
+                is_home,
+            });
+            return;
+        }
+
+        if let Ok(raw) = std::fs::read_to_string(&path)
+            && let Ok(parsed) = serde_json::from_str::<WorkspaceConfig>(&raw)
+        {
+            seen.push(key);
+            items.push(WorkspaceListItem {
+                name: parsed.name,
+                path,
+                repo_count: parsed.repos.len(),
+                is_current: false,
+                is_home,
+            });
+        } else if is_home {
+            seen.push(key);
+            items.push(WorkspaceListItem {
+                name: fallback_name.unwrap_or_else(|| "Home Workspace".to_string()),
+                path,
+                repo_count: 0,
+                is_current: false,
+                is_home: true,
+            });
+        }
+    };
+
+    // 1. Always show the currently active workspace first
+    if let Some(cp) = cur_path.clone() {
+        push_path(cp, Some(cur.name.clone()));
+    }
+
+    // 2. Recent workspaces (in most-recently-used order)
+    for rec in recents {
+        push_path(rec.path, Some(rec.name));
+    }
+
+    // 3. Home Workspace (always switchable even if recent-workspaces.json was empty)
+    if let Some(hp) = home_path.clone() {
+        push_path(hp, Some("Home Workspace".to_string()));
+    }
+
+    // 4. All saved workspaces inside `<config_dir>/workspaces/`
+    if let Some(dir) = ws_dir
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        let mut extra_paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && matches!(
+                        p.extension().and_then(|e| e.to_str()),
+                        Some("json" | "gitfleet")
+                    )
+            })
+            .collect();
+        extra_paths.sort();
+        for p in extra_paths {
+            push_path(p, None);
+        }
+    }
+
+    // 5. Any `*.gitfleet.json` or `*.gitfleet` workspace snapshots saved directly in `<config_dir>`
+    if let Some(dir) = cfg_dir
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        let mut root_paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                if !p.is_file() {
+                    return false;
+                }
+                let fname = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                fname.ends_with(".gitfleet.json") || fname.ends_with(".gitfleet")
+            })
+            .collect();
+        root_paths.sort();
+        for p in root_paths {
+            push_path(p, None);
+        }
+    }
+
+    drop(push_path);
+    if items.is_empty() {
+        items.push(WorkspaceListItem {
+            name: cur.name.clone(),
+            path: PathBuf::from("home-workspace.json"),
+            repo_count: cur.repos.len(),
+            is_current: true,
+            is_home: true,
+        });
+    }
+
+    items
+}
+
+pub struct WorkspaceService {
+    state: RwLock<WorkspaceConfig>,
+    ownership: RwLock<WorkspaceOwnership>,
+    events: EventBus,
+}
+
+impl WorkspaceService {
+    pub fn new(events: EventBus) -> Self {
+        let mut cfg = WorkspaceConfig::default();
+
+        // Resume the most recently active workspace if it still exists on disk; otherwise Home Workspace.
+        let mut loaded_startup = false;
+        if let Some(rp) = recent_workspaces_path() {
+            for rec in read_recent_workspaces_file(&rp) {
+                if rec.path.exists()
+                    && let Ok(raw) = std::fs::read_to_string(&rec.path)
+                    && let Ok(mut loaded) = serde_json::from_str::<WorkspaceConfig>(&raw)
+                {
+                    loaded.file_path = Some(rec.path);
+                    for repo in &mut loaded.repos {
+                        repo.available = repo.path.exists();
+                    }
+                    cfg = loaded;
+                    loaded_startup = true;
+                    break;
+                }
+            }
+        }
+
+        if !loaded_startup && let Some(home_path) = home_workspace_path() {
+            if home_path.exists()
+                && let Ok(raw) = std::fs::read_to_string(&home_path)
+                && let Ok(mut loaded) = serde_json::from_str::<WorkspaceConfig>(&raw)
+            {
+                loaded.file_path = Some(home_path.clone());
+                for repo in &mut loaded.repos {
+                    repo.available = repo.path.exists();
+                }
+                cfg = loaded;
+            } else {
+                cfg.file_path = Some(home_path);
+            }
+        }
+        let own = Self::acquire_lock_for(cfg.file_path.as_deref());
+        Self {
+            state: RwLock::new(cfg),
+            ownership: RwLock::new(own),
+            events,
+        }
+    }
+
+    fn release_current_lock(&self) {
+        if let Ok(own) = self.ownership.read()
+            && own.is_owner
+            && let Some(lp) = &own.lock_path
+        {
+            let _ = std::fs::remove_file(lp);
+        }
+    }
+
+    fn acquire_lock_for(path: Option<&Path>) -> WorkspaceOwnership {
+        let Some(ws_path) = path else {
+            return WorkspaceOwnership {
+                is_owner: true,
+                owner_pid: Some(std::process::id()),
+                lock_path: None,
+            };
+        };
+        if let Some(parent) = ws_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let lock_path = lock_file_for(ws_path);
+        let my_pid = std::process::id();
+        if lock_path.exists()
+            && let Ok(txt) = std::fs::read_to_string(&lock_path)
+            && let Ok(other_pid) = txt.trim().parse::<u32>()
+            && other_pid != my_pid
+        {
+            // Another PID wrote the lock; still allow claiming via take_ownership
+            return WorkspaceOwnership {
+                is_owner: false,
+                owner_pid: Some(other_pid),
+                lock_path: Some(lock_path),
+            };
+        }
+        let _ = std::fs::write(&lock_path, my_pid.to_string());
+        WorkspaceOwnership {
+            is_owner: true,
+            owner_pid: Some(my_pid),
+            lock_path: Some(lock_path),
+        }
+    }
+
+    pub fn take_ownership(&self) -> WorkspaceOwnership {
+        let path = self.current().file_path;
+        let my_pid = std::process::id();
+        let lock_path = path.as_deref().map(lock_file_for);
+        if let Some(lp) = &lock_path {
+            let _ = std::fs::write(lp, my_pid.to_string());
+        }
+        let next = WorkspaceOwnership {
+            is_owner: true,
+            owner_pid: Some(my_pid),
+            lock_path,
+        };
+        if let Ok(mut guard) = self.ownership.write() {
+            *guard = next.clone();
+        }
+        self.events.publish(AppEvent::WorkspaceOwnershipChanged {
+            owner_pid: Some(my_pid),
+            is_owner: true,
+        });
+        next
+    }
+
+    fn record_recent(&self, name: &str, path: &Path) {
+        let Some(rp) = recent_workspaces_path() else {
+            return;
+        };
+        let mut list = self.recent_workspaces();
+        list.retain(|r| !same_workspace_path(&r.path, path));
+        list.insert(
+            0,
+            RecentWorkspace {
+                name: name.to_string(),
+                path: path.to_path_buf(),
+            },
+        );
+        list.truncate(20);
+        if let Some(parent) = rp.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&list) {
+            let _ = std::fs::write(rp, json);
+        }
+    }
+
+    pub fn recent_workspaces(&self) -> Vec<RecentWorkspace> {
+        let Some(rp) = recent_workspaces_path() else {
+            return Vec::new();
+        };
+        read_recent_workspaces_file(&rp)
+    }
+
+    /// Returns all available workspaces (current, recent, Home Workspace, and all saved snapshots
+    /// in `<config_dir>/workspaces/`) with live repo counts, deduplicated by path.
+    pub fn list_workspaces(&self) -> Vec<WorkspaceListItem> {
+        let cur = self.current();
+        list_workspaces_in(
+            &cur,
+            home_workspace_path(),
+            workspaces_dir(),
+            config_dir(),
+            self.recent_workspaces(),
+        )
+    }
+
+    pub fn delete_workspace(&self, path: &Path) -> AppResult<()> {
+        let is_home = home_workspace_path()
+            .as_deref()
+            .is_some_and(|hp| same_workspace_path(hp, path));
+        if is_home {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Home Workspace cannot be deleted.",
+            )));
+        }
+        let deleting_current = self
+            .current()
+            .file_path
+            .as_deref()
+            .is_some_and(|cp| same_workspace_path(cp, path));
+
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        let lp = lock_file_for(path);
+        if lp.exists() {
+            let _ = std::fs::remove_file(lp);
+        }
+
+        if let Some(rp) = recent_workspaces_path() {
+            let mut list = self.recent_workspaces();
+            list.retain(|r| !same_workspace_path(&r.path, path));
+            if let Ok(json) = serde_json::to_string_pretty(&list) {
+                let _ = std::fs::write(rp, json);
+            }
+        }
+
+        if deleting_current {
+            let _ = self.open_home_workspace();
+        }
+        Ok(())
+    }
+
+    fn auto_save(&self) {
+        let cfg = self.current();
+        let target = cfg.file_path.clone().or_else(home_workspace_path);
+        if let Some(path) = target {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&cfg) {
+                let _ = std::fs::write(&path, json);
+            }
+            self.record_recent(&cfg.name, &path);
+        }
+    }
+
+    pub fn current(&self) -> WorkspaceConfig {
+        self.state.read().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    pub fn new_workspace(&self, name: String) -> AppResult<WorkspaceConfig> {
+        // Persist the outgoing workspace first so it is never lost before switching!
+        self.auto_save();
+        self.release_current_lock();
+
+        let file_path = workspaces_dir().map(|dir| {
+            let _ = std::fs::create_dir_all(&dir);
+            unique_workspace_path_in(&dir, &name)
+        });
+        let cfg = WorkspaceConfig {
+            name,
+            file_path: file_path.clone(),
+            groups: Vec::new(),
+            repos: Vec::new(),
+            ui: WorkspaceUiState::default(),
+        };
+        let own = Self::acquire_lock_for(file_path.as_deref());
+        if let Ok(mut o) = self.ownership.write() {
+            *o = own;
+        }
+        if let Ok(mut guard) = self.state.write() {
+            *guard = cfg.clone();
+        }
+        self.auto_save();
+        Ok(cfg)
+    }
+
+    pub fn open_home_workspace(&self) -> AppResult<WorkspaceConfig> {
+        if let Some(home) = home_workspace_path()
+            && home.exists()
+        {
+            return self.load_from_file(&home);
+        }
+        self.release_current_lock();
+        let mut cfg = WorkspaceConfig::default();
+        cfg.file_path = home_workspace_path();
+        let own = Self::acquire_lock_for(cfg.file_path.as_deref());
+        if let Ok(mut o) = self.ownership.write() {
+            *o = own;
+        }
+        if let Ok(mut guard) = self.state.write() {
+            *guard = cfg.clone();
+        }
+        self.auto_save();
+        Ok(cfg)
+    }
+
+    pub fn rename_workspace(&self, name: String) -> AppResult<()> {
+        if let Ok(mut guard) = self.state.write() {
+            guard.name = name;
+        }
+        self.auto_save();
+        Ok(())
+    }
+
+    pub fn add_group(&self, name: String) -> AppResult<()> {
+        let normalized = normalize_group_path(&name);
+        if normalized.is_empty() {
+            return Ok(());
+        }
+        if let Ok(mut guard) = self.state.write() {
+            ensure_group_ancestors(&mut guard.groups, &normalized);
+        }
+        self.auto_save();
+        Ok(())
+    }
+
+    pub fn rename_group(&self, old_name: &str, new_name: String) -> AppResult<()> {
+        let trimmed = normalize_group_path(&new_name);
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let old_prefix = format!("{old_name}/");
+        let rewrite = |val: &str| -> Option<String> {
+            if val == old_name {
+                Some(trimmed.clone())
+            } else if let Some(rest) = val.strip_prefix(&old_prefix) {
+                Some(format!("{trimmed}/{rest}"))
+            } else {
+                None
+            }
+        };
+        if let Ok(mut guard) = self.state.write() {
+            for g in &mut guard.groups {
+                if let Some(next) = rewrite(g) {
+                    *g = next;
+                }
+            }
+            for repo in &mut guard.repos {
+                if let Some(cur) = repo.group.as_deref()
+                    && let Some(next) = rewrite(cur)
+                {
+                    repo.group = Some(next);
+                }
+            }
+            for c in &mut guard.ui.collapsed_groups {
+                if let Some(next) = rewrite(c) {
+                    *c = next;
+                }
+            }
+        }
+        self.auto_save();
+        Ok(())
+    }
+
+    pub fn delete_group(&self, name: &str) -> AppResult<()> {
+        let prefix = format!("{name}/");
+        let fallback_parent = parent_group_path(name);
+        if let Ok(mut guard) = self.state.write() {
+            guard
+                .groups
+                .retain(|g| g != name && !g.starts_with(&prefix));
+            guard
+                .ui
+                .collapsed_groups
+                .retain(|g| g != name && !g.starts_with(&prefix));
+            for repo in &mut guard.repos {
+                if let Some(cur) = repo.group.as_deref()
+                    && (cur == name || cur.starts_with(&prefix))
+                {
+                    repo.group = fallback_parent.clone();
+                }
+            }
+        }
+        self.auto_save();
+        Ok(())
+    }
+
+    pub fn toggle_group_collapsed(&self, group_name: &str) {
+        if let Ok(mut guard) = self.state.write() {
+            if let Some(pos) = guard
+                .ui
+                .collapsed_groups
+                .iter()
+                .position(|g| g == group_name)
+            {
+                guard.ui.collapsed_groups.remove(pos);
+            } else {
+                guard.ui.collapsed_groups.push(group_name.to_string());
+            }
+        }
+        self.auto_save();
+    }
+
+    pub fn add_repo(&self, path: PathBuf, group: Option<String>) -> AppResult<RepoEntry> {
+        let normalized = path.canonicalize().unwrap_or(path);
+        if let Ok(guard) = self.state.read()
+            && let Some(existing) = guard.repos.iter().find(|r| r.path == normalized)
+        {
+            return Ok(existing.clone());
+        }
+
+        let target_group = group
+            .map(|g| normalize_group_path(&g))
+            .filter(|g| !g.is_empty());
+        let name = normalized
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        let entry = RepoEntry {
+            id: RepoId::new(),
+            name,
+            available: normalized.exists(),
+            path: normalized,
+            group: target_group.clone(),
+            pinned: false,
+        };
+        if let Ok(mut guard) = self.state.write() {
+            if let Some(g) = &target_group {
+                ensure_group_ancestors(&mut guard.groups, g);
+            }
+            guard.repos.push(entry.clone());
+        }
+        self.auto_save();
+        self.events.publish(AppEvent::RepoChanged {
+            repo_id: entry.id.clone(),
+        });
+        Ok(entry)
+    }
+
+    pub fn toggle_pin(&self, repo_id: &RepoId) -> AppResult<bool> {
+        let mut pinned = false;
+        if let Ok(mut guard) = self.state.write()
+            && let Some(repo) = guard.repos.iter_mut().find(|r| &r.id == repo_id)
+        {
+            repo.pinned = !repo.pinned;
+            pinned = repo.pinned;
+        }
+        self.auto_save();
+        Ok(pinned)
+    }
+
+    pub fn remove_repos(&self, repo_ids: &[RepoId]) -> AppResult<usize> {
+        let mut removed = 0;
+        if let Ok(mut guard) = self.state.write() {
+            let before = guard.repos.len();
+            guard.repos.retain(|r| !repo_ids.contains(&r.id));
+            removed = before - guard.repos.len();
+        }
+        self.auto_save();
+        Ok(removed)
+    }
+
+    pub fn set_repo_group(&self, repo_id: &RepoId, group: Option<String>) -> AppResult<()> {
+        let normalized = group
+            .map(|g| normalize_group_path(&g))
+            .filter(|g| !g.is_empty());
+        let mut found = false;
+        if let Ok(mut guard) = self.state.write() {
+            if let Some(g) = &normalized {
+                ensure_group_ancestors(&mut guard.groups, g);
+            }
+            if let Some(repo) = guard.repos.iter_mut().find(|r| &r.id == repo_id) {
+                repo.group = normalized;
+                found = true;
+            }
+        }
+        if found {
+            self.auto_save();
+            Ok(())
+        } else {
+            Err(AppError::RepoNotFound(repo_id.0.clone()))
+        }
+    }
+
+    /// Updates a missing repo's path and returns a prefix-relocation suggestion if missing siblings share the same old parent!
+    pub fn locate_repo(
+        &self,
+        repo_id: &RepoId,
+        picked_path: PathBuf,
+    ) -> AppResult<Option<PrefixRelocation>> {
+        let normalized = picked_path.canonicalize().unwrap_or(picked_path);
+        let mut suggestion: Option<PrefixRelocation> = None;
+
+        if let Ok(mut guard) = self.state.write() {
+            let old_path = guard
+                .repos
+                .iter()
+                .find(|r| &r.id == repo_id)
+                .map(|r| r.path.clone())
+                .ok_or_else(|| AppError::RepoNotFound(repo_id.0.clone()))?;
+
+            if let Some(repo) = guard.repos.iter_mut().find(|r| &r.id == repo_id) {
+                repo.path = normalized.clone();
+                repo.available = normalized.exists();
+            }
+
+            if let (Some(old_parent), Some(new_parent)) = (old_path.parent(), normalized.parent())
+                && old_parent != new_parent
+            {
+                let siblings: Vec<RepoId> = guard
+                    .repos
+                    .iter()
+                    .filter(|r| {
+                        &r.id != repo_id
+                            && !r.available
+                            && r.path.starts_with(old_parent)
+                            && r.path
+                                .strip_prefix(old_parent)
+                                .ok()
+                                .is_some_and(|rel| new_parent.join(rel).exists())
+                    })
+                    .map(|r| r.id.clone())
+                    .collect();
+                if !siblings.is_empty() {
+                    suggestion = Some(PrefixRelocation {
+                        old_prefix: old_parent.to_path_buf(),
+                        new_prefix: new_parent.to_path_buf(),
+                        affected_repo_ids: siblings,
+                    });
+                }
+            }
+        }
+        self.auto_save();
+        Ok(suggestion)
+    }
+
+    pub fn relocate_prefix(&self, mapping: &PrefixRelocation) -> AppResult<usize> {
+        let mut updated = 0;
+        if let Ok(mut guard) = self.state.write() {
+            for repo in &mut guard.repos {
+                if mapping.affected_repo_ids.contains(&repo.id)
+                    && let Ok(rel) = repo.path.strip_prefix(&mapping.old_prefix)
+                {
+                    let candidate = mapping.new_prefix.join(rel);
+                    repo.available = candidate.exists();
+                    repo.path = candidate;
+                    updated += 1;
+                }
+            }
+        }
+        self.auto_save();
+        Ok(updated)
+    }
+
+    /// Recursively discovers Git repositories up to depth 3, skipping heavy build folders.
+    pub fn scan_folder(&self, root: &Path) -> AppResult<Vec<PathBuf>> {
+        let mut discovered = Vec::new();
+        scan_recursive(root, 0, 3, &mut discovered);
+        self.events.publish(AppEvent::WorkspaceDiscovery {
+            found: discovered.len(),
+            finished: true,
+        });
+        Ok(discovered)
+    }
+
+    pub fn set_ui_state(&self, ui: WorkspaceUiState) -> AppResult<()> {
+        if let Ok(mut guard) = self.state.write() {
+            guard.ui = ui;
+        }
+        self.auto_save();
+        Ok(())
+    }
+
+    pub fn save_to_file(&self, path: &Path) -> AppResult<()> {
+        let changed_path = self
+            .current()
+            .file_path
+            .as_deref()
+            .is_none_or(|cur| !same_workspace_path(cur, path));
+        if changed_path {
+            self.release_current_lock();
+        }
+        if let Ok(mut guard) = self.state.write() {
+            guard.file_path = Some(path.to_path_buf());
+        }
+        let cfg = self.current();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let json = serde_json::to_string_pretty(&cfg)?;
+        std::fs::write(path, json)?;
+        if changed_path {
+            let own = Self::acquire_lock_for(Some(path));
+            if let Ok(mut o) = self.ownership.write() {
+                *o = own;
+            }
+        }
+        self.record_recent(&cfg.name, path);
+        Ok(())
+    }
+
+    pub fn load_from_file(&self, path: &Path) -> AppResult<WorkspaceConfig> {
+        let raw = std::fs::read_to_string(path)?;
+        let mut cfg: WorkspaceConfig = serde_json::from_str(&raw)?;
+        cfg.file_path = Some(path.to_path_buf());
+        for repo in &mut cfg.repos {
+            repo.available = repo.path.exists();
+        }
+        let switching = self
+            .current()
+            .file_path
+            .as_deref()
+            .is_none_or(|cur| !same_workspace_path(cur, path));
+        if switching {
+            self.release_current_lock();
+        }
+        let own = Self::acquire_lock_for(Some(path));
+        if let Ok(mut o) = self.ownership.write() {
+            *o = own;
+        }
+        if let Ok(mut guard) = self.state.write() {
+            *guard = cfg.clone();
+        }
+        self.record_recent(&cfg.name, path);
+        Ok(cfg)
+    }
+
+    pub fn ownership(&self) -> WorkspaceOwnership {
+        self.ownership
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or(WorkspaceOwnership {
+                is_owner: true,
+                owner_pid: Some(std::process::id()),
+                lock_path: None,
+            })
+    }
+
+    pub fn lock_status(&self, paths: &[PathBuf]) -> HashMap<PathBuf, bool> {
+        paths
+            .iter()
+            .map(|p| (p.clone(), lock_file_for(p).exists()))
+            .collect()
+    }
+}
+
+impl Drop for WorkspaceService {
+    fn drop(&mut self) {
+        if let Ok(own) = self.ownership.read()
+            && own.is_owner
+            && let Some(lp) = &own.lock_path
+        {
+            let _ = std::fs::remove_file(lp);
+        }
+    }
+}
+
+fn scan_recursive(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > max_depth || !dir.is_dir() {
+        return;
+    }
+    if dir.join(".git").exists() {
+        out.push(dir.to_path_buf());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.')
+            || matches!(
+                name_str.as_ref(),
+                "node_modules" | "target" | "dist" | "build" | "vendor" | "__pycache__"
+            )
+        {
+            continue;
+        }
+        scan_recursive(&path, depth + 1, max_depth, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_and_builds_nested_group_ancestors_with_no_default_group() {
+        let cfg = WorkspaceConfig::default();
+        assert!(cfg.groups.is_empty());
+
+        assert_eq!(
+            normalize_group_path(" goatering-be \\ submodule / libs "),
+            "goatering-be/submodule/libs"
+        );
+        assert_eq!(
+            parent_group_path("goatering-be/submodule"),
+            Some("goatering-be".to_string())
+        );
+        assert_eq!(parent_group_path("goatering-be"), None);
+
+        let mut groups = Vec::new();
+        ensure_group_ancestors(&mut groups, "goatering-be/submodule/libs");
+        assert_eq!(
+            groups,
+            vec![
+                "goatering-be".to_string(),
+                "goatering-be/submodule".to_string(),
+                "goatering-be/submodule/libs".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn generates_unique_workspace_file_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_ws_slugs_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p1 = unique_workspace_path_in(&dir, "Goatering BE");
+        assert_eq!(p1.file_name().unwrap(), "goatering-be.gitfleet.json");
+        std::fs::write(&p1, "{}").unwrap();
+
+        let p2 = unique_workspace_path_in(&dir, "Goatering BE");
+        assert_eq!(p2.file_name().unwrap(), "goatering-be-2.gitfleet.json");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lists_and_deduplicates_all_workspaces() {
+        let root = std::env::temp_dir().join(format!(
+            "gitfleet_ws_list_{}",
+            std::process::id()
+        ));
+        let ws_dir = root.join("workspaces");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let home_path = root.join("home-workspace.json");
+        let home_cfg = WorkspaceConfig {
+            name: "Home Workspace".to_string(),
+            file_path: Some(home_path.clone()),
+            groups: Vec::new(),
+            repos: vec![RepoEntry {
+                id: RepoId::new(),
+                name: "repo-a".to_string(),
+                path: root.join("repo-a"),
+                group: None,
+                pinned: false,
+                available: false,
+            }],
+            ui: WorkspaceUiState::default(),
+        };
+        std::fs::write(&home_path, serde_json::to_string(&home_cfg).unwrap()).unwrap();
+
+        let work_path = ws_dir.join("work.gitfleet.json");
+        let work_cfg = WorkspaceConfig {
+            name: "Work".to_string(),
+            file_path: Some(work_path.clone()),
+            groups: Vec::new(),
+            repos: Vec::new(),
+            ui: WorkspaceUiState::default(),
+        };
+        std::fs::write(&work_path, serde_json::to_string(&work_cfg).unwrap()).unwrap();
+
+        // Simulate switching to `Work` even if `recent-workspaces.json` only has duplicate/partial entries
+        let items = list_workspaces_in(
+            &work_cfg,
+            Some(home_path.clone()),
+            Some(ws_dir.clone()),
+            Some(root.clone()),
+            vec![RecentWorkspace {
+                name: "Work".to_string(),
+                path: work_path.clone(),
+            }],
+        );
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, "Work");
+        assert!(items[0].is_current);
+        assert!(!items[0].is_home);
+
+        assert_eq!(items[1].name, "Home Workspace");
+        assert!(!items[1].is_current);
+        assert!(items[1].is_home);
+        assert_eq!(items[1].repo_count, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

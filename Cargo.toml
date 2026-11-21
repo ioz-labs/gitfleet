@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gitfleet-core",
+    "crates/gitfleet-workspace",
+    "crates/gitfleet-git",
+    "crates/gitfleet-security",
+    "crates/gitfleet-search",
+    "crates/gitfleet-terminal",
+    "crates/gitfleet-docs",
+    "crates/gitfleet-scheduler",
+    "crates/gitfleet-app",
+    "crates/gitfleet-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["GitFleet Contributors"]
+repository = "https://github.com/example/gitfleet"
+
+[workspace.dependencies]
+# Internal crates
+gitfleet-core = { path = "crates/gitfleet-core" }
+gitfleet-workspace = { path = "crates/gitfleet-workspace" }
+gitfleet-git = { path = "crates/gitfleet-git" }
+gitfleet-security = { path = "crates/gitfleet-security" }
+gitfleet-search = { path = "crates/gitfleet-search" }
+gitfleet-terminal = { path = "crates/gitfleet-terminal" }
+gitfleet-docs = { path = "crates/gitfleet-docs" }
+gitfleet-scheduler = { path = "crates/gitfleet-scheduler" }
+gitfleet-app = { path = "crates/gitfleet-app" }
+
+# Async & concurrency
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization & data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Error handling & logging
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Pure Rust GUI (Multi-window daemon)
+iced = { version = "0.13", features = ["tokio", "advanced", "svg", "image", "markdown", "canvas"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+directories = "6"
+
+# Security, Search, Terminal, Watcher, Tooling (Milestones 3-6)
+age = "0.11"
+arboard = "3"
+zeroize = "1"
+regex = "1"
+ignore = "0.4"
+portable-pty = "0.8"
+vt100 = "0.15"
+notify = "7"
+which = "7"
+toml_edit = "0.22"
+serde_yaml_ng = "0.10"
+fontdb = "0.18"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

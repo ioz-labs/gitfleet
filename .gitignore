@@ -1,0 +1,38 @@
+# Rust / Cargo build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+
+# Keep Cargo.lock tracked (binary application workspace)
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+.gitfleet/*.key
+
+# Local GitFleet workspace / runtime / diagnostic exports
+*.gitfleet.json
+*.gitfleet.json.lock
+gitfleet-diagnostics*.json
+gitfleet-diagnostics*.zip
+*.log
+
+# IDEs & editors
+.vscode/
+.idea/
+*.iml
+.vs/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+desktop.ini

@@ -1,0 +1,12 @@
+[package]
+name = "gitfleet-docs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gitfleet-core.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

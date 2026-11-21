@@ -1,0 +1,10 @@
+mod branch_popover;
+mod cherry_pick_modal;
+mod command_palette;
+mod confirm_modal;
+mod context_menu;
+mod discard_modal;
+mod git_flow_modal;
+mod merge_modal;
+mod settings_modal;
+mod workspace_modal;

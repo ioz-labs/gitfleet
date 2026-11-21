@@ -1,0 +1,15 @@
+[package]
+name = "gitfleet-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+gitfleet-core.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
