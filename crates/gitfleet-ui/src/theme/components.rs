@@ -251,7 +251,14 @@ where
     );
 
     let card = opaque(
-        container(column![header, horizontal_rule(1), body.into()].spacing(space::MD))
+        container(
+            column![
+                header,
+                horizontal_rule(1).style(theme::subtle_rule(p)),
+                body.into()
+            ]
+            .spacing(space::MD),
+        )
             .padding(pad::MODAL)
             .width(Length::Fixed(width))
             .max_height(layout::MODAL_MAX_HEIGHT)
@@ -322,7 +329,7 @@ where
             .padding(pad::DOCK_TOOLBAR)
             .width(Length::Fill)
             .style(theme::dock_subtoolbar_box(p)),
-        horizontal_rule(1),
+        horizontal_rule(1).style(theme::subtle_rule(p)),
     ]
     .width(Length::Fill)
     .into()

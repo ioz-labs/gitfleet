@@ -7,8 +7,8 @@ use gitfleet_core::RepoId;
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{
     AmendTarget, BranchInfo, CommitSummary, ConflictStrategy, DiscardTarget, FileChange,
-    ForecastResult, GitFlowKind, GitFlowState, OrphanGitlink, ReflogEntry, RepoStatusSummary,
-    ResetMode, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
+    ForecastResult, GitFlowKind, GitFlowState, HunkChoice, MergeMode, OrphanGitlink, ReflogEntry,
+    RepoStatusSummary, ResetMode, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{IgnoreLayer, OversizedFile, SecretFinding};
@@ -66,7 +66,17 @@ pub(crate) enum Message {
     RevealBranchCommit(String),
     BranchCommitResolved(Result<String, String>),
     UseCommitMessage(String),
+    OpenCreateBranch {
+        base_ref: Option<String>,
+        prefix: Option<String>,
+    },
+    ToggleCreateBranchCheckout(bool),
     CreateBranchSubmitted,
+    OpenRenameBranchModal(Option<String>),
+    RenameBranchInputChanged(String),
+    SubmitRenameBranch,
+    ShortcutMergeSelectedBranch,
+    ShortcutRebaseSelectedBranch,
     InspectStash(usize),
     ApplyStash(usize),
     PopStash(usize),
@@ -95,9 +105,17 @@ pub(crate) enum Message {
     ToggleMergeModal,
     SelectMergeTarget(String),
     MergeForecastLoaded(String, Result<ForecastResult, String>),
-    ExecuteMerge(String),
+    ExecuteMerge(String, MergeMode),
     ExecuteRebase(String),
     ResolveConflict(String, ConflictStrategy),
+    OpenConflictSolver(String),
+    ConflictSetHunkChoice(usize, HunkChoice),
+    ConflictToggleCustomEdit(usize),
+    ConflictCustomEditAction(text_editor::Action),
+    ConflictResolveAll(HunkChoice),
+    ConflictJump(isize),
+    ConflictToggleContextSegment(usize),
+    SaveResolvedConflict { mark_resolved: bool },
     ContinueGitOp,
     AbortGitOp,
 

@@ -1,9 +1,12 @@
-use crate::app::{BottomLeftTab, BottomViewMode, GitFleetApp, GraphSelection, GraphTab, Message};
+use crate::app::{
+    ActiveFocusPane, BottomLeftTab, BottomViewMode, GitFleetApp, GraphSelection, GraphTab, Message,
+    RenameBranchModalState,
+};
 use chrono::Utc;
 use gitfleet_core::UndoEntry;
-use gitfleet_git::ResetMode;
+use gitfleet_git::{MergeMode, ResetMode};
 use iced::Task;
-use iced::widget::text_editor;
+use iced::widget::{scrollable, text_editor, text_input};
 use std::time::{Duration, Instant};
 
 impl GitFleetApp {
@@ -272,19 +275,24 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
-            Message::ExecuteMerge(branch) => {
+            Message::ExecuteMerge(branch, mode) => {
                 self.show_merge_modal = false;
-                self.run_git_op("Merge", move |svc, repo| async move {
+                let op_label = match mode {
+                    MergeMode::MergeCommit => "Merge",
+                    MergeMode::WorkingTree => "Merge to Working Tree",
+                    MergeMode::Squash => "Squash-Merge",
+                };
+                self.run_git_op(op_label, move |svc, repo| async move {
                     if let Ok(prev) = svc.git.head_oid(&repo.path).await {
                         svc.undo.record(UndoEntry {
                             id: format!("{}", Utc::now().timestamp_millis()),
                             repo_id: repo.id.clone(),
-                            label: format!("Merge {branch}"),
+                            label: format!("{op_label} {branch}"),
                             previous_head: prev,
                             created_at: Utc::now(),
                         });
                     }
-                    svc.git.merge_branch(&repo.path, &branch).await
+                    svc.git.merge_branch_with_mode(&repo.path, &branch, mode).await
                 })
             }
             Message::ExecuteRebase(branch) => {
@@ -302,9 +310,241 @@ impl GitFleetApp {
                     svc.git.rebase_branch(&repo.path, &branch).await
                 })
             }
+            Message::OpenRenameBranchModal(target) => {
+                if self.selected_repo.is_none() || self.has_modal_or_menu_open() && target.is_none() {
+                    return Task::none();
+                }
+                let branch_name = target
+                    .or_else(|| {
+                        self.selected_branch.as_ref().and_then(|sel| {
+                            self.branches
+                                .iter()
+                                .find(|b| !b.is_remote && &b.name == sel)
+                                .map(|b| b.name.clone())
+                        })
+                    })
+                    .or_else(|| {
+                        self.branches
+                            .iter()
+                            .find(|b| !b.is_remote && b.is_head)
+                            .map(|b| b.name.clone())
+                    });
+                let Some(old_name) = branch_name else {
+                    return Task::none();
+                };
+                self.context_menu = None;
+                self.show_palette = false;
+                self.show_branch_popover = false;
+                self.rename_branch_modal = Some(RenameBranchModalState {
+                    new_name: old_name.clone(),
+                    old_name,
+                });
+                text_input::focus(self.rename_branch_input_id.clone())
+            }
+            Message::RenameBranchInputChanged(val) => {
+                if let Some(modal) = &mut self.rename_branch_modal {
+                    modal.new_name = val;
+                }
+                Task::none()
+            }
+            Message::SubmitRenameBranch => {
+                let Some(modal) = self.rename_branch_modal.take() else {
+                    return Task::none();
+                };
+                let new_name = modal.new_name.trim().to_string();
+                if new_name.is_empty() || new_name == modal.old_name {
+                    return Task::none();
+                }
+                let old_name = modal.old_name;
+                if self.selected_branch.as_deref() == Some(old_name.as_str()) {
+                    self.selected_branch = Some(new_name.clone());
+                }
+                if self.graph_checked_branches.remove(&old_name) {
+                    self.graph_checked_branches.insert(new_name.clone());
+                }
+                self.run_git_op("Rename Branch", move |svc, repo| async move {
+                    svc.git.rename_branch(&repo.path, &old_name, &new_name).await
+                })
+            }
+            Message::ShortcutMergeSelectedBranch => {
+                if self.selected_repo.is_none() || self.has_modal_or_menu_open() {
+                    return Task::none();
+                }
+                let target = self.selected_branch.as_ref().and_then(|sel| {
+                    self.branches
+                        .iter()
+                        .find(|b| !b.is_head && &b.name == sel)
+                        .map(|b| b.name.clone())
+                });
+                if let Some(branch) = target {
+                    self.update(Message::OpenMergeWithTarget(branch))
+                } else {
+                    self.update(Message::ToggleMergeModal)
+                }
+            }
+            Message::ShortcutRebaseSelectedBranch => {
+                if self.selected_repo.is_none() || self.has_modal_or_menu_open() {
+                    return Task::none();
+                }
+                let target = self.selected_branch.as_ref().and_then(|sel| {
+                    self.branches
+                        .iter()
+                        .find(|b| !b.is_head && &b.name == sel)
+                        .map(|b| b.name.clone())
+                });
+                if let Some(branch) = target {
+                    self.update(Message::OpenMergeWithTarget(branch))
+                } else {
+                    self.update(Message::ToggleMergeModal)
+                }
+            }
             Message::ResolveConflict(path, strategy) => {
+                if self.conflict_file_path.as_deref() == Some(path.as_str()) {
+                    self.clear_conflict_state();
+                    if self.bottom_mode == BottomViewMode::ResolveConflicts {
+                        self.bottom_mode = BottomViewMode::SideBySideDiff;
+                    }
+                }
                 self.run_git_op("Resolve Conflict", move |svc, repo| async move {
                     svc.git.resolve_conflict(&repo.path, &path, strategy).await
+                })
+            }
+            Message::OpenConflictSolver(rel_path) => {
+                self.active_file_path = Some(rel_path.clone());
+                self.diff_title = format!("Resolve Conflicts · {rel_path}");
+                self.load_conflict_state_for_file(&rel_path);
+                self.bottom_mode = BottomViewMode::ResolveConflicts;
+                Task::none()
+            }
+            Message::ConflictSetHunkChoice(hunk_id, choice) => {
+                if self.conflict_editing_hunk == Some(hunk_id) {
+                    self.conflict_editing_hunk = None;
+                }
+                self.conflict_parsed.set_choice(hunk_id, choice);
+                self.conflict_active_hunk = Some(hunk_id);
+                Task::none()
+            }
+            Message::ConflictToggleCustomEdit(hunk_id) => {
+                if self.conflict_editing_hunk == Some(hunk_id) {
+                    let edited = self.conflict_hunk_editor.text();
+                    self.conflict_parsed.set_custom_text(hunk_id, edited);
+                    self.conflict_editing_hunk = None;
+                    self.focus_pane = ActiveFocusPane::Other;
+                } else {
+                    if let Some(prev_id) = self.conflict_editing_hunk {
+                        let edited = self.conflict_hunk_editor.text();
+                        self.conflict_parsed.set_custom_text(prev_id, edited);
+                    }
+                    let seed = self
+                        .conflict_parsed
+                        .hunk(hunk_id)
+                        .map(|h| h.seed_text_for_editor())
+                        .unwrap_or_default();
+                    self.conflict_hunk_editor = text_editor::Content::with_text(&seed);
+                    self.conflict_parsed.set_custom_text(hunk_id, seed);
+                    self.conflict_editing_hunk = Some(hunk_id);
+                    self.conflict_active_hunk = Some(hunk_id);
+                    self.focus_pane = ActiveFocusPane::TextInput;
+                }
+                Task::none()
+            }
+            Message::ConflictCustomEditAction(action) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.conflict_hunk_editor.perform(action);
+                if let Some(hunk_id) = self.conflict_editing_hunk {
+                    let edited = self.conflict_hunk_editor.text();
+                    self.conflict_parsed.set_custom_text(hunk_id, edited);
+                }
+                Task::none()
+            }
+            Message::ConflictResolveAll(choice) => {
+                self.conflict_editing_hunk = None;
+                self.conflict_parsed.resolve_all(choice);
+                Task::none()
+            }
+            Message::ConflictJump(delta) => {
+                let total = self.conflict_parsed.conflict_count();
+                if total == 0 {
+                    return Task::none();
+                }
+                let unresolved: Vec<usize> = self
+                    .conflict_parsed
+                    .segments
+                    .iter()
+                    .filter_map(|s| match s {
+                        gitfleet_git::ConflictSegment::Conflict(h) if !h.choice.is_resolved() => {
+                            Some(h.id)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let candidates: Vec<usize> = if !unresolved.is_empty() {
+                    unresolved
+                } else {
+                    (0..total).collect()
+                };
+                let cur = self.conflict_active_hunk.unwrap_or(0);
+                let next_id = if delta >= 0 {
+                    candidates
+                        .iter()
+                        .copied()
+                        .find(|&id| id > cur)
+                        .unwrap_or(candidates[0])
+                } else {
+                    candidates
+                        .iter()
+                        .rev()
+                        .copied()
+                        .find(|&id| id < cur)
+                        .unwrap_or(*candidates.last().unwrap_or(&0))
+                };
+                self.conflict_active_hunk = Some(next_id);
+                let rel_y = if total <= 1 {
+                    0.0
+                } else {
+                    (next_id as f32 / (total - 1) as f32).clamp(0.0, 1.0)
+                };
+                scrollable::snap_to(
+                    self.conflict_scroll_id.clone(),
+                    scrollable::RelativeOffset { x: 0.0, y: rel_y },
+                )
+            }
+            Message::ConflictToggleContextSegment(seg_idx) => {
+                if !self.conflict_expanded_segments.remove(&seg_idx) {
+                    self.conflict_expanded_segments.insert(seg_idx);
+                }
+                Task::none()
+            }
+            Message::SaveResolvedConflict { mark_resolved } => {
+                let Some(rel_path) = self.conflict_file_path.clone() else {
+                    return Task::none();
+                };
+                if let Some(hunk_id) = self.conflict_editing_hunk.take() {
+                    let edited = self.conflict_hunk_editor.text();
+                    self.conflict_parsed.set_custom_text(hunk_id, edited);
+                }
+                let remaining = self.conflict_parsed.unresolved_count();
+                if mark_resolved && remaining > 0 {
+                    self.toast_is_error = true;
+                    self.toast_message = format!(
+                        "{remaining} conflict(s) still unresolved — resolve all hunks before marking resolved"
+                    );
+                    return Task::none();
+                }
+                let rendered = self.conflict_parsed.render_output();
+                let label = if mark_resolved {
+                    "Save & Mark Resolved"
+                } else {
+                    "Save Conflict Draft"
+                };
+                if mark_resolved {
+                    self.clear_conflict_state();
+                    self.bottom_mode = BottomViewMode::SideBySideDiff;
+                }
+                self.run_git_op(label, move |svc, repo| async move {
+                    svc.git
+                        .save_resolved_conflict(&repo.path, &rel_path, &rendered, mark_resolved)
+                        .await
                 })
             }
             Message::ContinueGitOp => {
@@ -488,10 +728,14 @@ impl GitFleetApp {
                 if name.is_empty() {
                     return Task::none();
                 }
+                let base_ref = self.branch_create_base.take();
+                let checkout = self.branch_create_checkout;
                 self.branch_filter_query.clear();
                 self.show_branch_popover = false;
                 self.run_git_op("Create Branch", move |svc, repo| async move {
-                    svc.git.create_branch(&repo.path, &name).await
+                    svc.git
+                        .create_branch_from(&repo.path, &name, base_ref.as_deref(), checkout)
+                        .await
                 })
             }
             Message::DeleteBranch(name, force) => {

@@ -15,6 +15,8 @@ impl GitFleetApp {
         self.graph_checked_branches.clear();
         self.show_palette = false;
         self.show_branch_popover = false;
+        self.rename_branch_modal = None;
+        self.clear_conflict_state();
         self.graph_selection = GraphSelection::WorkingTree;
         self.commits.clear();
         self.graph_rows.clear();

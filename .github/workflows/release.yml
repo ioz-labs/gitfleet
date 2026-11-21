@@ -16,10 +16,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
 
 jobs:
   build:
-    name: Build (${{ matrix.label }})
+    name: Build & Test (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -30,25 +31,43 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: gitfleet-windows-x86_64
             platform: windows
+            run_tests: true
+          - label: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact_name: gitfleet-windows-arm64
+            platform: windows
+            run_tests: true
           - label: macOS Apple Silicon (arm64)
             os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: gitfleet-macos-arm64
             platform: macos
+            run_tests: true
           - label: macOS Intel (x86_64)
             os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: gitfleet-macos-x86_64
             platform: macos
+            run_tests: false
           - label: Linux x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_name: gitfleet-linux-x86_64
             platform: linux
+            deb_arch: amd64
+            run_tests: true
+          - label: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: gitfleet-linux-arm64
+            platform: linux
+            deb_arch: arm64
+            run_tests: true
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve version
         id: meta
@@ -88,6 +107,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+
+      - name: Check workspace (zero warnings)
+        run: cargo check --workspace --all-targets --locked --target ${{ matrix.target }}
+
+      - name: Run unit tests
+        if: matrix.run_tests
+        run: cargo test --workspace --lib --bins --locked --target ${{ matrix.target }}
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }} -p gitfleet-ui
@@ -159,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           VER="${{ steps.meta.outputs.version }}"
-          mkdir -p dist/tar/${{ matrix.artifact_name }} dist/out
+          mkdir -p "dist/tar/${{ matrix.artifact_name }}" dist/out
 
           cp "target/${{ matrix.target }}/release/gitfleet" "dist/tar/${{ matrix.artifact_name }}/gitfleet"
           chmod +x "dist/tar/${{ matrix.artifact_name }}/gitfleet"
@@ -189,7 +215,7 @@ jobs:
           Version: ${VER}
           Section: vcs
           Priority: optional
-          Architecture: amd64
+          Architecture: ${{ matrix.deb_arch }}
           Depends: git, libxkbcommon0, libfontconfig1
           Maintainer: GitFleet Contributors
           Description: Pure-Rust multi-repository Git desktop workspace manager
@@ -198,7 +224,7 @@ jobs:
           dpkg-deb --build "$DEB_ROOT" "dist/out/${{ matrix.artifact_name }}.deb"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/out/*
@@ -207,10 +233,10 @@ jobs:
     name: Publish GitHub Release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download all release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-files
           merge-multiple: true
@@ -220,7 +246,7 @@ jobs:
         run: sha256sum * > SHA256SUMS.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: release-files/*

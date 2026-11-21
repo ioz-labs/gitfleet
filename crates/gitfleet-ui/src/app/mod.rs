@@ -14,8 +14,8 @@ use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
 use gitfleet_git::{
     AmendTarget, BranchInfo, CommitSummary, FileChange, ForecastResult, GitFlowKind, GitFlowState,
-    OrphanGitlink, ParsedDiff, ReflogEntry, ReleaseTrigger, RepoStatusSummary, StashEntry,
-    SubmoduleInfo, TagInfo, WorktreeInfo,
+    OrphanGitlink, ParsedConflictFile, ParsedDiff, ReflogEntry, ReleaseTrigger, RepoStatusSummary,
+    StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, has_conflict_markers,
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{
@@ -128,11 +128,26 @@ pub(crate) struct GitFleetApp {
     pub(crate) show_branch_popover: bool,
     pub(crate) branch_filter_id: text_input::Id,
     pub(crate) branch_filter_query: String,
+    pub(crate) branch_create_base: Option<String>,
+    pub(crate) branch_create_checkout: bool,
 
     // Merge/Rebase Forecast Modal
     pub(crate) show_merge_modal: bool,
     pub(crate) merge_target_branch: Option<String>,
     pub(crate) merge_forecast: Option<ForecastResult>,
+
+    // Rename Branch Modal
+    pub(crate) rename_branch_modal: Option<RenameBranchModalState>,
+    pub(crate) rename_branch_input_id: text_input::Id,
+
+    // Interactive Conflict Solver
+    pub(crate) conflict_file_path: Option<String>,
+    pub(crate) conflict_parsed: ParsedConflictFile,
+    pub(crate) conflict_active_hunk: Option<usize>,
+    pub(crate) conflict_editing_hunk: Option<usize>,
+    pub(crate) conflict_hunk_editor: text_editor::Content,
+    pub(crate) conflict_expanded_segments: HashSet<usize>,
+    pub(crate) conflict_scroll_id: scrollable::Id,
 
     // Git Flow Modal
     pub(crate) show_git_flow_modal: bool,
@@ -330,9 +345,20 @@ impl GitFleetApp {
             show_branch_popover: false,
             branch_filter_id: text_input::Id::unique(),
             branch_filter_query: String::new(),
+            branch_create_base: None,
+            branch_create_checkout: true,
             show_merge_modal: false,
             merge_target_branch: None,
             merge_forecast: None,
+            rename_branch_modal: None,
+            rename_branch_input_id: text_input::Id::unique(),
+            conflict_file_path: None,
+            conflict_parsed: ParsedConflictFile::default(),
+            conflict_active_hunk: None,
+            conflict_editing_hunk: None,
+            conflict_hunk_editor: text_editor::Content::new(),
+            conflict_expanded_segments: HashSet::new(),
+            conflict_scroll_id: scrollable::Id::unique(),
             show_git_flow_modal: false,
             git_flow_state: GitFlowState::default(),
             git_flow_main_input: "main".into(),
@@ -526,6 +552,7 @@ impl GitFleetApp {
             || self.pending_confirm.is_some()
             || self.cherry_pick_modal.is_some()
             || self.discard_modal.is_some()
+            || self.rename_branch_modal.is_some()
     }
 
     pub(crate) fn default_terminal_profile_id(&self) -> String {
@@ -685,6 +712,48 @@ impl GitFleetApp {
                 self.editor_dirty = false;
             }
         }
+        self.load_conflict_state_for_file(rel_path);
+    }
+
+    pub(crate) fn load_conflict_state_for_file(&mut self, rel_path: &str) {
+        let Some(repo) = self.current_repo() else {
+            self.clear_conflict_state();
+            return;
+        };
+        let is_git_conflicted = self
+            .active_status()
+            .is_some_and(|st| st.conflict_files.iter().any(|f| f.path == rel_path));
+        let full_path = repo.path.join(rel_path);
+        let raw_opt = std::fs::read_to_string(&full_path).ok();
+        let has_markers = raw_opt.as_deref().is_some_and(has_conflict_markers);
+
+        if is_git_conflicted || has_markers {
+            let parsed = raw_opt
+                .as_deref()
+                .map(ParsedConflictFile::parse)
+                .unwrap_or_default();
+            let first_hunk = (parsed.conflict_count() > 0).then_some(0);
+            self.conflict_file_path = Some(rel_path.to_string());
+            self.conflict_parsed = parsed;
+            self.conflict_active_hunk = first_hunk;
+            self.conflict_editing_hunk = None;
+            self.conflict_hunk_editor = text_editor::Content::new();
+            self.conflict_expanded_segments.clear();
+        } else {
+            self.clear_conflict_state();
+            if self.bottom_mode == BottomViewMode::ResolveConflicts {
+                self.bottom_mode = BottomViewMode::SideBySideDiff;
+            }
+        }
+    }
+
+    pub(crate) fn clear_conflict_state(&mut self) {
+        self.conflict_file_path = None;
+        self.conflict_parsed = ParsedConflictFile::default();
+        self.conflict_active_hunk = None;
+        self.conflict_editing_hunk = None;
+        self.conflict_hunk_editor = text_editor::Content::new();
+        self.conflict_expanded_segments.clear();
     }
 
     pub(crate) fn active_changed_files(&self) -> Vec<FileChange> {

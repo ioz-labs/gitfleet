@@ -524,7 +524,11 @@ impl GitFleetApp {
                 })
                 .fold(480.0_f32, f32::max)
                 .clamp(480.0, 1400.0);
-            return column![header, horizontal_rule(1), slim_scroll_h(rf_col, min_reflog_w, p)]
+            return column![
+                header,
+                horizontal_rule(1).style(theme::subtle_rule(p)),
+                slim_scroll_h(rf_col, min_reflog_w, p)
+            ]
                 .spacing(6)
                 .height(Length::Fill)
                 .into();
@@ -786,7 +790,11 @@ impl GitFleetApp {
         let lanes_w = graph::graph_canvas_width(canvas_lanes);
         let min_graph_w = (lanes_w + 68.0 + max_ref_w + 260.0 + 156.0).clamp(520.0, 1600.0);
 
-        column![header, horizontal_rule(1), slim_scroll_h(rows_col, min_graph_w, p)]
+        column![
+            header,
+            horizontal_rule(1).style(theme::subtle_rule(p)),
+            slim_scroll_h(rows_col, min_graph_w, p)
+        ]
             .spacing(6)
             .height(Length::Fill)
             .into()

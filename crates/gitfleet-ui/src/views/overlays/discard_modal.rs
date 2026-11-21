@@ -143,7 +143,7 @@ impl GitFleetApp {
         let files_table = container(
             column![
                 table_header,
-                horizontal_rule(1),
+                horizontal_rule(1).style(theme::subtle_rule(p)),
                 slim_scroll(list, p).height(Length::Fixed(230.0)),
             ]
             .width(Length::Fill),

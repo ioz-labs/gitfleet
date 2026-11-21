@@ -453,7 +453,7 @@ impl GitFleetApp {
 
                 let mut file_col = column![file_hdr].spacing(space::XS);
                 if f.in_vault && !self.vault_summary.vault_locked && !f.keys.is_empty() {
-                    file_col = file_col.push(horizontal_rule(1));
+                    file_col = file_col.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     for key in &f.keys {
                         let revealed = self
                             .revealed_secrets

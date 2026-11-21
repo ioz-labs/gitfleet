@@ -46,7 +46,22 @@ impl GitFleetApp {
                 Key::Character("r") if modifiers.command() && modifiers.shift() => {
                     Some(Message::RefreshAll)
                 }
+                Key::Named(keyboard::key::Named::F2) => Some(Message::OpenRenameBranchModal(None)),
                 Key::Named(keyboard::key::Named::F5) => Some(Message::RefreshSelected),
+                Key::Named(keyboard::key::Named::F7) => Some(Message::OpenCreateBranch {
+                    base_ref: None,
+                    prefix: None,
+                }),
+                Key::Character("m") | Key::Character("M")
+                    if modifiers.command() && !modifiers.shift() && !modifiers.alt() =>
+                {
+                    Some(Message::ShortcutMergeSelectedBranch)
+                }
+                Key::Character("d") | Key::Character("D")
+                    if modifiers.command() && !modifiers.shift() && !modifiers.alt() =>
+                {
+                    Some(Message::ShortcutRebaseSelectedBranch)
+                }
                 Key::Named(keyboard::key::Named::Escape) => Some(Message::CloseOverlays),
                 Key::Named(keyboard::key::Named::ArrowUp) if modifiers == Modifiers::ALT => {
                     Some(Message::SelectPrevRepo)

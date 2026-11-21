@@ -1,5 +1,5 @@
 use crate::theme::Palette;
-use iced::widget::{button, container, scrollable, text_editor, text_input};
+use iced::widget::{button, container, rule, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector};
 pub fn app_bg(p: Palette) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
@@ -77,6 +77,41 @@ pub fn section_panel_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
             color: p.border_subtle,
             width: 1.0,
             radius: crate::theme::radius::MD.into(),
+        },
+        ..Default::default()
+    }
+}
+
+pub fn subtle_rule(p: Palette) -> impl Fn(&Theme) -> rule::Style {
+    move |_| rule::Style {
+        color: p.border_subtle,
+        width: 1,
+        radius: 0.0.into(),
+        fill_mode: rule::FillMode::Full,
+    }
+}
+
+pub fn section_header_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(p.surface_titlebar)),
+        text_color: Some(p.text_secondary),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+pub fn table_col_header_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(p.surface_sidebar)),
+        text_color: Some(p.text_muted),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 4.0.into(),
         },
         ..Default::default()
     }

@@ -140,9 +140,27 @@ impl GitService {
     }
 
     pub async fn create_branch(&self, repo_path: &Path, branch: &str) -> AppResult<String> {
+        self.create_branch_from(repo_path, branch, None, true).await
+    }
+
+    pub async fn create_branch_from(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        base_ref: Option<&str>,
+        checkout: bool,
+    ) -> AppResult<String> {
+        let mut args: Vec<&str> = if checkout {
+            vec!["checkout", "-b", branch]
+        } else {
+            vec!["branch", branch]
+        };
+        if let Some(base) = base_ref.map(str::trim).filter(|s| !s.is_empty()) {
+            args.push(base);
+        }
         runner::run_git_ok(
             repo_path,
-            &["checkout", "-b", branch],
+            &args,
             Some(&self.command_log),
             Some(&self.events),
             true,
@@ -165,6 +183,22 @@ impl GitService {
         runner::run_git_ok(
             repo_path,
             &["branch", "--unset-upstream", branch],
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await
+    }
+
+    pub async fn rename_branch(
+        &self,
+        repo_path: &Path,
+        old_name: &str,
+        new_name: &str,
+    ) -> AppResult<String> {
+        runner::run_git_ok(
+            repo_path,
+            &["branch", "-m", "--", old_name, new_name],
             Some(&self.command_log),
             Some(&self.events),
             true,

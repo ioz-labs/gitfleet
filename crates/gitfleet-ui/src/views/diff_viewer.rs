@@ -1759,6 +1759,38 @@ impl GitFleetApp {
             ));
         }
 
+        if self.conflict_file_path.is_some() {
+            let unresolved = self.conflict_parsed.unresolved_count();
+            let resolve_label = if unresolved > 0 {
+                format!("Resolve ({unresolved})")
+            } else {
+                "Resolve ✓".to_string()
+            };
+            header = header.push(tip(
+                button(
+                    text(resolve_label)
+                        .size(11)
+                        .color(if self.bottom_mode == BottomViewMode::ResolveConflicts {
+                            p.accent_fg
+                        } else if unresolved > 0 {
+                            p.danger_fg
+                        } else {
+                            p.success_fg
+                        })
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(
+                    p,
+                    self.bottom_mode == BottomViewMode::ResolveConflicts,
+                ))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::ResolveConflicts)),
+                "Interactive Conflict Solver (Ours / Theirs / Both / Manual Edit)",
+                tooltip::Position::Top,
+                p,
+            ));
+        }
+
         header = header
             .push(tip(
                 button(text("Unified").size(11).wrapping(text::Wrapping::None))
@@ -1932,9 +1964,14 @@ impl GitFleetApp {
             BottomViewMode::SideBySideDiff => self.view_side_by_side_diff(p),
             BottomViewMode::Preview => self.view_file_preview(p),
             BottomViewMode::Edit => self.view_file_editor(p),
+            BottomViewMode::ResolveConflicts => self.view_conflict_solver(p),
         };
 
-        column![header, horizontal_rule(1), body]
+        column![
+            header,
+            horizontal_rule(1).style(theme::subtle_rule(p)),
+            body
+        ]
             .spacing(6)
             .height(Length::Fill)
             .into()

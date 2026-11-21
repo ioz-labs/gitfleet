@@ -48,11 +48,30 @@ impl GitFleetApp {
                     return Task::none();
                 }
                 self.show_palette = false;
+                self.context_menu = None;
                 self.show_branch_popover = !self.show_branch_popover;
                 self.branch_filter_query.clear();
+                self.branch_create_base = None;
+                self.branch_create_checkout = true;
                 if self.show_branch_popover {
                     return text_input::focus(self.branch_filter_id.clone());
                 }
+                Task::none()
+            }
+            Message::OpenCreateBranch { base_ref, prefix } => {
+                if self.selected_repo.is_none() {
+                    return Task::none();
+                }
+                self.show_palette = false;
+                self.context_menu = None;
+                self.show_branch_popover = true;
+                self.branch_create_base = base_ref;
+                self.branch_create_checkout = true;
+                self.branch_filter_query = prefix.unwrap_or_default();
+                text_input::focus(self.branch_filter_id.clone())
+            }
+            Message::ToggleCreateBranchCheckout(v) => {
+                self.branch_create_checkout = v;
                 Task::none()
             }
             Message::BranchFilterChanged(q) => {
@@ -76,6 +95,10 @@ impl GitFleetApp {
                 }
                 if self.discard_modal.is_some() {
                     self.discard_modal = None;
+                    return Task::none();
+                }
+                if self.rename_branch_modal.is_some() {
+                    self.rename_branch_modal = None;
                     return Task::none();
                 }
                 if self.context_menu.is_some() {
@@ -519,8 +542,8 @@ impl GitFleetApp {
                     }
                     ConfirmAction::ResetVaultKey => self.update(Message::ResetVaultKey),
                     ConfirmAction::ForceCommit { push_after } => self.execute_commit(push_after),
-                    ConfirmAction::ExecuteMerge { target } => {
-                        self.update(Message::ExecuteMerge(target))
+                    ConfirmAction::ExecuteMerge { target, mode } => {
+                        self.update(Message::ExecuteMerge(target, mode))
                     }
                     ConfirmAction::FastForwardMerge { branch } => {
                         self.update(Message::FastForwardMergeBranch(branch))

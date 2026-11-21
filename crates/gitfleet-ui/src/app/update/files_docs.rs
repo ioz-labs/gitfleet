@@ -165,6 +165,13 @@ impl GitFleetApp {
                 self.selected_changed_file = Some(file.clone());
                 self.open_file_for_preview_and_edit(&file.path);
 
+                if self.graph_selection == GraphSelection::WorkingTree
+                    && (file.kind == FileChangeKind::Conflicted
+                        || self.conflict_parsed.conflict_count() > 0)
+                {
+                    self.bottom_mode = BottomViewMode::ResolveConflicts;
+                }
+
                 let Some(repo) = self.current_repo() else {
                     return Task::none();
                 };

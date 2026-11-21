@@ -431,7 +431,11 @@ impl GitFleetApp {
                 .spacing(space::XS)
                 .align_y(Alignment::Center);
 
-                let mut pane_col = column![hdr, horizontal_rule(1), commit_box]
+                let mut pane_col = column![
+                    hdr,
+                    horizontal_rule(1).style(theme::subtle_rule(p)),
+                    commit_box
+                ]
                     .spacing(space::XS)
                     .width(Length::Fill)
                     .height(Length::Fill);
@@ -594,7 +598,7 @@ impl GitFleetApp {
 
                     column![
                         hdr.width(Length::Fill),
-                        horizontal_rule(1),
+                        horizontal_rule(1).style(theme::subtle_rule(p)),
                         row![big_avatar, meta_col]
                             .spacing(8)
                             .width(Length::Fill)
@@ -655,23 +659,36 @@ impl GitFleetApp {
             )
         };
 
+        let multi_sel_count = if self.graph_selection == GraphSelection::WorkingTree {
+            self.selected_changed_files.len()
+        } else {
+            0
+        };
+        let mut files_title_row = row![
+            text("Files").size(type_scale::BODY).color(p.text_primary),
+            theme::badge(
+                format!("{changed_count}"),
+                p.surface_card,
+                p.text_muted,
+                p.border_subtle,
+                false,
+            ),
+        ]
+        .spacing(space::XS)
+        .align_y(Alignment::Center);
+        if multi_sel_count > 1 {
+            files_title_row = files_title_row.push(theme::badge(
+                format!("{multi_sel_count} selected"),
+                p.fill_selected,
+                p.accent_fg,
+                p.border_subtle,
+                false,
+            ));
+        }
+
         let files_header = column![
             row![
-                theme::clipped_line(
-                    row![
-                        text("Files").size(type_scale::BODY).color(p.text_primary),
-                        theme::badge(
-                            format!("{changed_count}"),
-                            p.surface_card,
-                            p.text_muted,
-                            p.border_subtle,
-                            false,
-                        ),
-                    ]
-                    .spacing(space::XS)
-                    .align_y(Alignment::Center),
-                    Length::Fill,
-                ),
+                theme::clipped_line(files_title_row, Length::Fill),
                 mode_pill(
                     icons::file_diff(
                         12.0,
@@ -785,8 +802,10 @@ impl GitFleetApp {
     }
 
     /// SmartGit-style Files view:
-    /// - When inspecting `Working Tree / Index`: splits cleanly into an **Unstaged** panel (top)
-    ///   and a **Staged (Index)** panel (bottom) separated by a draggable splitter.
+    /// - When inspecting `Working Tree / Index`:
+    ///   - If there are NO staged files, renders a single calm full-height files table (Staged panel hidden).
+    ///   - When at least one file is staged, splits cleanly into **Unstaged** (top) and **Staged** (bottom)
+    ///     separated by a draggable splitter.
     /// - When inspecting a historical `Commit`: displays a single full-height commit files table.
     pub(crate) fn view_files_flat(
         &self,
@@ -807,6 +826,17 @@ impl GitFleetApp {
 
         let unstaged_files = self.visible_files_for_section(false, dir_filter);
         let staged_files = self.visible_files_for_section(true, dir_filter);
+
+        // Hide the Staged panel completely when there are no staged files so Unstaged gets 100% height.
+        if staged_files.is_empty() {
+            return self.view_files_table(
+                unstaged_files,
+                true,
+                "Working tree clean.",
+                p,
+            );
+        }
+
         let sel_unstaged_cnt = unstaged_files
             .iter()
             .filter(|f| self.selected_changed_files.contains(&(f.path.clone(), f.staged)))
@@ -824,7 +854,7 @@ impl GitFleetApp {
             })),
             text("Unstaged")
                 .size(type_scale::CAPTION)
-                .color(p.text_primary),
+                .color(p.text_secondary),
             theme::badge(
                 unstaged_files.len().to_string(),
                 p.surface_card,
@@ -850,31 +880,19 @@ impl GitFleetApp {
         }
 
         let unstaged_hdr = container(unstaged_hdr_row)
-            .padding([3, 7])
+            .padding([4, 8])
             .width(Length::Fill)
-            .style(theme::dock_subtoolbar_box(p));
+            .style(theme::section_header_box(p));
 
         let mut staged_hdr_row = row![
-            container(Space::new(6, 6)).style(theme::dot_box(if staged_files.is_empty() {
-                p.text_muted
-            } else {
-                p.success_fg
-            })),
+            container(Space::new(6, 6)).style(theme::dot_box(p.success_fg)),
             text("Staged")
                 .size(type_scale::CAPTION)
-                .color(p.text_primary),
+                .color(p.text_secondary),
             theme::badge(
                 staged_files.len().to_string(),
-                if staged_files.is_empty() {
-                    p.surface_card
-                } else {
-                    p.success_bg
-                },
-                if staged_files.is_empty() {
-                    p.text_muted
-                } else {
-                    p.success_fg
-                },
+                p.success_bg,
+                p.success_fg,
                 p.border_subtle,
                 false,
             ),
@@ -892,14 +910,13 @@ impl GitFleetApp {
         }
 
         let staged_hdr = container(staged_hdr_row)
-            .padding([3, 7])
+            .padding([4, 8])
             .width(Length::Fill)
-            .style(theme::dock_subtoolbar_box(p));
+            .style(theme::section_header_box(p));
 
         let unstaged_panel = container(
             column![
                 unstaged_hdr,
-                horizontal_rule(1),
                 self.view_files_table(
                     unstaged_files,
                     true,
@@ -907,6 +924,7 @@ impl GitFleetApp {
                     p,
                 ),
             ]
+            .spacing(2)
             .height(Length::Fill)
             .width(Length::Fill),
         )
@@ -916,14 +934,14 @@ impl GitFleetApp {
         let staged_panel = container(
             column![
                 staged_hdr,
-                horizontal_rule(1),
                 self.view_files_table(
                     staged_files,
                     true,
-                    "No staged changes — click + on a file or Stage All.",
+                    "No staged changes.",
                     p,
                 ),
             ]
+            .spacing(2)
             .height(Length::Fill)
             .width(Length::Fill),
         )
@@ -1007,14 +1025,13 @@ impl GitFleetApp {
         }
 
         let header_strip = container(col_hdr)
-            .padding([3, 7])
+            .padding([4, 7])
             .width(Length::Fill)
-            .style(theme::dock_subtoolbar_box(p));
+            .style(theme::table_col_header_box(p));
 
         if visible_files.is_empty() {
             return column![
                 header_strip,
-                horizontal_rule(1),
                 container(
                     text(empty_hint)
                         .size(type_scale::CAPTION)
@@ -1024,6 +1041,7 @@ impl GitFleetApp {
                 .width(Length::Fill)
                 .height(Length::Fill),
             ]
+            .spacing(2)
             .height(Length::Fill)
             .into();
         }
@@ -1169,7 +1187,7 @@ impl GitFleetApp {
             )));
         }
 
-        let table = column![header_strip, horizontal_rule(1), list].width(Length::Fill);
+        let table = column![header_strip, list].spacing(2).width(Length::Fill);
         slim_scroll_h(table, table_min_w, p)
     }
 

@@ -506,7 +506,7 @@ impl PreviewState {
                             .color(p.text_muted),
                     ]
                     .align_y(Alignment::Center),
-                    horizontal_rule(1),
+                    horizontal_rule(1).style(theme::subtle_rule(p)),
                     container(
                         image(image::Handle::from_path(path))
                             .content_fit(ContentFit::Contain)
@@ -535,7 +535,7 @@ impl PreviewState {
                             .color(p.text_muted),
                     ]
                     .align_y(Alignment::Center),
-                    horizontal_rule(1),
+                    horizontal_rule(1).style(theme::subtle_rule(p)),
                     container(
                         svg(svg::Handle::from_path(path))
                             .content_fit(ContentFit::Contain)

@@ -6,5 +6,6 @@ mod context_menu;
 mod discard_modal;
 mod git_flow_modal;
 mod merge_modal;
+mod rename_branch_modal;
 mod settings_modal;
 mod workspace_modal;

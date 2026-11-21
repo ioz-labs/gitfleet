@@ -495,6 +495,9 @@ mod tests {
         runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
             .await
             .unwrap();
+        runner::run_git_ok(&dir, &["config", "core.autocrlf", "false"], None, None, false)
+            .await
+            .unwrap();
 
         std::fs::write(dir.join("a.txt"), "v1\n").unwrap();
         svc.stage(&dir, &["a.txt".into()]).await.unwrap();
@@ -513,7 +516,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "v2\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "v2\n"
+        );
 
         // Add newly staged file + untracked file
         std::fs::write(dir.join("new_staged.txt"), "ns\n").unwrap();
@@ -532,7 +540,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "v1\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "v1\n"
+        );
         assert!(!dir.join("new_staged.txt").exists());
         assert!(!dir.join("untracked.txt").exists());
         let st = svc.get_status(&dir).await.unwrap();

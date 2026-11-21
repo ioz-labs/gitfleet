@@ -37,7 +37,7 @@ impl GitFleetApp {
                 let mut panes_row = row![].spacing(0).height(Length::Fill).width(Length::Fill);
                 for (p_idx, pane) in tab.panes.iter().enumerate() {
                     if p_idx > 0 {
-                        panes_row = panes_row.push(vertical_rule(1));
+                        panes_row = panes_row.push(vertical_rule(1).style(theme::subtle_rule(p)));
                     }
                     let is_focused = self.terminal_focused && p_idx == tab.focused_pane;
                     let canvas_el = crate::terminal::terminal_pane_canvas(
@@ -231,7 +231,7 @@ impl GitFleetApp {
             .height(Length::Fill)
             .style(theme::vscode_dock_box(p));
 
-        row![main_area, vertical_rule(1), sidebar]
+        row![main_area, vertical_rule(1).style(theme::subtle_rule(p)), sidebar]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -300,7 +300,7 @@ impl GitFleetApp {
                 "Ctrl+Shift+5",
                 Message::TerminalSplitPane(None),
             ),
-            horizontal_rule(1),
+            horizontal_rule(1).style(theme::subtle_rule(p)),
         ]
         .spacing(2);
 
@@ -354,7 +354,7 @@ impl GitFleetApp {
             items = items.push(sub);
         }
 
-        items = items.push(horizontal_rule(1));
+        items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
 
         // Select Default Profile expandable submenu (uses crisp SVG checkmark)
         let def_open = self.terminal_menu_submenu == TerminalMenuSubmenu::SelectDefaultProfile;
@@ -402,7 +402,7 @@ impl GitFleetApp {
             "",
             Message::ToggleSettingsModal,
         ));
-        items = items.push(horizontal_rule(1));
+        items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
         items = items.push(menu_item(
             "Paste Clipboard".into(),
             "Ctrl+V",

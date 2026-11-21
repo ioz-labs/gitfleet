@@ -1,6 +1,6 @@
 use gitfleet_core::{RepoId, SessionId};
 use gitfleet_git::bulk::BulkOperation;
-use gitfleet_git::{DiscardTarget, FileChange, ResetMode};
+use gitfleet_git::{DiscardTarget, FileChange, MergeMode, ResetMode};
 use gitfleet_terminal::TermScreenSnapshot;
 use iced::Point;
 use std::path::PathBuf;
@@ -135,6 +135,7 @@ pub(crate) enum BottomViewMode {
     SideBySideDiff,
     Preview,
     Edit,
+    ResolveConflicts,
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +156,7 @@ pub(crate) enum ConfirmAction {
     RemoveWorktree { path: PathBuf },
     ResetVaultKey,
     ForceCommit { push_after: bool },
-    ExecuteMerge { target: String },
+    ExecuteMerge { target: String, mode: MergeMode },
     FastForwardMerge { branch: String },
     ExecuteRebase { target: String },
     CheckoutCommit { oid: String },
@@ -433,7 +434,10 @@ impl PendingConfirm {
             detail: Some(label.to_string()),
             confirm_label: "Merge".into(),
             is_danger: false,
-            action: ConfirmAction::ExecuteMerge { target },
+            action: ConfirmAction::ExecuteMerge {
+                target,
+                mode: MergeMode::MergeCommit,
+            },
         }
     }
 
@@ -597,6 +601,12 @@ pub(crate) struct DiscardModalState {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct RenameBranchModalState {
+    pub(crate) old_name: String,
+    pub(crate) new_name: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ContextMenuState {
     pub(crate) position: Point,
     pub(crate) target: ContextMenuTarget,
@@ -625,6 +635,13 @@ pub(crate) enum ContextMenuTarget {
         name: String,
         is_head: bool,
         is_remote: bool,
+    },
+    LocalBranchesGroup {
+        local_names: Vec<String>,
+    },
+    LocalBranchFolder {
+        folder_key: String,
+        prefix: String,
     },
     ChangedFile {
         file: FileChange,

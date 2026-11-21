@@ -226,7 +226,12 @@ impl GitFleetApp {
             DrawerTab::CommandLog => self.view_command_log_body(p),
         };
 
-        container(column![resize_handle, header, horizontal_rule(1), body])
+        container(column![
+            resize_handle,
+            header,
+            horizontal_rule(1).style(theme::subtle_rule(p)),
+            body
+        ])
             .width(Length::Fill)
             .height(Length::Fixed(
                 self.drawer_height.max(layout::DOCK_MIN_HEIGHT),

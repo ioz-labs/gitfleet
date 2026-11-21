@@ -4,7 +4,7 @@ use crate::app::{
 use crate::icons;
 use crate::theme::{self, Palette};
 use crate::views::{slim_scroll, truncate_chars};
-use gitfleet_git::{FileChangeKind, ResetMode};
+use gitfleet_git::{ConflictStrategy, FileChangeKind, ResetMode};
 use iced::widget::{Space, button, column, container, horizontal_rule, mouse_area, row, text};
 use iced::{Alignment, Element, Length};
 impl GitFleetApp {
@@ -57,7 +57,7 @@ impl GitFleetApp {
                     Message::UnstageAll,
                     false,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::stash(12.0, p.text_secondary).into(),
                     "Save Stash…".into(),
@@ -82,7 +82,7 @@ impl GitFleetApp {
                     Message::OpenInlineGroupInput(None),
                     false,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::folder_plus(12.0, p.text_secondary).into(),
                     "Add Local Repository…".into(),
@@ -101,7 +101,7 @@ impl GitFleetApp {
                     Message::ToggleWorkspaceModal,
                     false,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::refresh(12.0, p.text_secondary).into(),
                     "Refresh All Repositories".into(),
@@ -153,14 +153,14 @@ impl GitFleetApp {
                         false,
                     ));
                 }
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::folder_plus(12.0, p.text_secondary).into(),
                     "Add Local Repository…".into(),
                     Message::PickAddRepo,
                     false,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
                     format!("Delete Group '{}'…", truncate_chars(name, 18)),
@@ -211,7 +211,7 @@ impl GitFleetApp {
                     Message::ContextRepoGitOp(id.clone(), "push"),
                     false,
                 )));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
 
                 let move_trigger = button(
                     row![
@@ -256,7 +256,7 @@ impl GitFleetApp {
                     sorted_groups.sort();
                     sorted_groups.dedup();
                     if !sorted_groups.is_empty() {
-                        sub_items = sub_items.push(horizontal_rule(1));
+                        sub_items = sub_items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     }
                     for g in sorted_groups {
                         let depth = g.matches('/').count();
@@ -279,7 +279,7 @@ impl GitFleetApp {
                         ));
                     }
 
-                    sub_items = sub_items.push(horizontal_rule(1));
+                    sub_items = sub_items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     sub_items = sub_items.push(ctx_btn(
                         icons::plus(12.0, p.accent_fg).into(),
                         "New Group…".into(),
@@ -296,7 +296,7 @@ impl GitFleetApp {
                     ));
                 }
 
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
                     icons::terminal(12.0, p.text_secondary).into(),
                     "Open Terminal Here".into(),
@@ -309,7 +309,7 @@ impl GitFleetApp {
                     Message::CopyText("repository path".into(), path.display().to_string()),
                     false,
                 )));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
                     "Remove from Workspace…".into(),
@@ -391,7 +391,7 @@ impl GitFleetApp {
                     )),
                     true,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::file_diff(12.0, p.text_secondary).into(),
                     "Compare with HEAD".into(),
@@ -404,7 +404,16 @@ impl GitFleetApp {
                     Message::CreateTagAtCommit(oid.clone()),
                     false,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(ctx_btn(
+                    icons::plus(12.0, p.success_fg).into(),
+                    "Add Branch Here…".into(),
+                    Message::OpenCreateBranch {
+                        base_ref: Some(oid.clone()),
+                        prefix: None,
+                    },
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::reset_soft(12.0, p.text_secondary).into(),
                     "Reset Soft to Here…".into(),
@@ -435,7 +444,7 @@ impl GitFleetApp {
                     )),
                     true,
                 ));
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::file_code(12.0, p.text_secondary).into(),
                     "Use Message for Commit".into(),
@@ -518,11 +527,17 @@ impl GitFleetApp {
                         Message::CompareRefs("HEAD".into(), name.clone()),
                         false,
                     ));
-                    items = items.push(horizontal_rule(1));
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     items = items.push(ctx_btn(
                         icons::git_merge(12.0, p.accent_fg).into(),
-                        "Merge / Rebase Forecast…".into(),
+                        "Merge… (Ctrl+M)".into(),
                         Message::OpenMergeWithTarget(name.clone()),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::branch(12.0, p.violet_fg).into(),
+                        "Rebase… (Ctrl+D)".into(),
+                        Message::RequestConfirm(PendingConfirm::rebase_onto(name.clone(), name)),
                         false,
                     ));
                     items = items.push(ctx_btn(
@@ -542,13 +557,32 @@ impl GitFleetApp {
                     ));
                 }
 
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
 
                 if !is_remote {
+                    items = items.push(ctx_btn(
+                        icons::plus(12.0, p.accent_fg).into(),
+                        format!("Add Branch from '{}'…", truncate_chars(name, 16)),
+                        Message::OpenCreateBranch {
+                            base_ref: Some(name.clone()),
+                            prefix: None,
+                        },
+                        false,
+                    ));
                     items = items.push(ctx_btn(
                         icons::push(12.0, p.success_fg).into(),
                         "Push Branch…".into(),
                         Message::RequestConfirm(PendingConfirm::push_branch(name.clone())),
+                        false,
+                    ));
+                } else {
+                    items = items.push(ctx_btn(
+                        icons::plus(12.0, p.accent_fg).into(),
+                        format!("Add Local Branch from '{}'…", truncate_chars(name, 16)),
+                        Message::OpenCreateBranch {
+                            base_ref: Some(name.clone()),
+                            prefix: None,
+                        },
                         false,
                     ));
                 }
@@ -577,7 +611,7 @@ impl GitFleetApp {
                 }
 
                 if has_upstream {
-                    items = items.push(horizontal_rule(1));
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     items = items.push(ctx_btn(
                         icons::close_x(12.0, p.text_secondary).into(),
                         "Stop Tracking Upstream…".into(),
@@ -586,8 +620,17 @@ impl GitFleetApp {
                     ));
                 }
 
+                if !is_remote {
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    items = items.push(ctx_btn(
+                        icons::branch(12.0, p.accent_fg).into(),
+                        "Rename Branch… (F2)".into(),
+                        Message::OpenRenameBranchModal(Some(name.clone())),
+                        false,
+                    ));
+                }
+
                 if !is_head && !is_remote {
-                    items = items.push(horizontal_rule(1));
                     items = items.push(ctx_btn(
                         icons::trash(12.0, p.danger_fg).into(),
                         format!("Delete Branch '{}'…", truncate_chars(name, 16)),
@@ -602,11 +645,67 @@ impl GitFleetApp {
                     ));
                 }
 
-                items = items.push(horizontal_rule(1));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::copy(12.0, p.text_secondary).into(),
                     "Copy Branch Name".into(),
                     Message::CopyText("branch name".into(), name.clone()),
+                    false,
+                ));
+            }
+            ContextMenuTarget::LocalBranchesGroup { local_names } => {
+                items = items.push(
+                    container(text("Local Branches").size(10).color(p.text_muted))
+                        .padding([2, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::plus(12.0, p.accent_fg).into(),
+                    "Add Branch… (F7)".into(),
+                    Message::OpenCreateBranch {
+                        base_ref: None,
+                        prefix: None,
+                    },
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::chevron_down(12.0, p.text_secondary).into(),
+                    "Toggle Expand / Collapse".into(),
+                    Message::ToggleBranchTreeNode("local".into()),
+                    false,
+                ));
+                if !local_names.is_empty() {
+                    items = items.push(ctx_btn(
+                        icons::check(12.0, p.text_secondary).into(),
+                        "Toggle All in Graph".into(),
+                        Message::ToggleGraphBranchGroup(local_names.clone()),
+                        false,
+                    ));
+                }
+            }
+            ContextMenuTarget::LocalBranchFolder { folder_key, prefix } => {
+                items = items.push(
+                    container(
+                        text(truncate_chars(prefix, 26))
+                            .size(10)
+                            .color(p.text_muted),
+                    )
+                    .padding([2, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::plus(12.0, p.accent_fg).into(),
+                    format!("Add Branch in '{}'…", truncate_chars(prefix, 16)),
+                    Message::OpenCreateBranch {
+                        base_ref: None,
+                        prefix: Some(prefix.clone()),
+                    },
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::chevron_down(12.0, p.text_secondary).into(),
+                    "Toggle Expand / Collapse".into(),
+                    Message::ToggleBranchTreeNode(folder_key.clone()),
                     false,
                 ));
             }
@@ -625,7 +724,33 @@ impl GitFleetApp {
                         .contains(&(file.path.clone(), file.staged));
                 let multi_cnt = self.selected_changed_files.len();
 
-                if *is_working_tree && file.kind != FileChangeKind::Conflicted {
+                if *is_working_tree && file.kind == FileChangeKind::Conflicted {
+                    items = items.push(ctx_btn(
+                        icons::git_merge(12.0, p.danger_fg).into(),
+                        "Open Conflict Solver".into(),
+                        Message::OpenConflictSolver(file.path.clone()),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::check(12.0, p.accent_fg).into(),
+                        "Keep Ours (Whole File)".into(),
+                        Message::ResolveConflict(file.path.clone(), ConflictStrategy::Ours),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::check(12.0, p.violet_fg).into(),
+                        "Keep Theirs (Whole File)".into(),
+                        Message::ResolveConflict(file.path.clone(), ConflictStrategy::Theirs),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::check(12.0, p.success_fg).into(),
+                        "Mark Resolved (git add)".into(),
+                        Message::ResolveConflict(file.path.clone(), ConflictStrategy::MarkResolved),
+                        false,
+                    ));
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                } else if *is_working_tree && file.kind != FileChangeKind::Conflicted {
                     if file.staged {
                         if in_multi_sel {
                             items = items.push(ctx_btn(
@@ -657,7 +782,7 @@ impl GitFleetApp {
                             false,
                         ));
                     }
-                    items = items.push(horizontal_rule(1));
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 }
                 items = items.push(ctx_btn(
                     icons::file_code(12.0, p.text_secondary).into(),
@@ -684,7 +809,7 @@ impl GitFleetApp {
                     false,
                 ));
                 if *is_working_tree && file.kind != FileChangeKind::Conflicted {
-                    items = items.push(horizontal_rule(1));
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     if in_multi_sel {
                         items = items.push(ctx_btn(
                             icons::trash(12.0, p.danger_fg).into(),

@@ -156,7 +156,7 @@ impl GitFleetApp {
                     ]
                     .spacing(space::SM)
                     .align_y(Alignment::Center),
-                    horizontal_rule(1),
+                    horizontal_rule(1).style(theme::subtle_rule(p)),
                     slim_scroll(items, p).height(Length::Fixed(380.0)),
                 ]
                 .spacing(space::SM),

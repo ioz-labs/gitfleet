@@ -29,12 +29,13 @@ cargo run -p gitfleet-ui
 
 ### Automated Builds via GitHub Actions (Recommended)
 
-- **CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): automatically runs `cargo check` (`-D warnings`) and `cargo test` on Windows, macOS, and Linux for every push/PR.
-- **Release** ([.github/workflows/release.yml](.github/workflows/release.yml)): builds and packages native installers/archives for all platforms:
+- **Tag-Triggered CI & Release** ([.github/workflows/release.yml](.github/workflows/release.yml)): runs `cargo check` (`-D warnings`), native unit tests, and packages release artifacts when pushing a `v*` tag (or triggered manually via `workflow_dispatch`):
   - Windows (`x86_64`): `gitfleet-windows-x86_64.zip`
+  - Windows (`arm64`): `gitfleet-windows-arm64.zip`
   - macOS Apple Silicon (`arm64`): `gitfleet-macos-arm64.dmg`
   - macOS Intel (`x86_64`): `gitfleet-macos-x86_64.dmg`
   - Linux (`x86_64`): `gitfleet-linux-x86_64.tar.gz` and `gitfleet-linux-x86_64.deb`
+  - Linux (`arm64`): `gitfleet-linux-arm64.tar.gz` and `gitfleet-linux-arm64.deb`
 
 Trigger a release by pushing a version tag:
 

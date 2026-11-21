@@ -742,7 +742,14 @@ impl GitFleetApp {
         )
         .on_right_press(Message::OpenContextMenu(ContextMenuTarget::RepositoriesPane));
 
-        let mut col = column![header, filter, pills, horizontal_rule(1), scroll_area].spacing(6);
+        let mut col = column![
+            header,
+            filter,
+            pills,
+            horizontal_rule(1).style(theme::subtle_rule(p)),
+            scroll_area
+        ]
+        .spacing(6);
 
         if !self.bulk_selected.is_empty() {
             let bulk_count = self.bulk_selected.len();

@@ -18,7 +18,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 pub use branches::BranchInfo;
-pub use conflicts::ConflictStrategy;
+pub use conflicts::{
+    ConflictHunk, ConflictSegment, ConflictStrategy, HunkChoice, MergeMode, ParsedConflictFile,
+    has_conflict_markers,
+};
 pub use diff::{
     DiffBlock, DiffChangeBlock, DiffChangeKind, DiffContextLine, DiffHunk, DiffStats, ParsedDiff,
     parse_unified_diff,

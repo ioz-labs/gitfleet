@@ -15,6 +15,20 @@ const BOLD_FONT: Font = Font {
     ..Font::DEFAULT
 };
 
+#[cfg(test)]
+const GROUP_CHECKBOX_X: f32 = 19.0; // chevron (14px) + row spacing (5px)
+const TREE_INDENT_STEP: f32 = 18.0;
+
+fn branch_folder_indent(depth: usize) -> f32 {
+    (depth as f32) * TREE_INDENT_STEP
+}
+
+fn branch_leaf_indent(depth: usize) -> f32 {
+    // Shift children inside their parent group so their checkbox aligns under the parent label
+    // rather than flush with the parent group's checkbox (matching SmartGit's branch tree).
+    (depth as f32) * TREE_INDENT_STEP + TREE_INDENT_STEP
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpstreamHintKind {
     Synced,
@@ -250,7 +264,7 @@ fn render_branch_subtree<'a>(
         let folder_key = format!("{key_prefix}/{folder}");
         let default_expanded = !ctx.is_remote && (child.contains_head() || ctx.auto_expand_small);
         let expanded = default_expanded ^ ctx.toggled.contains(&folder_key);
-        let indent = (depth as f32) * 14.0;
+        let indent = branch_folder_indent(depth);
         let folder_est_w = indent + 38.0 + (folder.chars().count() + 1) as f32 * 7.2 + 30.0;
         if folder_est_w > *max_row_w {
             *max_row_w = folder_est_w;
@@ -261,34 +275,50 @@ fn render_branch_subtree<'a>(
             icons::chevron_right(icon_size::XS, p.text_muted).into()
         };
 
-        out.push(
-            button(
-                row![
-                    chevron,
-                    theme::clipped_line(
-                        text(format!("{folder}/"))
-                            .size(type_scale::BODY)
-                            .color(p.text_secondary),
-                        Length::Fill,
-                    ),
-                    text(format!("({})", child.count()))
-                        .size(type_scale::BADGE)
-                        .color(p.text_muted),
-                ]
-                .spacing(4)
-                .align_y(Alignment::Center),
-            )
-            .width(Length::Fill)
-            .padding(Padding {
-                top: 3.0,
-                right: 5.0,
-                bottom: 3.0,
-                left: indent + 2.0,
-            })
-            .style(theme::toolbar_btn(p, false))
-            .on_press(Message::ToggleBranchTreeNode(folder_key.clone()))
-            .into(),
-        );
+        let folder_btn = button(
+            row![
+                chevron,
+                theme::clipped_line(
+                    text(format!("{folder}/"))
+                        .size(type_scale::BODY)
+                        .color(p.text_secondary),
+                    Length::Fill,
+                ),
+                text(format!("({})", child.count()))
+                    .size(type_scale::BADGE)
+                    .color(p.text_muted),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(Padding {
+            top: 3.0,
+            right: 5.0,
+            bottom: 3.0,
+            left: indent,
+        })
+        .style(theme::toolbar_btn(p, false))
+        .on_press(Message::ToggleBranchTreeNode(folder_key.clone()));
+
+        if ctx.is_remote {
+            out.push(folder_btn.into());
+        } else {
+            let prefix = format!(
+                "{}/",
+                folder_key.strip_prefix("local/").unwrap_or(&folder_key)
+            );
+            out.push(
+                mouse_area(folder_btn)
+                    .on_right_press(Message::OpenContextMenu(
+                        ContextMenuTarget::LocalBranchFolder {
+                            folder_key: folder_key.clone(),
+                            prefix,
+                        },
+                    ))
+                    .into(),
+            );
+        }
 
         if expanded {
             render_branch_subtree(child, &folder_key, depth + 1, ctx, out, max_row_w);
@@ -299,7 +329,7 @@ fn render_branch_subtree<'a>(
     let mut leaves = node.leaves.clone();
     leaves.sort_by(|(la, ba), (lb, bb)| bb.is_head.cmp(&ba.is_head).then_with(|| la.cmp(lb)));
 
-    let leaf_indent = (depth as f32) * 14.0 + 4.0;
+    let leaf_indent = branch_leaf_indent(depth);
     for (leaf_name, b) in leaves {
         let linked_wt = if ctx.is_remote {
             None
@@ -597,47 +627,67 @@ impl GitFleetApp {
                     icons::chevron_right(icon_size::XS, p.text_secondary).into()
                 };
                 let local_names_cb = local_names.clone();
-                rows.push(
-                    row![
-                        button(local_chevron)
-                            .padding([3, 1])
-                            .width(Length::Fixed(14.0))
-                            .style(theme::vscode_icon_btn(p, false))
-                            .on_press(Message::ToggleBranchTreeNode("local".into())),
-                        checkbox("", all_local_checked)
-                            .size(12)
-                            .spacing(0)
-                            .on_toggle(move |_| {
-                                Message::ToggleGraphBranchGroup(local_names_cb.clone())
-                            }),
-                        button(
-                            row![
-                                theme::clipped_line(
-                                    row![
-                                        text("Local Branches")
-                                            .size(type_scale::BODY)
-                                            .font(BOLD_FONT)
-                                            .color(p.text_primary),
-                                        text(format!("({local_count})"))
-                                            .size(type_scale::CAPTION)
-                                            .color(p.text_muted),
-                                    ]
-                                    .spacing(4)
-                                    .align_y(Alignment::Center),
-                                    Length::Fill,
-                                ),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                        )
-                        .width(Length::Fill)
-                        .padding([3, 4])
-                        .style(theme::toolbar_btn(p, false))
+                let local_names_ctx = local_names.clone();
+                let local_hdr_row = row![
+                    button(local_chevron)
+                        .padding([3, 1])
+                        .width(Length::Fixed(14.0))
+                        .style(theme::vscode_icon_btn(p, false))
                         .on_press(Message::ToggleBranchTreeNode("local".into())),
-                    ]
-                    .spacing(5)
-                    .align_y(Alignment::Center)
-                    .into(),
+                    checkbox("", all_local_checked)
+                        .size(12)
+                        .spacing(0)
+                        .on_toggle(move |_| {
+                            Message::ToggleGraphBranchGroup(local_names_cb.clone())
+                        }),
+                    button(
+                        row![
+                            theme::clipped_line(
+                                row![
+                                    text("Local Branches")
+                                        .size(type_scale::BODY)
+                                        .font(BOLD_FONT)
+                                        .color(p.text_primary),
+                                    text(format!("({local_count})"))
+                                        .size(type_scale::CAPTION)
+                                        .color(p.text_muted),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                                Length::Fill,
+                            ),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding([3, 4])
+                    .style(theme::toolbar_btn(p, false))
+                    .on_press(Message::ToggleBranchTreeNode("local".into())),
+                    tip(
+                        button(icons::plus(11.0, p.text_secondary))
+                            .padding([3, 5])
+                            .style(theme::vscode_icon_btn(p, false))
+                            .on_press(Message::OpenCreateBranch {
+                                base_ref: None,
+                                prefix: None,
+                            }),
+                        "Add Branch… (F7)",
+                        tooltip::Position::Right,
+                        p,
+                    ),
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center);
+
+                rows.push(
+                    mouse_area(local_hdr_row)
+                        .on_right_press(Message::OpenContextMenu(
+                            ContextMenuTarget::LocalBranchesGroup {
+                                local_names: local_names_ctx,
+                            },
+                        ))
+                        .into(),
                 );
 
                 let mut max_branch_w: f32 = 180.0;
@@ -1337,7 +1387,14 @@ impl GitFleetApp {
             }
         };
 
-        container(column![header, horizontal_rule(1), body].spacing(6))
+        container(
+            column![
+                header,
+                horizontal_rule(1).style(theme::subtle_rule(p)),
+                body
+            ]
+            .spacing(6),
+        )
             .padding(8)
             .height(Length::Fill)
             .into()
@@ -1463,5 +1520,15 @@ mod tests {
             linked_worktree_for_branch(&branches[3], &[]),
             Some(("/repo/.claude/worktrees/admiring".to_string(), false))
         );
+    }
+
+    #[test]
+    fn branch_tree_indentation_shifts_children_inside_groups() {
+        // Direct child of a group (depth 1) must be indented noticeably past the group checkbox
+        assert!(branch_leaf_indent(1) >= GROUP_CHECKBOX_X + 16.0);
+        // Nested folder children (depth 2) indent deeper than direct children (depth 1)
+        assert!(branch_leaf_indent(2) > branch_leaf_indent(1));
+        assert!(branch_folder_indent(2) > branch_folder_indent(1));
+        assert!(branch_leaf_indent(1) > branch_folder_indent(1));
     }
 }

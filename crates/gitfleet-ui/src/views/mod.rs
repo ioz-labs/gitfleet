@@ -1,5 +1,6 @@
 mod branches;
 pub(crate) mod commit_files;
+mod conflict_solver;
 pub(crate) mod diff_viewer;
 mod dock;
 mod graph_pane;
