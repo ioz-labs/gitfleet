@@ -140,6 +140,10 @@ pub(crate) struct GitFleetApp {
     pub(crate) rename_branch_modal: Option<RenameBranchModalState>,
     pub(crate) rename_branch_input_id: text_input::Id,
 
+    // Rename Workspace Modal
+    pub(crate) rename_workspace_modal: Option<RenameWorkspaceModalState>,
+    pub(crate) rename_workspace_input_id: text_input::Id,
+
     // Commit Popup Modal (right-click Repo -> Commit...)
     pub(crate) commit_modal: Option<CommitModalState>,
     pub(crate) commit_modal_editor: text_editor::Content,
@@ -240,6 +244,10 @@ pub(crate) struct GitFleetApp {
     pub(crate) toast_is_error: bool,
 }
 
+pub(crate) fn app_window_icon() -> Option<window::Icon> {
+    window::icon::from_file_data(include_bytes!("../../../../assets/icon-64.png"), None).ok()
+}
+
 impl GitFleetApp {
     pub(crate) fn new() -> (Self, Task<Message>) {
         let service = AppService::new();
@@ -247,6 +255,7 @@ impl GitFleetApp {
         let (host_id, open_task) = window::open(window::Settings {
             size: iced::Size::new(1440.0, 900.0),
             min_size: Some(iced::Size::new(1024.0, 660.0)),
+            icon: app_window_icon(),
             ..Default::default()
         });
 
@@ -356,6 +365,8 @@ impl GitFleetApp {
             merge_forecast: None,
             rename_branch_modal: None,
             rename_branch_input_id: text_input::Id::unique(),
+            rename_workspace_modal: None,
+            rename_workspace_input_id: text_input::Id::unique(),
             commit_modal: None,
             commit_modal_editor: text_editor::Content::new(),
             conflict_file_path: None,
@@ -559,6 +570,7 @@ impl GitFleetApp {
             || self.cherry_pick_modal.is_some()
             || self.discard_modal.is_some()
             || self.rename_branch_modal.is_some()
+            || self.rename_workspace_modal.is_some()
             || self.commit_modal.is_some()
     }
 
@@ -921,7 +933,7 @@ impl GitFleetApp {
             Some(WindowKind::DetachedViewer) => format!("GitFleet Viewer — {}", self.diff_title),
             _ => {
                 if let Some(repo) = self.current_repo() {
-                    format!("{} — GitFleet", repo.name)
+                    format!("GitFleet — {}", repo.name)
                 } else {
                     "GitFleet".to_string()
                 }
@@ -931,5 +943,19 @@ impl GitFleetApp {
 
     pub(crate) fn theme(&self, _window_id: window::Id) -> Theme {
         self.theme_mode.iced_theme()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_embedded_app_window_icon() {
+        let icon = app_window_icon().expect("embedded icon-64.png should decode");
+        let (rgba, size) = icon.into_raw();
+        assert_eq!(size.width, 64);
+        assert_eq!(size.height, 64);
+        assert_eq!(rgba.len(), 64 * 64 * 4);
     }
 }

@@ -1,8 +1,8 @@
 use crate::app::{GitFleetApp, Message, PendingConfirm};
 use crate::icons;
 use crate::theme::{self, Palette, icon_size, layout, pad, space, type_scale};
-use crate::views::{slim_scroll, truncate_chars};
-use iced::widget::{Space, button, column, container, row, text, text_input};
+use crate::views::{slim_scroll, tip, truncate_chars};
+use iced::widget::{Space, button, column, container, row, text, text_input, tooltip};
 use iced::{Alignment, Color, Element, Length};
 
 impl GitFleetApp {
@@ -129,11 +129,27 @@ impl GitFleetApp {
             .style(theme::repo_row_btn(p, item.is_current))
             .on_press(open_msg);
 
-            let mut row_el = row![switch_btn]
-                .spacing(space::XS)
-                .align_y(Alignment::Center);
+            let rename_target = if item.is_current {
+                None
+            } else {
+                Some(item.path.clone())
+            };
+            let mut row_el = row![
+                switch_btn,
+                tip(
+                    button(icons::pencil(icon_size::XS, p.text_secondary))
+                        .padding([6, 8])
+                        .style(theme::subtle_btn(p))
+                        .on_press(Message::OpenRenameWorkspaceModal(rename_target)),
+                    "Rename workspace",
+                    tooltip::Position::Top,
+                    p,
+                ),
+            ]
+            .spacing(space::XS)
+            .align_y(Alignment::Center);
             if !item.is_home {
-                row_el = row_el.push(
+                row_el = row_el.push(tip(
                     button(icons::trash(icon_size::XS, p.danger_fg))
                         .padding([6, 8])
                         .style(theme::subtle_btn(p))
@@ -141,7 +157,10 @@ impl GitFleetApp {
                             &item.name,
                             item.path.clone(),
                         ))),
-                );
+                    "Delete workspace",
+                    tooltip::Position::Top,
+                    p,
+                ));
             }
             ws_list_col = ws_list_col.push(row_el);
         }
@@ -174,14 +193,32 @@ impl GitFleetApp {
         let workspace_section = theme::section_card(
             p,
             format!("Workspace: {}", ws.name),
-            Some("Create, switch, or save portable JSON workspace snapshots."),
-            Some(theme::badge(
-                format!("{} repo(s)", ws.repos.len()),
-                p.fill_selected,
-                p.accent_fg,
-                p.border_subtle,
-                false,
-            )),
+            Some("Create, switch, rename, or save portable JSON workspace snapshots."),
+            Some(
+                row![
+                    button(
+                        row![
+                            icons::pencil(icon_size::XS, p.text_secondary),
+                            text("Rename").size(type_scale::CAPTION),
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding(pad::BTN_SM)
+                    .style(theme::subtle_btn(p))
+                    .on_press(Message::OpenRenameWorkspaceModal(None)),
+                    theme::badge(
+                        format!("{} repo(s)", ws.repos.len()),
+                        p.fill_selected,
+                        p.accent_fg,
+                        p.border_subtle,
+                        false,
+                    ),
+                ]
+                .spacing(space::XS)
+                .align_y(Alignment::Center)
+                .into(),
+            ),
             ws_section_body,
         );
 

@@ -545,6 +545,16 @@ pub fn slim_vertical_direction() -> scrollable::Direction {
     )
 }
 
+pub fn slim_horizontal_direction() -> scrollable::Direction {
+    scrollable::Direction::Horizontal(
+        scrollable::Scrollbar::new()
+            .width(4)
+            .scroller_width(4)
+            .margin(1)
+            .spacing(2),
+    )
+}
+
 pub fn slim_both_direction() -> scrollable::Direction {
     scrollable::Direction::Both {
         vertical: scrollable::Scrollbar::new()

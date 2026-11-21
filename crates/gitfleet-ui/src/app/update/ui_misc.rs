@@ -101,6 +101,10 @@ impl GitFleetApp {
                     self.rename_branch_modal = None;
                     return Task::none();
                 }
+                if self.rename_workspace_modal.is_some() {
+                    self.rename_workspace_modal = None;
+                    return Task::none();
+                }
                 if self.commit_modal.is_some() {
                     self.commit_modal = None;
                     return Task::none();
@@ -176,6 +180,7 @@ impl GitFleetApp {
                 }
                 let (_id, task) = window::open(window::Settings {
                     size: iced::Size::new(980.0, 720.0),
+                    icon: crate::app::app_window_icon(),
                     ..Default::default()
                 });
                 task.map(Message::ViewerOpened)
@@ -472,6 +477,8 @@ impl GitFleetApp {
                 if self.pending_confirm.is_some()
                     || self.cherry_pick_modal.is_some()
                     || self.discard_modal.is_some()
+                    || self.rename_branch_modal.is_some()
+                    || self.rename_workspace_modal.is_some()
                 {
                     return Task::none();
                 }

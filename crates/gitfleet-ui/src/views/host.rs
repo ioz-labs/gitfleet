@@ -1,4 +1,7 @@
-use crate::app::{GitFleetApp, Message, PendingConfirm, ResizeTarget, TITLEBAR_HEIGHT, TOOLBAR_HEIGHT};
+use crate::app::{
+    ContextMenuTarget, GitFleetApp, Message, PendingConfirm, ResizeTarget, TITLEBAR_HEIGHT,
+    TOOLBAR_HEIGHT,
+};
 use crate::icons;
 use crate::theme::{self, Palette, ThemeMode, icon_size, type_scale};
 use crate::views::tip;
@@ -16,36 +19,29 @@ impl GitFleetApp {
         let ws = self.service.workspace.current();
         let active_status = self.active_status();
 
-        // 1. Streamlined Titlebar (App Identity, Workspace Switcher, Global Commands & App Controls ONLY)
+        // 1. Streamlined Titlebar (Workspace Switcher, Global Commands & App Controls ONLY)
         let ownership = self.service.workspace.ownership();
         let titlebar = container(
             row![
-                container(text("GF").size(type_scale::CAPTION).color(Color::WHITE))
-                    .padding([2, 6])
-                    .style(theme::pill_box(
-                        p.accent_primary,
-                        Color::WHITE,
-                        p.accent_primary
-                    )),
-                text("GitFleet")
-                    .size(type_scale::SUBHEADING)
-                    .color(p.text_primary),
                 tip(
-                    button(
-                        row![
-                            icons::folder(icon_size::XS, p.accent_fg),
-                            text(ws.name.clone())
-                                .size(type_scale::BODY)
-                                .color(p.accent_fg),
-                            icons::chevron_down(icon_size::XS, p.text_muted),
-                        ]
-                        .spacing(5)
-                        .align_y(Alignment::Center)
+                    mouse_area(
+                        button(
+                            row![
+                                icons::folder(icon_size::XS, p.accent_fg),
+                                text(ws.name.clone())
+                                    .size(type_scale::BODY)
+                                    .color(p.accent_fg),
+                                icons::chevron_down(icon_size::XS, p.text_muted),
+                            ]
+                            .spacing(5)
+                            .align_y(Alignment::Center)
+                        )
+                        .padding([3, 9])
+                        .style(theme::subtle_btn(p))
+                        .on_press(Message::ToggleWorkspaceModal),
                     )
-                    .padding([3, 9])
-                    .style(theme::subtle_btn(p))
-                    .on_press(Message::ToggleWorkspaceModal),
-                    "Workspace Manager (Switch, Groups, Clone & Create Repo)",
+                    .on_right_press(Message::OpenContextMenu(ContextMenuTarget::WorkspacePill)),
+                    "Workspace Manager (Switch, Rename, Groups, Clone & Create Repo) · Right-click for quick actions",
                     tooltip::Position::Bottom,
                     p,
                 ),
@@ -587,6 +583,10 @@ impl GitFleetApp {
 
         if let Some(modal) = &self.rename_branch_modal {
             layers.push(self.view_rename_branch_modal(p, modal));
+        }
+
+        if let Some(modal) = &self.rename_workspace_modal {
+            layers.push(self.view_rename_workspace_modal(p, modal));
         }
 
         if let Some(modal) = &self.commit_modal {

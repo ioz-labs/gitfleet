@@ -18,6 +18,7 @@ impl GitFleetApp {
         let mut items = column![].spacing(3);
         let commands: Vec<(&str, &str, Message)> = vec![
             ("Workspace: Manage Workspaces, Groups, Clone & Create…", "", Message::ToggleWorkspaceModal),
+            ("Workspace: Rename Current Workspace…", "", Message::OpenRenameWorkspaceModal(None)),
             ("Workspace: Add Repository…", "", Message::PickAddRepo),
             ("Workspace: Scan Folder…", "", Message::PickScanFolder),
             ("Workspace: Open Active Repo in Explorer", "", Message::RevealSelectedInExplorer),

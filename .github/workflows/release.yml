@@ -134,6 +134,17 @@ jobs:
           cp "target/${{ matrix.target }}/release/gitfleet" "$APP_DIR/Contents/MacOS/gitfleet"
           chmod +x "$APP_DIR/Contents/MacOS/gitfleet"
 
+          ICONSET="dist/AppIcon.iconset"
+          mkdir -p "$ICONSET"
+          for sz in 16 32 128 256 512; do
+            sips -z "$sz" "$sz" assets/icon.png --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+            sz2=$((sz * 2))
+            if [ "$sz2" -le 512 ]; then
+              sips -z "$sz2" "$sz2" assets/icon.png --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+            fi
+          done
+          iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
+
           cat > "$APP_DIR/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -151,6 +162,8 @@ jobs:
             <string>${VER}</string>
             <key>CFBundleExecutable</key>
             <string>gitfleet</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>LSMinimumSystemVersion</key>
@@ -184,13 +197,14 @@ jobs:
 
           cp "target/${{ matrix.target }}/release/gitfleet" "dist/tar/${{ matrix.artifact_name }}/gitfleet"
           chmod +x "dist/tar/${{ matrix.artifact_name }}/gitfleet"
-          cp README.md LICENSE "dist/tar/${{ matrix.artifact_name }}/"
+          cp README.md LICENSE assets/icon.png "dist/tar/${{ matrix.artifact_name }}/"
 
           cat > "dist/tar/${{ matrix.artifact_name }}/gitfleet.desktop" <<'EOF'
           [Desktop Entry]
           Name=GitFleet
           Comment=Pure-Rust multi-repository Git desktop workspace manager
           Exec=gitfleet
+          Icon=gitfleet
           Terminal=false
           Type=Application
           Categories=Development;RevisionControl;
@@ -200,10 +214,11 @@ jobs:
 
           # Build Debian/Ubuntu .deb package
           DEB_ROOT="dist/deb"
-          mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/usr/bin" "$DEB_ROOT/usr/share/applications"
+          mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/usr/bin" "$DEB_ROOT/usr/share/applications" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
           cp "target/${{ matrix.target }}/release/gitfleet" "$DEB_ROOT/usr/bin/gitfleet"
           chmod 755 "$DEB_ROOT/usr/bin/gitfleet"
           cp "dist/tar/${{ matrix.artifact_name }}/gitfleet.desktop" "$DEB_ROOT/usr/share/applications/gitfleet.desktop"
+          cp assets/icon.png "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/gitfleet.png"
 
           cat > "$DEB_ROOT/DEBIAN/control" <<EOF
           Package: gitfleet

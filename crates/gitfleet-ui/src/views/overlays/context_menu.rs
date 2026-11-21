@@ -32,6 +32,50 @@ impl GitFleetApp {
         let mut submenu_card: Option<Element<'static, Message>> = None;
 
         match &menu.target {
+            ContextMenuTarget::WorkspacePill => {
+                items = items.push(
+                    container(
+                        text(format!("Workspace: {}", truncate_chars(&ws.name, 22)))
+                            .size(10)
+                            .color(p.text_muted),
+                    )
+                    .padding([2, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::pencil(12.0, p.accent_fg).into(),
+                    "Rename Workspace…".into(),
+                    Message::OpenRenameWorkspaceModal(None),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::folder(12.0, p.text_secondary).into(),
+                    "Manage Workspaces…".into(),
+                    Message::ToggleWorkspaceModal,
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::folder_open(12.0, p.text_secondary).into(),
+                    "Open Workspace…".into(),
+                    Message::PickOpenWorkspace,
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::save(12.0, p.text_secondary).into(),
+                    "Save Workspace As…".into(),
+                    Message::PickSaveWorkspaceAs,
+                    false,
+                ));
+                if !self.service.workspace.is_current_home() {
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    items = items.push(ctx_btn(
+                        icons::folder(12.0, p.success_fg).into(),
+                        "Switch to Home Workspace".into(),
+                        Message::OpenHomeWorkspace,
+                        false,
+                    ));
+                }
+            }
             ContextMenuTarget::WorkingTree => {
                 let changed = self
                     .active_status()

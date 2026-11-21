@@ -651,6 +651,15 @@ pub(crate) struct RenameBranchModalState {
     pub(crate) new_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RenameWorkspaceModalState {
+    /// Target workspace file path (`None` means the currently active workspace).
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) old_name: String,
+    pub(crate) new_name: String,
+    pub(crate) file_hint: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitModalScope {
     Staged,
@@ -756,6 +765,7 @@ pub(crate) struct ContextMenuState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ContextMenuTarget {
+    WorkspacePill,
     RepositoriesPane,
     WorkingTree,
     Group {

@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 /// repositories (both grouped and root-level), and submodules align on exact columns.
 const TREE_BASE_LEFT: f32 = 4.0;
 const TREE_INDENT_STEP: f32 = 16.0;
-const TREE_CHEVRON_W: f32 = 14.0;
-const TREE_ICON_W: f32 = 14.0;
-const TREE_COL_GAP: f32 = 5.0;
+const TREE_CHEVRON_W: f32 = 16.0;
+const TREE_ICON_W: f32 = 16.0;
+const TREE_COL_GAP: f32 = 6.0;
 
 fn tree_left_x(depth: usize) -> f32 {
     TREE_BASE_LEFT + (depth as f32) * TREE_INDENT_STEP
@@ -109,19 +109,19 @@ impl GitFleetApp {
             9
         };
         let repo_est_w = left_x
-            + 68.0
-            + (repo.name.chars().count() + branch_chars + 1) as f32 * 7.2
-            + if changed > 0 { 26.0 } else { 0.0 }
-            + if !repo.available { 48.0 } else { 0.0 };
+            + 76.0
+            + (repo.name.chars().count() + branch_chars + 1) as f32 * 7.8
+            + if changed > 0 { 28.0 } else { 0.0 }
+            + if !repo.available { 52.0 } else { 0.0 };
         if repo_est_w > *max_row_w {
             *max_row_w = repo_est_w;
         }
         let sub_toggle: Element<'a, Message> = if has_subs {
             button(
                 container(if subs_expanded {
-                    icons::chevron_down(12.0, p.text_secondary)
+                    icons::chevron_down(14.0, p.text_secondary)
                 } else {
-                    icons::chevron_right(12.0, p.text_muted)
+                    icons::chevron_right(14.0, p.text_muted)
                 })
                 .width(Length::Fill)
                 .center_x(Length::Fill),
@@ -137,7 +137,7 @@ impl GitFleetApp {
 
         let bulk_box = container(
             checkbox("", checked)
-                .size(12)
+                .size(14)
                 .spacing(0)
                 .on_toggle(move |v| Message::ToggleBulkSelect(id_check.clone(), v)),
         )
@@ -152,10 +152,10 @@ impl GitFleetApp {
                 selected,
                 Padding::from([4, 6]),
                 row![
-                    container(Space::new(7, 7)).style(theme::dot_box(dot_color)),
+                    container(Space::new(8, 8)).style(theme::dot_box(dot_color)),
                     theme::clipped_line(
                         row![
-                            text(repo.name.clone()).size(12).color(if is_being_dragged {
+                            text(repo.name.clone()).size(13).color(if is_being_dragged {
                                 p.text_muted
                             } else {
                                 p.text_primary
@@ -165,7 +165,7 @@ impl GitFleetApp {
                             } else {
                                 "[missing]".to_string()
                             })
-                            .size(10.5)
+                            .size(11.5)
                             .color(if repo.available {
                                 p.text_muted
                             } else {
@@ -179,7 +179,7 @@ impl GitFleetApp {
                     if changed > 0 {
                         Element::from(
                             text(format!("{changed}"))
-                                .size(10.5)
+                                .size(11.5)
                                 .color(p.warning_fg),
                         )
                     } else {
@@ -196,7 +196,7 @@ impl GitFleetApp {
 
         if !repo.available {
             repo_row = repo_row.push(
-                button(text("Locate").size(9).color(p.warning_fg))
+                button(text("Locate").size(10).color(p.warning_fg))
                     .padding([2, 5])
                     .style(theme::subtle_btn(p))
                     .on_press(Message::LocateRepo(repo.id.clone())),
@@ -246,9 +246,9 @@ impl GitFleetApp {
                     .or(sub.head_oid.as_deref())
                     .unwrap_or(if sub.initialized { "detached" } else { "uninit" });
                 let sub_est_w = sub_indent
-                    + 36.0
-                    + (sub.path.chars().count() + sub_ref.chars().count() + 3) as f32 * 6.8
-                    + if sub_changed > 0 || sub_dirty { 22.0 } else { 0.0 };
+                    + 42.0
+                    + (sub.path.chars().count() + sub_ref.chars().count() + 3) as f32 * 7.4
+                    + if sub_changed > 0 || sub_dirty { 24.0 } else { 0.0 };
                 if sub_est_w > *max_row_w {
                     *max_row_w = sub_est_w;
                 }
@@ -262,18 +262,18 @@ impl GitFleetApp {
 
                 let sub_btn = button(
                     row![
-                        icons::repo_stack(12.0, sub_icon_color),
+                        icons::repo_stack(14.0, sub_icon_color),
                         theme::clipped_line(
                             row![
                                 text(sub.path.clone())
-                                    .size(11.5)
+                                    .size(12.5)
                                     .color(if sub.initialized {
                                         p.text_primary
                                     } else {
                                         p.text_muted
                                     }),
                                 text(format!("({sub_ref})"))
-                                    .size(10.5)
+                                    .size(11.5)
                                     .color(if !sub.initialized {
                                         p.danger_fg
                                     } else {
@@ -287,12 +287,12 @@ impl GitFleetApp {
                         if sub_changed > 0 {
                             Element::from(
                                 text(format!("{sub_changed}"))
-                                    .size(10.0)
+                                    .size(11.0)
                                     .color(p.warning_fg),
                             )
                         } else if sub_dirty {
                             Element::from(
-                                container(Space::new(6, 6))
+                                container(Space::new(7, 7))
                                     .style(theme::dot_box(p.warning_fg)),
                             )
                         } else {
@@ -390,24 +390,24 @@ impl GitFleetApp {
                     .as_ref()
                     .is_some_and(|(_, t)| t.as_deref() == Some(full_path.as_str()));
             let left_x = tree_left_x(depth);
-            let grp_est_w = left_x + 48.0 + seg_name.chars().count() as f32 * 7.0 + 32.0;
+            let grp_est_w = left_x + 56.0 + seg_name.chars().count() as f32 * 7.6 + 34.0;
             if grp_est_w > *max_row_w {
                 *max_row_w = grp_est_w;
             }
 
             let chevron = container(if is_collapsed {
-                icons::chevron_right(12.0, p.text_muted)
+                icons::chevron_right(14.0, p.text_muted)
             } else {
-                icons::chevron_down(12.0, p.text_muted)
+                icons::chevron_down(14.0, p.text_muted)
             })
             .width(Length::Fixed(TREE_CHEVRON_W))
             .center_x(Length::Fixed(TREE_CHEVRON_W));
 
             let folder_icon = container(if is_collapsed {
-                icons::folder(12.0, if is_drop_target { p.success_fg } else { p.accent_fg })
+                icons::folder(14.0, if is_drop_target { p.success_fg } else { p.accent_fg })
             } else {
                 icons::folder_open(
-                    12.0,
+                    14.0,
                     if is_drop_target {
                         p.success_fg
                     } else {
@@ -422,7 +422,7 @@ impl GitFleetApp {
                 chevron,
                 folder_icon,
                 theme::clipped_line(
-                    text(seg_name.clone()).size(11).color(if is_drop_target {
+                    text(seg_name.clone()).size(12).color(if is_drop_target {
                         p.accent_fg
                     } else {
                         p.text_secondary
@@ -442,7 +442,7 @@ impl GitFleetApp {
                     false,
                 ));
             } else {
-                header_row = header_row.push(text(format!("{total}")).size(10).color(p.text_muted));
+                header_row = header_row.push(text(format!("{total}")).size(11).color(p.text_muted));
             }
 
             let group_btn = button(header_row)
@@ -498,7 +498,7 @@ impl GitFleetApp {
         let header = row![
             theme::clipped_line(
                 tip(
-                    text("Repositories").size(11).color(p.text_muted),
+                    text("Repositories").size(12).color(p.text_muted),
                     "Right-click any group, repository, or empty space for context menu",
                     tooltip::Position::Bottom,
                     p,
@@ -506,7 +506,7 @@ impl GitFleetApp {
                 Length::Fill,
             ),
             tip(
-                button(icons::folder_plus(14.0, p.text_secondary))
+                button(icons::folder_plus(15.0, p.text_secondary))
                     .padding([4, 6])
                     .style(theme::vscode_icon_btn(p, false))
                     .on_press(Message::PickAddRepo),
@@ -515,7 +515,7 @@ impl GitFleetApp {
                 p,
             ),
             tip(
-                button(icons::folder_search(14.0, p.text_secondary))
+                button(icons::folder_search(15.0, p.text_secondary))
                     .padding([4, 6])
                     .style(theme::vscode_icon_btn(p, false))
                     .on_press(Message::PickScanFolder),
@@ -530,7 +530,7 @@ impl GitFleetApp {
         let filter = text_input("Filter repos…", &self.filter_query)
             .on_input(Message::FilterChanged)
             .padding([4, 7])
-            .size(11)
+            .size(12)
             .style(theme::dark_input(p));
 
         let dirty_cnt = repos
@@ -549,7 +549,7 @@ impl GitFleetApp {
         let pills = row![
             button(
                 text(format!("All ({})", repos.len()))
-                    .size(10)
+                    .size(11)
                     .wrapping(text::Wrapping::None)
             )
             .padding([3, 8])
@@ -557,7 +557,7 @@ impl GitFleetApp {
             .on_press(Message::SetRepoFilter(RepoFilter::All)),
             button(
                 text(format!("Dirty ({dirty_cnt})"))
-                    .size(10)
+                    .size(11)
                     .wrapping(text::Wrapping::None)
             )
             .padding([3, 8])
@@ -568,7 +568,7 @@ impl GitFleetApp {
             .on_press(Message::SetRepoFilter(RepoFilter::Dirty)),
             button(
                 text(format!("Sync ({sync_cnt})"))
-                    .size(10)
+                    .size(11)
                     .wrapping(text::Wrapping::None)
             )
             .padding([3, 8])
@@ -757,11 +757,11 @@ impl GitFleetApp {
                 container(
                     row![
                         text(format!("{bulk_count} sel"))
-                            .size(10)
+                            .size(11)
                             .color(p.accent_fg),
                         Space::with_width(Length::Fill),
                         tip(
-                            button(icons::fetch(12.0, iced::Color::WHITE))
+                            button(icons::fetch(14.0, iced::Color::WHITE))
                                 .padding([4, 6])
                                 .style(theme::primary_btn(p))
                                 .on_press(Message::RunBulkOp(BulkOperation::Fetch)),
@@ -770,7 +770,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::pull(12.0, p.text_primary))
+                            button(icons::pull(14.0, p.text_primary))
                                 .padding([4, 6])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::RequestConfirm(PendingConfirm::bulk_op(
@@ -782,7 +782,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::push(12.0, p.text_primary))
+                            button(icons::push(14.0, p.text_primary))
                                 .padding([4, 6])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::RequestConfirm(PendingConfirm::bulk_op(
@@ -794,7 +794,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::trash(12.0, p.danger_fg))
+                            button(icons::trash(14.0, p.danger_fg))
                                 .padding([4, 6])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::RequestConfirm(PendingConfirm::remove_bulk(
@@ -805,7 +805,7 @@ impl GitFleetApp {
                             p,
                         ),
                         tip(
-                            button(icons::close_x(11.0, p.text_secondary))
+                            button(icons::close_x(13.0, p.text_secondary))
                                 .padding([4, 6])
                                 .style(theme::subtle_btn(p))
                                 .on_press(Message::ClearBulkSelection),

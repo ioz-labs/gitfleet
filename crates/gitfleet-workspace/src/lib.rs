@@ -202,6 +202,58 @@ fn read_recent_workspaces_file(path: &Path) -> Vec<RecentWorkspace> {
         .unwrap_or_default()
 }
 
+fn rename_workspace_file_in(
+    path: &Path,
+    new_name: &str,
+    is_home: bool,
+    recent_path: Option<&Path>,
+) -> AppResult<String> {
+    let trimmed = new_name.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Workspace name cannot be empty.",
+        )));
+    }
+    let mut cfg: WorkspaceConfig = if path.exists() {
+        let raw = std::fs::read_to_string(path)?;
+        serde_json::from_str(&raw)?
+    } else if is_home {
+        WorkspaceConfig::default()
+    } else {
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Workspace file not found: {}", path.display()),
+        )));
+    };
+    cfg.name = trimmed.clone();
+    cfg.file_path = Some(path.to_path_buf());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(&cfg)?;
+    std::fs::write(path, json)?;
+
+    if let Some(rp) = recent_path {
+        let mut list = read_recent_workspaces_file(rp);
+        let mut changed = false;
+        for rec in &mut list {
+            if same_workspace_path(&rec.path, path) && rec.name != trimmed {
+                rec.name = trimmed.clone();
+                changed = true;
+            }
+        }
+        if changed && let Ok(rec_json) = serde_json::to_string_pretty(&list) {
+            if let Some(parent) = rp.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(rp, rec_json);
+        }
+    }
+
+    Ok(trimmed)
+}
+
 fn list_workspaces_in(
     cur: &WorkspaceConfig,
     home_path: Option<PathBuf>,
@@ -595,12 +647,63 @@ impl WorkspaceService {
         Ok(cfg)
     }
 
-    pub fn rename_workspace(&self, name: String) -> AppResult<()> {
-        if let Ok(mut guard) = self.state.write() {
-            guard.name = name;
+    pub fn is_current_home(&self) -> bool {
+        let cur_path = self.current().file_path.or_else(home_workspace_path);
+        match (cur_path.as_deref(), home_workspace_path().as_deref()) {
+            (Some(cp), Some(hp)) => same_workspace_path(cp, hp),
+            _ => true,
         }
-        self.auto_save();
+    }
+
+    pub fn rename_workspace(&self, name: String) -> AppResult<()> {
+        let trimmed = name.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Workspace name cannot be empty.",
+            )));
+        }
+        let mut cfg = self.current();
+        cfg.name = trimmed.clone();
+        let target = cfg.file_path.clone().or_else(home_workspace_path);
+        if let Some(path) = target {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            cfg.file_path = Some(path.clone());
+            let json = serde_json::to_string_pretty(&cfg)?;
+            std::fs::write(&path, json)?;
+            if let Ok(mut guard) = self.state.write() {
+                guard.name = trimmed;
+                guard.file_path = Some(path.clone());
+            }
+            self.record_recent(&cfg.name, &path);
+        } else if let Ok(mut guard) = self.state.write() {
+            guard.name = trimmed;
+        }
         Ok(())
+    }
+
+    pub fn rename_workspace_at(&self, path: &Path, name: String) -> AppResult<String> {
+        let trimmed = name.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Workspace name cannot be empty.",
+            )));
+        }
+        let cur_path = self.current().file_path.or_else(home_workspace_path);
+        if cur_path
+            .as_deref()
+            .is_some_and(|cp| same_workspace_path(cp, path))
+        {
+            self.rename_workspace(trimmed.clone())?;
+            return Ok(trimmed);
+        }
+        let is_home = home_workspace_path()
+            .as_deref()
+            .is_some_and(|hp| same_workspace_path(hp, path));
+        rename_workspace_file_in(path, &trimmed, is_home, recent_workspaces_path().as_deref())
     }
 
     pub fn add_group(&self, name: String) -> AppResult<()> {
@@ -1085,6 +1188,88 @@ mod tests {
         assert!(!items[1].is_current);
         assert!(items[1].is_home);
         assert_eq!(items[1].repo_count, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn renames_saved_workspace_file_and_updates_recents_in_place() {
+        let root = std::env::temp_dir().join(format!(
+            "gitfleet_ws_rename_{}",
+            std::process::id()
+        ));
+        let ws_dir = root.join("workspaces");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let active_path = ws_dir.join("active.gitfleet.json");
+        let inactive_path = ws_dir.join("client-a.gitfleet.json");
+        let recent_path = root.join("recent-workspaces.json");
+
+        let inactive_cfg = WorkspaceConfig {
+            name: "Client A".to_string(),
+            file_path: Some(inactive_path.clone()),
+            groups: vec!["Backend".to_string()],
+            repos: vec![RepoEntry {
+                id: RepoId::new(),
+                name: "api".to_string(),
+                path: root.join("api"),
+                group: Some("Backend".to_string()),
+                pinned: true,
+                available: false,
+            }],
+            ui: WorkspaceUiState::default(),
+        };
+        std::fs::write(&inactive_path, serde_json::to_string(&inactive_cfg).unwrap()).unwrap();
+        std::fs::write(
+            &recent_path,
+            serde_json::to_string(&vec![
+                RecentWorkspace {
+                    name: "Active".to_string(),
+                    path: active_path.clone(),
+                },
+                RecentWorkspace {
+                    name: "Client A".to_string(),
+                    path: inactive_path.clone(),
+                },
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let renamed =
+            rename_workspace_file_in(&inactive_path, "  Client B  ", false, Some(&recent_path))
+                .unwrap();
+        assert_eq!(renamed, "Client B");
+
+        let reloaded: WorkspaceConfig =
+            serde_json::from_str(&std::fs::read_to_string(&inactive_path).unwrap()).unwrap();
+        assert_eq!(reloaded.name, "Client B");
+        assert_eq!(reloaded.groups, vec!["Backend".to_string()]);
+        assert_eq!(reloaded.repos.len(), 1);
+        assert!(reloaded.repos[0].pinned);
+
+        // MRU order must be preserved (Active stays first, renamed inactive stays second)
+        let recents = read_recent_workspaces_file(&recent_path);
+        assert_eq!(recents.len(), 2);
+        assert_eq!(recents[0].name, "Active");
+        assert_eq!(recents[1].name, "Client B");
+
+        // Rejects empty/whitespace-only names
+        assert!(
+            rename_workspace_file_in(&inactive_path, "   ", false, Some(&recent_path)).is_err()
+        );
+
+        // Uninitialized Home Workspace can be renamed and preserves is_home
+        let home_path = root.join("home-workspace.json");
+        let home_renamed =
+            rename_workspace_file_in(&home_path, "Main Workspace", true, Some(&recent_path))
+                .unwrap();
+        assert_eq!(home_renamed, "Main Workspace");
+        assert!(home_path.exists());
+        let home_reloaded: WorkspaceConfig =
+            serde_json::from_str(&std::fs::read_to_string(&home_path).unwrap()).unwrap();
+        assert_eq!(home_reloaded.name, "Main Workspace");
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -4,8 +4,8 @@ use crate::theme::{self, Palette, icon_size, type_scale};
 use crate::views::{slim_scroll_h, tip};
 use gitfleet_git::{BranchInfo, WorktreeInfo};
 use iced::widget::{
-    Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, text, text_input,
-    tooltip,
+    Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, scrollable, text,
+    text_input, tooltip,
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding, font};
 use std::collections::{BTreeMap, HashSet};
@@ -499,7 +499,7 @@ fn render_branch_subtree<'a>(
 
 impl GitFleetApp {
     pub(crate) fn view_branches_pane(&self, p: Palette) -> Element<'_, Message> {
-        // Compact VS Code-style underline tabs (omit zero counts so all 5 tabs always stay 1-line)
+        // VS Code-style underline tabs in a horizontally scrollable header strip
         let pane_tab = |label: &'static str, count: usize, tab: BottomLeftTab| -> Element<'_, Message> {
             let active = self.bottom_left_tab == tab;
             let text_str = if count > 0 {
@@ -507,45 +507,40 @@ impl GitFleetApp {
             } else {
                 label.to_string()
             };
-            let underline = container(Space::new(Length::Fill, Length::Fixed(2.0)))
-                .width(Length::Fill)
-                .height(Length::Fixed(2.0))
-                .style(move |_| container::Style {
-                    background: Some(iced::Background::Color(if active {
-                        p.accent_primary
-                    } else {
-                        iced::Color::TRANSPARENT
-                    })),
-                    ..Default::default()
-                });
-            button(
-                column![
-                    container(theme::clipped_line(
-                        text(text_str)
-                            .size(type_scale::CAPTION)
-                            .color(if active { p.text_primary } else { p.text_muted }),
-                        Length::Shrink,
-                    ))
-                    .padding([4, 5]),
-                    underline,
-                ]
-                .width(Length::Shrink),
+            let underline_color = if active {
+                p.accent_primary
+            } else {
+                Color::TRANSPARENT
+            };
+            let label_box = container(
+                text(text_str)
+                    .size(type_scale::CAPTION)
+                    .wrapping(text::Wrapping::None)
+                    .color(if active { p.text_primary } else { p.text_muted }),
             )
-            .padding(0)
-            .style(theme::vscode_dock_tab(p, active))
-            .on_press(Message::SetBottomLeftTab(tab))
-            .into()
+            .padding([4, 6]);
+            button(theme::bottom_underline(label_box, underline_color, 2.0))
+                .padding(0)
+                .style(theme::vscode_dock_tab(p, active))
+                .on_press(Message::SetBottomLeftTab(tab))
+                .into()
         };
 
-        let header = row![
-            pane_tab("Branches", 0, BottomLeftTab::Branches),
-            pane_tab("Stash", self.stashes.len(), BottomLeftTab::Stashes),
-            pane_tab("Tags", self.tags.len(), BottomLeftTab::Tags),
-            pane_tab("Subs", self.submodules.len(), BottomLeftTab::Submodules),
-            pane_tab("WT", self.worktrees.len(), BottomLeftTab::Worktrees),
-        ]
-        .spacing(2)
-        .align_y(Alignment::Center);
+        let header = scrollable(
+            row![
+                pane_tab("Branches", 0, BottomLeftTab::Branches),
+                pane_tab("Stash", self.stashes.len(), BottomLeftTab::Stashes),
+                pane_tab("Tags", self.tags.len(), BottomLeftTab::Tags),
+                pane_tab("Submodules", self.submodules.len(), BottomLeftTab::Submodules),
+                pane_tab("Worktrees", self.worktrees.len(), BottomLeftTab::Worktrees),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .direction(theme::slim_horizontal_direction())
+        .style(theme::slim_scrollable(p));
 
         let body: Element<'_, Message> = match self.bottom_left_tab {
             BottomLeftTab::Branches => {

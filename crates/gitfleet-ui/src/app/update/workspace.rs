@@ -1,4 +1,6 @@
-use crate::app::{ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message};
+use crate::app::{
+    ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, RenameWorkspaceModalState,
+};
 use crate::preview;
 use gitfleet_core::RepoId;
 use gitfleet_git::ParsedDiff;
@@ -61,6 +63,7 @@ impl GitFleetApp {
         self.statuses.clear();
         self.repo_submodules.clear();
         self.collapsed_repo_submodules.clear();
+        self.rename_workspace_modal = None;
         self.clear_active_repo_view_state();
         self.diff_title = "No repository selected".into();
     }
@@ -464,6 +467,7 @@ impl GitFleetApp {
                 self.show_merge_modal = false;
                 self.show_git_flow_modal = false;
                 self.show_settings_modal = false;
+                self.rename_workspace_modal = None;
                 self.show_workspace_modal = !self.show_workspace_modal;
                 Task::none()
             }
@@ -488,6 +492,94 @@ impl GitFleetApp {
                     Err(e) => {
                         self.toast_is_error = true;
                         self.toast_message = format!("Create workspace failed: {e}");
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenRenameWorkspaceModal(target_path) => {
+                let (path, old_name, file_hint) = if let Some(target) = target_path {
+                    let all = self.service.workspace.list_workspaces();
+                    let Some(item) = all.into_iter().find(|w| w.path == target) else {
+                        self.toast_is_error = true;
+                        self.toast_message = "Workspace not found".into();
+                        return Task::none();
+                    };
+                    let hint = item
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(str::to_string);
+                    let path_opt = if item.is_current {
+                        None
+                    } else {
+                        Some(item.path)
+                    };
+                    (path_opt, item.name, hint)
+                } else {
+                    let ws = self.service.workspace.current();
+                    let hint = ws
+                        .file_path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .map(str::to_string);
+                    (None, ws.name, hint)
+                };
+                self.context_menu = None;
+                self.show_palette = false;
+                self.show_branch_popover = false;
+                self.rename_branch_modal = None;
+                self.rename_workspace_modal = Some(RenameWorkspaceModalState {
+                    path,
+                    new_name: old_name.clone(),
+                    old_name,
+                    file_hint,
+                });
+                Task::batch([
+                    text_input::focus(self.rename_workspace_input_id.clone()),
+                    text_input::select_all(self.rename_workspace_input_id.clone()),
+                ])
+            }
+            Message::RenameWorkspaceInputChanged(val) => {
+                if let Some(modal) = &mut self.rename_workspace_modal {
+                    modal.new_name = val;
+                }
+                Task::none()
+            }
+            Message::SubmitRenameWorkspace => {
+                let Some(modal) = &self.rename_workspace_modal else {
+                    return Task::none();
+                };
+                let new_name = modal.new_name.trim().to_string();
+                if new_name.is_empty() {
+                    return Task::none();
+                }
+                if new_name == modal.old_name {
+                    self.rename_workspace_modal = None;
+                    return Task::none();
+                }
+                let Some(modal) = self.rename_workspace_modal.take() else {
+                    return Task::none();
+                };
+                let res = match &modal.path {
+                    Some(path) => self
+                        .service
+                        .workspace
+                        .rename_workspace_at(path, new_name.clone())
+                        .map(|_| ()),
+                    None => self.service.workspace.rename_workspace(new_name.clone()),
+                };
+                match res {
+                    Ok(()) => {
+                        self.toast_is_error = false;
+                        self.toast_message = format!(
+                            "Renamed workspace '{}' to '{}'",
+                            modal.old_name, new_name
+                        );
+                    }
+                    Err(e) => {
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Rename workspace failed: {e}");
                     }
                 }
                 Task::none()

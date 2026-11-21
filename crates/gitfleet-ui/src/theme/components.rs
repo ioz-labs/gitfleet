@@ -198,6 +198,190 @@ where
     })
 }
 
+/// Wraps a shrink-sized tab label with a crisp bottom underline matching its exact measured width
+/// (safe inside horizontal `scrollable` containers where `Length::Fill` would expand infinitely).
+pub fn bottom_underline<'a, M>(
+    content: impl Into<Element<'a, M>>,
+    color: Color,
+    thickness: f32,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    struct BottomUnderline<'a, M> {
+        content: Element<'a, M>,
+        color: Color,
+        thickness: f32,
+    }
+
+    impl<'a, M> Widget<M, Theme, Renderer> for BottomUnderline<'a, M> {
+        fn tag(&self) -> tree::Tag {
+            tree::Tag::stateless()
+        }
+
+        fn state(&self) -> tree::State {
+            tree::State::None
+        }
+
+        fn children(&self) -> Vec<Tree> {
+            vec![Tree::new(&self.content)]
+        }
+
+        fn diff(&self, tree: &mut Tree) {
+            tree.diff_children(std::slice::from_ref(&self.content));
+        }
+
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Shrink, Length::Shrink)
+        }
+
+        fn layout(
+            &self,
+            tree: &mut Tree,
+            renderer: &Renderer,
+            limits: &adv_layout::Limits,
+        ) -> adv_layout::Node {
+            let child_node =
+                self.content
+                    .as_widget()
+                    .layout(&mut tree.children[0], renderer, limits);
+            let sz = child_node.size();
+            adv_layout::Node::with_children(
+                Size::new(sz.width, sz.height + self.thickness),
+                vec![child_node],
+            )
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut Renderer,
+            theme: &Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            use iced::advanced::Renderer as _;
+
+            if let Some(child_layout) = layout.children().next() {
+                self.content.as_widget().draw(
+                    &tree.children[0],
+                    renderer,
+                    theme,
+                    style,
+                    child_layout,
+                    cursor,
+                    viewport,
+                );
+            }
+            if self.color != Color::TRANSPARENT {
+                let b = layout.bounds();
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle {
+                            x: b.x,
+                            y: b.y + b.height - self.thickness,
+                            width: b.width,
+                            height: self.thickness,
+                        },
+                        border: Border::default(),
+                        shadow: Shadow::default(),
+                    },
+                    Background::Color(self.color),
+                );
+            }
+        }
+
+        fn on_event(
+            &mut self,
+            tree: &mut Tree,
+            event: iced::Event,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            renderer: &Renderer,
+            clipboard: &mut dyn Clipboard,
+            shell: &mut Shell<'_, M>,
+            viewport: &Rectangle,
+        ) -> event::Status {
+            if let Some(child_layout) = layout.children().next() {
+                self.content.as_widget_mut().on_event(
+                    &mut tree.children[0],
+                    event,
+                    child_layout,
+                    cursor,
+                    renderer,
+                    clipboard,
+                    shell,
+                    viewport,
+                )
+            } else {
+                event::Status::Ignored
+            }
+        }
+
+        fn mouse_interaction(
+            &self,
+            tree: &Tree,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+            renderer: &Renderer,
+        ) -> mouse::Interaction {
+            if let Some(child_layout) = layout.children().next() {
+                self.content.as_widget().mouse_interaction(
+                    &tree.children[0],
+                    child_layout,
+                    cursor,
+                    viewport,
+                    renderer,
+                )
+            } else {
+                mouse::Interaction::None
+            }
+        }
+
+        fn operate(
+            &self,
+            tree: &mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            operation: &mut dyn iced::advanced::widget::Operation,
+        ) {
+            if let Some(child_layout) = layout.children().next() {
+                self.content.as_widget().operate(
+                    &mut tree.children[0],
+                    child_layout,
+                    renderer,
+                    operation,
+                );
+            }
+        }
+
+        fn overlay<'b>(
+            &'b mut self,
+            tree: &'b mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            translation: Vector,
+        ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+            let child_layout = layout.children().next()?;
+            self.content.as_widget_mut().overlay(
+                &mut tree.children[0],
+                child_layout,
+                renderer,
+                translation,
+            )
+        }
+    }
+
+    Element::new(BottomUnderline {
+        content: content.into(),
+        color,
+        thickness,
+    })
+}
+
 /// Wraps an overlay's full-screen positioned container in an `opaque` click-catching backdrop so
 /// clicks, right-clicks, hover states, tooltips, and wheel scrolling NEVER leak through to widgets
 /// behind the popup/modal.

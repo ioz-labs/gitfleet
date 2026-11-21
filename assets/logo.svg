@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Clean flat GitFleet Cobalt Blue squircle -->
+  <rect x="20" y="20" width="472" height="472" rx="108" fill="#226DC2"/>
+
+  <!-- Pure Euclidean circle with centered 45-degree negative-space Git branch fork -->
+  <circle cx="256" cy="256" r="172" fill="#FFFFFF"/>
+
+  <g transform="rotate(45 256 256)">
+    <!-- Entry trunk from top edge to bottom node -->
+    <rect x="187" y="64" width="38" height="278" rx="19" fill="#226DC2"/>
+    <!-- Forking branch via exact R=54 quarter-circle arc -->
+    <path d="M 206 184 L 252 184 A 54 54 0 0 1 306 238 L 306 322"
+          fill="none" stroke="#226DC2" stroke-width="38" stroke-linecap="round"/>
+    <!-- 3 balanced concentric commit rings -->
+    <circle cx="206" cy="184" r="36" fill="#226DC2"/>
+    <circle cx="206" cy="184" r="16" fill="#FFFFFF"/>
+    <circle cx="206" cy="332" r="36" fill="#226DC2"/>
+    <circle cx="206" cy="332" r="16" fill="#FFFFFF"/>
+    <circle cx="306" cy="316" r="36" fill="#226DC2"/>
+    <circle cx="306" cy="316" r="16" fill="#FFFFFF"/>
+  </g>
+</svg>
