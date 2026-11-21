@@ -44,12 +44,6 @@ jobs:
             artifact_name: gitfleet-macos-arm64
             platform: macos
             run_tests: true
-          - label: macOS Intel (x86_64)
-            os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: gitfleet-macos-x86_64
-            platform: macos
-            run_tests: false
           - label: Linux x86_64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu

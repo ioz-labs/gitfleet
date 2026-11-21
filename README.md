@@ -68,7 +68,6 @@ Download the latest release for your platform from the [GitHub Releases](https:/
 | **Windows** | `x86_64` | `gitfleet-windows-x86_64.zip` |
 | **Windows** | `ARM64` | `gitfleet-windows-arm64.zip` |
 | **macOS** | Apple Silicon (`arm64`) | `gitfleet-macos-arm64.dmg` |
-| **macOS** | Intel (`x86_64`) | `gitfleet-macos-x86_64.dmg` |
 | **Linux** | `x86_64` | `gitfleet-linux-x86_64.tar.gz`, `gitfleet-linux-x86_64.deb` |
 | **Linux** | `ARM64` | `gitfleet-linux-arm64.tar.gz`, `gitfleet-linux-arm64.deb` |
 
@@ -121,7 +120,7 @@ cargo build --release --locked -p gitfleet-ui
 
 ### Automated Releases
 
-GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) runs strict checks (`-D warnings`), native unit tests, and packages all 6 platform/architecture targets automatically whenever a version tag matching `v*` is pushed (or when triggered manually via **Actions → Release → Run workflow**):
+GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) runs strict checks (`-D warnings`), native unit tests, and packages all 5 platform/architecture targets automatically whenever a version tag matching `v*` is pushed (or when triggered manually via **Actions → Release → Run workflow**):
 
 ```bash
 git tag v0.1.0
