@@ -223,6 +223,40 @@ impl GitService {
         .await
     }
 
+    /// Returns the subset of `candidates` that contain commits not yet merged into `HEAD`
+    /// (i.e. branches for which `git branch -d` would fail and `git branch -D` is required).
+    pub async fn unmerged_branches(
+        &self,
+        repo_path: &Path,
+        candidates: &[String],
+    ) -> AppResult<Vec<String>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let out = runner::run_git(
+            repo_path,
+            &["branch", "--no-merged", "HEAD", "--format=%(refname:short)"],
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        if out.exit_code != 0 {
+            return Ok(Vec::new());
+        }
+        let unmerged_set: std::collections::HashSet<&str> = out
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        Ok(candidates
+            .iter()
+            .filter(|b| unmerged_set.contains(b.as_str()))
+            .cloned()
+            .collect())
+    }
+
     pub async fn delete_branches(
         &self,
         repo_path: &Path,
@@ -251,6 +285,8 @@ impl GitService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gitfleet_core::{CommandLogStore, EventBus};
+    use std::sync::Arc;
 
     #[test]
     fn parses_git_upstream_track_counts() {
@@ -259,5 +295,60 @@ mod tests {
         assert_eq!(parse_upstream_track("ahead 4"), (4, 0, false));
         assert_eq!(parse_upstream_track("ahead 2, behind 12"), (2, 12, false));
         assert_eq!(parse_upstream_track("gone"), (0, 0, true));
+    }
+
+    #[tokio::test]
+    async fn detects_unmerged_branches_and_deletes_with_force() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_branch_delete_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Tester"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+        svc.stage(&dir, &["base.txt".into()]).await.unwrap();
+        svc.commit(&dir, "init", false).await.unwrap();
+
+        // Merged branch (points at HEAD)
+        svc.create_branch_from(&dir, "merged-ok", None, false)
+            .await
+            .unwrap();
+
+        // Unmerged branch (has a commit ahead of main)
+        svc.create_branch(&dir, "test-2").await.unwrap();
+        std::fs::write(dir.join("unmerged.txt"), "wip\n").unwrap();
+        svc.stage(&dir, &["unmerged.txt".into()]).await.unwrap();
+        svc.commit(&dir, "unmerged commit", false).await.unwrap();
+        svc.checkout(&dir, "main").await.unwrap();
+
+        let unmerged = svc
+            .unmerged_branches(&dir, &["merged-ok".into(), "test-2".into()])
+            .await
+            .unwrap();
+        assert_eq!(unmerged, vec!["test-2".to_string()]);
+
+        // Safe delete works for merged branch, rejects unmerged branch
+        svc.delete_branch(&dir, "merged-ok", false).await.unwrap();
+        assert!(svc.delete_branch(&dir, "test-2", false).await.is_err());
+
+        // Force delete succeeds for unmerged branch
+        svc.delete_branch(&dir, "test-2", true).await.unwrap();
+        let remaining = svc.get_branches(&dir).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "main");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

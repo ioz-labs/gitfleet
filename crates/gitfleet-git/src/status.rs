@@ -290,6 +290,45 @@ impl GitService {
         self.push(repo_path).await
     }
 
+    /// Stages all working tree changes (`git add -A`) and commits (optionally pushing afterwards).
+    pub async fn commit_all_changes(
+        &self,
+        repo_path: &Path,
+        message: &str,
+        amend: bool,
+        push_after: bool,
+    ) -> AppResult<String> {
+        self.stage_all(repo_path).await?;
+        if push_after {
+            self.commit_and_push(repo_path, message, amend).await
+        } else {
+            self.commit(repo_path, message, amend).await
+        }
+    }
+
+    /// Applies explicit file stage/unstage selections from the Commit popup and commits.
+    pub async fn commit_with_selection(
+        &self,
+        repo_path: &Path,
+        stage_paths: &[String],
+        unstage_paths: &[String],
+        message: &str,
+        amend: bool,
+        push_after: bool,
+    ) -> AppResult<String> {
+        if !unstage_paths.is_empty() {
+            self.unstage(repo_path, unstage_paths).await?;
+        }
+        if !stage_paths.is_empty() {
+            self.stage(repo_path, stage_paths).await?;
+        }
+        if push_after {
+            self.commit_and_push(repo_path, message, amend).await
+        } else {
+            self.commit(repo_path, message, amend).await
+        }
+    }
+
     pub async fn amend_target(&self, repo_path: &Path) -> AppResult<AmendTarget> {
         let out = runner::run_git_ok(
             repo_path,

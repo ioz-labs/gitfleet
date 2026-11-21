@@ -1,6 +1,7 @@
 use crate::app::types::{
-    BottomLeftTab, BottomViewMode, ContextMenuTarget, DiffGapExpandMode, DiffSelectionSide,
-    DrawerTab, FilesViewMode, GraphTab, PendingConfirm, RepoFilter, TerminalMenuSubmenu,
+    BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuTarget, DiffGapExpandMode,
+    DiffSelectionSide, DrawerTab, FilesViewMode, GraphTab, PendingConfirm, RepoFilter,
+    TerminalMenuSubmenu,
 };
 use crate::terminal::TerminalCanvasAction;
 use gitfleet_core::RepoId;
@@ -62,6 +63,25 @@ pub(crate) enum Message {
     PushBranch(String),
     UnsetBranchUpstream(String),
     DeleteBranches(Vec<String>, bool),
+    RequestDeleteBranches(Vec<String>),
+    DeleteBranchesChecked {
+        names: Vec<String>,
+        unmerged: Vec<String>,
+    },
+    DeleteBranchesDone {
+        names: Vec<String>,
+        force: bool,
+        result: Result<String, String>,
+    },
+    OpenCommitModal(RepoId),
+    CommitModalStatusLoaded(RepoId, Result<RepoStatusSummary, String>),
+    CommitModalSetScope(CommitModalScope),
+    CommitModalToggleFile(usize, bool),
+    CommitModalToggleAll(bool),
+    CommitModalMessageAction(text_editor::Action),
+    CommitModalAmendToggled(bool),
+    CommitModalAmendTargetLoaded(Result<AmendTarget, String>),
+    SubmitCommitModal { push_after: bool },
     CompareRefs(String, String),
     RevealBranchCommit(String),
     BranchCommitResolved(Result<String, String>),
@@ -352,7 +372,6 @@ pub(crate) enum Message {
     ToggleDiscardAll(bool),
     ConfirmDiscardModal,
     CloseDiscardModal,
-    DeleteBranch(String, bool),
     CopyText(String, String),
     OpenInlineGroupInput(Option<String>),
     OpenMergeWithTarget(String),

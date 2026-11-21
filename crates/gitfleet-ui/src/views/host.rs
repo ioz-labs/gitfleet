@@ -589,6 +589,10 @@ impl GitFleetApp {
             layers.push(self.view_rename_branch_modal(p, modal));
         }
 
+        if let Some(modal) = &self.commit_modal {
+            layers.push(self.view_commit_modal(p, modal));
+        }
+
         if let Some(confirm) = &self.pending_confirm {
             layers.push(self.view_confirm_modal(p, confirm));
         }

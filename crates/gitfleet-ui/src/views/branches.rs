@@ -903,9 +903,7 @@ impl GitFleetApp {
                             button(icons::trash(12.0, p.danger_fg))
                                 .padding([3, 5])
                                 .style(theme::subtle_btn(p))
-                                .on_press(Message::RequestConfirm(
-                                    PendingConfirm::delete_branches(deletable_locals, false),
-                                )),
+                                .on_press(Message::RequestDeleteBranches(deletable_locals)),
                             "Delete selected local branch(es)",
                             tooltip::Position::Top,
                             p,

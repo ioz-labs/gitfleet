@@ -216,6 +216,28 @@ impl GitFleetApp {
             self.toast_message = "Commit message cannot be empty".into();
             return Task::none();
         }
+        if !self.amend_commit
+            && let Some(st) = self.active_status()
+            && st.staged_count == 0
+        {
+            if st.unstaged_count > 0 {
+                let preview: Vec<String> = st
+                    .unstaged_files
+                    .iter()
+                    .take(6)
+                    .map(|f| f.path.clone())
+                    .collect();
+                self.pending_confirm = Some(PendingConfirm::commit_all_working_tree(
+                    st.unstaged_count,
+                    &preview,
+                    push_after,
+                ));
+                return Task::none();
+            }
+            self.toast_is_error = true;
+            self.toast_message = "Working tree is clean — nothing to commit".into();
+            return Task::none();
+        }
         if !self.staged_secrets.is_empty() {
             self.pending_confirm = Some(PendingConfirm::commit_with_secrets(
                 self.staged_secrets.len(),
@@ -231,6 +253,30 @@ impl GitFleetApp {
             return Task::none();
         }
         self.execute_commit(push_after)
+    }
+
+    pub(crate) fn execute_commit_all(&mut self, push_after: bool) -> Task<Message> {
+        let raw = self.commit_editor.text();
+        let msg = raw.trim().replace("\r\n", "\n");
+        if msg.is_empty() {
+            self.toast_is_error = true;
+            self.toast_message = "Commit message cannot be empty".into();
+            return Task::none();
+        }
+        let amend = self.amend_commit;
+        self.commit_editor = text_editor::Content::new();
+        self.amend_commit = false;
+        self.amend_target = None;
+        let label = if push_after {
+            "Commit All & Push"
+        } else {
+            "Commit All"
+        };
+        self.run_git_op(label, move |svc, repo| async move {
+            svc.git
+                .commit_all_changes(&repo.path, &msg, amend, push_after)
+                .await
+        })
     }
 
     pub(crate) fn execute_commit(&mut self, push_after: bool) -> Task<Message> {

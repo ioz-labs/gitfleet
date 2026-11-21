@@ -1,6 +1,6 @@
 use crate::app::{
-    ActiveFocusPane, BottomLeftTab, BottomViewMode, GitFleetApp, GraphSelection, GraphTab, Message,
-    RenameBranchModalState,
+    ActiveFocusPane, BottomLeftTab, BottomViewMode, CommitModalScope, CommitModalState,
+    GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm, RenameBranchModalState,
 };
 use chrono::Utc;
 use gitfleet_core::UndoEntry;
@@ -738,19 +738,285 @@ impl GitFleetApp {
                         .await
                 })
             }
-            Message::DeleteBranch(name, force) => {
-                self.graph_checked_branches.remove(&name);
-                self.run_git_op("Delete Branch", move |svc, repo| async move {
-                    svc.git.delete_branch(&repo.path, &name, force).await
-                })
+            Message::RequestDeleteBranches(names) => {
+                if names.is_empty() {
+                    return Task::none();
+                }
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.context_menu = None;
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let unmerged = svc
+                            .git
+                            .unmerged_branches(&repo.path, &names)
+                            .await
+                            .unwrap_or_default();
+                        (names, unmerged)
+                    },
+                    |(names, unmerged)| Message::DeleteBranchesChecked { names, unmerged },
+                )
+            }
+            Message::DeleteBranchesChecked { names, unmerged } => {
+                if unmerged.is_empty() {
+                    self.pending_confirm = Some(PendingConfirm::delete_branches(names, false));
+                } else {
+                    self.pending_confirm =
+                        Some(PendingConfirm::delete_unmerged_branches(names, unmerged));
+                }
+                Task::none()
             }
             Message::DeleteBranches(names, force) => {
+                if names.is_empty() {
+                    return Task::none();
+                }
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
                 for n in &names {
                     self.graph_checked_branches.remove(n);
                 }
-                self.run_git_op("Delete Branches", move |svc, repo| async move {
-                    svc.git.delete_branches(&repo.path, &names, force).await
-                })
+                self.busy_label = Some("Delete Branch…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = svc
+                            .git
+                            .delete_branches(&repo.path, &names, force)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (names, force, result)
+                    },
+                    |(names, force, result)| Message::DeleteBranchesDone {
+                        names,
+                        force,
+                        result,
+                    },
+                )
+            }
+            Message::DeleteBranchesDone {
+                names,
+                force,
+                result,
+            } => {
+                self.busy_label = None;
+                match result {
+                    Ok(_) => {
+                        self.toast_is_error = false;
+                        self.toast_message = if names.len() == 1 {
+                            format!("Deleted branch '{}'", names[0])
+                        } else {
+                            format!("Deleted {} branch(es)", names.len())
+                        };
+                        self.update(Message::RefreshSelected)
+                    }
+                    Err(e) => {
+                        if !force && e.to_lowercase().contains("not fully merged") {
+                            self.pending_confirm = Some(PendingConfirm::delete_unmerged_branches(
+                                names.clone(),
+                                names,
+                            ));
+                            return Task::none();
+                        }
+                        self.toast_is_error = true;
+                        self.toast_message = format!("Delete Branch failed: {e}");
+                        self.update(Message::RefreshSelected)
+                    }
+                }
+            }
+            Message::OpenCommitModal(repo_id) => {
+                let ws = self.service.workspace.current();
+                let Some(repo) = ws.repos.into_iter().find(|r| r.id == repo_id) else {
+                    return Task::none();
+                };
+                self.context_menu = None;
+                self.show_palette = false;
+                let was_same_repo = self.selected_repo.as_ref() == Some(&repo_id);
+                let select_task = if !was_same_repo {
+                    self.update(Message::SelectRepo(repo_id.clone()))
+                } else {
+                    Task::none()
+                };
+                let cached = self.statuses.get(&repo_id);
+                let state = CommitModalState::from_status(
+                    repo.id.clone(),
+                    repo.name.clone(),
+                    repo.path.clone(),
+                    cached,
+                    true,
+                );
+                let seed_msg = if was_same_repo {
+                    self.commit_editor.text()
+                } else {
+                    String::new()
+                };
+                self.commit_modal_editor = text_editor::Content::with_text(&seed_msg);
+                self.commit_modal = Some(state);
+                self.focus_pane = ActiveFocusPane::TextInput;
+
+                let svc = self.service.clone();
+                let fetch_status = Task::perform(
+                    async move {
+                        let res = svc
+                            .git
+                            .get_status(&repo.path)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (repo.id, res)
+                    },
+                    |(id, res)| Message::CommitModalStatusLoaded(id, res),
+                );
+                Task::batch([select_task, fetch_status])
+            }
+            Message::CommitModalStatusLoaded(repo_id, res) => {
+                if let Ok(st) = res {
+                    self.statuses.insert(repo_id.clone(), st.clone());
+                    if let Some(modal) = &mut self.commit_modal
+                        && modal.repo_id == repo_id
+                    {
+                        let amend = modal.amend;
+                        let refreshed = CommitModalState::from_status(
+                            modal.repo_id.clone(),
+                            modal.repo_name.clone(),
+                            modal.repo_path.clone(),
+                            Some(&st),
+                            false,
+                        );
+                        *modal = refreshed;
+                        modal.amend = amend;
+                    }
+                } else if let Some(modal) = &mut self.commit_modal
+                    && modal.repo_id == repo_id
+                {
+                    modal.loading = false;
+                }
+                Task::none()
+            }
+            Message::CommitModalSetScope(scope) => {
+                if let Some(modal) = &mut self.commit_modal {
+                    modal.scope = scope;
+                }
+                Task::none()
+            }
+            Message::CommitModalToggleFile(idx, checked) => {
+                if let Some(modal) = &mut self.commit_modal
+                    && let Some(entry) = modal.active_files_mut().get_mut(idx)
+                {
+                    entry.selected = checked;
+                }
+                Task::none()
+            }
+            Message::CommitModalToggleAll(checked) => {
+                if let Some(modal) = &mut self.commit_modal {
+                    for entry in modal.active_files_mut().iter_mut() {
+                        entry.selected = checked;
+                    }
+                }
+                Task::none()
+            }
+            Message::CommitModalMessageAction(action) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.commit_modal_editor.perform(action);
+                Task::none()
+            }
+            Message::CommitModalAmendToggled(checked) => {
+                let mut repo_path = None;
+                if let Some(modal) = &mut self.commit_modal {
+                    modal.amend = checked;
+                    if checked && self.commit_modal_editor.text().trim().is_empty() {
+                        repo_path = Some(modal.repo_path.clone());
+                    }
+                }
+                if let Some(path) = repo_path {
+                    let svc = self.service.clone();
+                    return Task::perform(
+                        async move { svc.git.amend_target(&path).await.map_err(|e| e.to_string()) },
+                        Message::CommitModalAmendTargetLoaded,
+                    );
+                }
+                Task::none()
+            }
+            Message::CommitModalAmendTargetLoaded(res) => {
+                if let Ok(target) = res
+                    && self.commit_modal.as_ref().is_some_and(|m| m.amend)
+                    && self.commit_modal_editor.text().trim().is_empty()
+                {
+                    self.commit_modal_editor = text_editor::Content::with_text(&target.message);
+                }
+                Task::none()
+            }
+            Message::SubmitCommitModal { push_after } => {
+                let raw = self.commit_modal_editor.text();
+                let msg = raw.trim().replace("\r\n", "\n");
+                if msg.is_empty() {
+                    self.toast_is_error = true;
+                    self.toast_message = "Commit message cannot be empty".into();
+                    return Task::none();
+                }
+                let Some(modal) = self.commit_modal.take() else {
+                    return Task::none();
+                };
+                self.commit_modal_editor = text_editor::Content::new();
+                if self.selected_repo.as_ref() == Some(&modal.repo_id) {
+                    self.commit_editor = text_editor::Content::new();
+                    self.amend_commit = false;
+                }
+
+                let mut stage_paths = Vec::new();
+                let mut unstage_paths = Vec::new();
+                match modal.scope {
+                    CommitModalScope::Staged => {
+                        for f in &modal.staged_files {
+                            if !f.selected {
+                                unstage_paths.push(f.path.clone());
+                            }
+                        }
+                    }
+                    CommitModalScope::Local => {
+                        let staged_set: std::collections::HashSet<&str> = modal
+                            .staged_files
+                            .iter()
+                            .map(|f| f.path.as_str())
+                            .collect();
+                        for f in &modal.local_files {
+                            if f.selected {
+                                stage_paths.push(f.path.clone());
+                            } else if staged_set.contains(f.path.as_str()) {
+                                unstage_paths.push(f.path.clone());
+                            }
+                        }
+                    }
+                }
+
+                let repo_path = modal.repo_path;
+                let amend = modal.amend;
+                let label = if push_after {
+                    "Commit & Push"
+                } else {
+                    "Commit"
+                };
+                self.busy_label = Some(format!("{label}…"));
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let res = svc
+                            .git
+                            .commit_with_selection(
+                                &repo_path,
+                                &stage_paths,
+                                &unstage_paths,
+                                &msg,
+                                amend,
+                                push_after,
+                            )
+                            .await
+                            .map_err(|e| e.to_string());
+                        (label.to_string(), res)
+                    },
+                    |(l, r)| Message::GitActionDone(l, r),
+                )
             }
             Message::CompareRefs(base_ref, target_ref) => {
                 self.diff_is_working_file = false;

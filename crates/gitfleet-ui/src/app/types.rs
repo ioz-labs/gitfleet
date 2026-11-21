@@ -1,6 +1,6 @@
 use gitfleet_core::{RepoId, SessionId};
 use gitfleet_git::bulk::BulkOperation;
-use gitfleet_git::{DiscardTarget, FileChange, MergeMode, ResetMode};
+use gitfleet_git::{DiscardTarget, FileChange, MergeMode, RepoStatusSummary, ResetMode};
 use gitfleet_terminal::TermScreenSnapshot;
 use iced::Point;
 use std::path::PathBuf;
@@ -146,7 +146,6 @@ pub(crate) enum ConfirmAction {
     AbortGitOp,
     DropStash { index: usize },
     DeleteTag { name: String },
-    DeleteBranch { name: String, force: bool },
     DeleteBranches { names: Vec<String>, force: bool },
     RemoveRepo { id: RepoId },
     RemoveBulkSelected,
@@ -156,6 +155,7 @@ pub(crate) enum ConfirmAction {
     RemoveWorktree { path: PathBuf },
     ResetVaultKey,
     ForceCommit { push_after: bool },
+    CommitAllWorkingTree { push_after: bool },
     ExecuteMerge { target: String, mode: MergeMode },
     FastForwardMerge { branch: String },
     ExecuteRebase { target: String },
@@ -260,54 +260,99 @@ impl PendingConfirm {
         }
     }
 
-    pub(crate) fn delete_branch(name: String, force: bool) -> Self {
-        Self {
-            title: if force {
-                "Force Delete Local Branch?".into()
-            } else {
-                "Delete Local Branch?".into()
-            },
-            message: if force {
-                "Force-deletes this local branch even if it contains unmerged commits (git branch -D)."
-                    .into()
-            } else {
-                "Deletes this local branch (git branch -d). Unmerged branches are protected unless force-deleted."
-                    .into()
-            },
-            detail: Some(name.clone()),
-            confirm_label: if force {
-                "Force Delete".into()
-            } else {
-                "Delete Branch".into()
-            },
-            is_danger: true,
-            action: ConfirmAction::DeleteBranch { name, force },
-        }
-    }
-
     pub(crate) fn delete_branches(names: Vec<String>, force: bool) -> Self {
         let count = names.len();
         Self {
             title: if force {
-                format!("Force Delete {count} Local Branch(es)?")
+                if count == 1 {
+                    "Force Delete Unmerged Local Branch?".into()
+                } else {
+                    format!("Force Delete {count} Local Branches?")
+                }
+            } else if count == 1 {
+                "Delete Local Branch?".into()
             } else {
-                format!("Delete {count} Local Branch(es)?")
+                format!("Delete {count} Local Branches?")
             },
             message: if force {
-                "Force-deletes all selected local branches even if they have unmerged commits (git branch -D)."
+                "Branch(es) contain commits not merged into HEAD (or were squash-merged). Force deleting runs `git branch -D` and cannot be undone easily."
                     .into()
             } else {
-                "Deletes all selected local branches (git branch -d). Unmerged branches are protected unless force-deleted."
-                    .into()
+                "Deletes the selected local branch(es) (`git branch -d`).".into()
             },
             detail: Some(names.join("\n")),
             confirm_label: if force {
-                format!("Force Delete ({count})")
+                if count == 1 {
+                    "Force Delete (-D)".into()
+                } else {
+                    format!("Force Delete ({count})")
+                }
+            } else if count == 1 {
+                "Delete Branch".into()
             } else {
                 format!("Delete ({count})")
             },
             is_danger: true,
             action: ConfirmAction::DeleteBranches { names, force },
+        }
+    }
+
+    pub(crate) fn delete_unmerged_branches(names: Vec<String>, unmerged: Vec<String>) -> Self {
+        let count = names.len();
+        let detail_lines: Vec<String> = names
+            .iter()
+            .map(|n| {
+                if unmerged.contains(n) {
+                    format!("{n}  (unmerged commits)")
+                } else {
+                    n.clone()
+                }
+            })
+            .collect();
+        Self {
+            title: if count == 1 {
+                format!("Force Delete Unmerged Branch '{}'?", names[0])
+            } else {
+                format!("Force Delete {count} Local Branches?")
+            },
+            message: "Not all selected branches are fully merged into HEAD (they have unmerged commits or were squash-merged). Click Force Delete to remove them with `git branch -D`."
+                .into(),
+            detail: Some(detail_lines.join("\n")),
+            confirm_label: if count == 1 {
+                "Force Delete (-D)".into()
+            } else {
+                format!("Force Delete ({count})")
+            },
+            is_danger: true,
+            action: ConfirmAction::DeleteBranches { names, force: true },
+        }
+    }
+
+    pub(crate) fn commit_all_working_tree(
+        file_count: usize,
+        preview_files: &[String],
+        push_after: bool,
+    ) -> Self {
+        let mut lines: Vec<String> = preview_files.iter().take(6).cloned().collect();
+        if file_count > lines.len() {
+            lines.push(format!("… and {} more file(s)", file_count - lines.len()));
+        }
+        Self {
+            title: "Do you want to commit all working tree changes?".into(),
+            message: "No file is staged yet. To commit all working tree changes, click Commit All. To stage individual changes, click Cancel."
+                .into(),
+            detail: if lines.is_empty() {
+                Some(format!("{file_count} changed file(s)"))
+            } else {
+                Some(format!("{file_count} changed file(s):\n{}", lines.join("\n")))
+            },
+            confirm_label: if push_after {
+                "Commit All & Push".into()
+            } else {
+                "Commit All".into()
+            },
+            is_danger: false,
+            action: ConfirmAction::CommitAllWorkingTree { push_after },
         }
     }
 
@@ -604,6 +649,102 @@ pub(crate) struct DiscardModalState {
 pub(crate) struct RenameBranchModalState {
     pub(crate) old_name: String,
     pub(crate) new_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitModalScope {
+    Staged,
+    Local,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CommitModalFileEntry {
+    pub(crate) path: String,
+    pub(crate) state_label: String,
+    pub(crate) selected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CommitModalState {
+    pub(crate) repo_id: RepoId,
+    pub(crate) repo_name: String,
+    pub(crate) repo_path: PathBuf,
+    pub(crate) scope: CommitModalScope,
+    pub(crate) staged_files: Vec<CommitModalFileEntry>,
+    pub(crate) local_files: Vec<CommitModalFileEntry>,
+    pub(crate) amend: bool,
+    pub(crate) loading: bool,
+}
+
+impl CommitModalState {
+    pub(crate) fn from_status(
+        repo_id: RepoId,
+        repo_name: String,
+        repo_path: PathBuf,
+        status: Option<&RepoStatusSummary>,
+        loading: bool,
+    ) -> Self {
+        let mut staged_files = Vec::new();
+        let mut local_files = Vec::new();
+        if let Some(st) = status {
+            for f in &st.staged_files {
+                staged_files.push(CommitModalFileEntry {
+                    path: f.path.clone(),
+                    state_label: f.kind.state_label(false).to_string(),
+                    selected: true,
+                });
+            }
+            let mut seen = std::collections::HashSet::new();
+            for f in st
+                .unstaged_files
+                .iter()
+                .chain(st.staged_files.iter())
+                .chain(st.conflict_files.iter())
+            {
+                if seen.insert(f.path.clone()) {
+                    local_files.push(CommitModalFileEntry {
+                        path: f.path.clone(),
+                        state_label: f.kind.state_label(false).to_string(),
+                        selected: true,
+                    });
+                }
+            }
+            local_files.sort_by(|a, b| a.path.cmp(&b.path));
+            staged_files.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+
+        // SmartGit rule: if nothing is staged yet, default to Local Changes with all files checked.
+        let scope = if staged_files.is_empty() {
+            CommitModalScope::Local
+        } else {
+            CommitModalScope::Staged
+        };
+
+        Self {
+            repo_id,
+            repo_name,
+            repo_path,
+            scope,
+            staged_files,
+            local_files,
+            amend: false,
+            loading,
+        }
+    }
+
+    pub(crate) fn active_files(&self) -> &[CommitModalFileEntry] {
+        match self.scope {
+            CommitModalScope::Staged => &self.staged_files,
+            CommitModalScope::Local => &self.local_files,
+        }
+    }
+
+    pub(crate) fn active_files_mut(&mut self) -> &mut Vec<CommitModalFileEntry> {
+        match self.scope {
+            CommitModalScope::Staged => &mut self.staged_files,
+            CommitModalScope::Local => &mut self.local_files,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

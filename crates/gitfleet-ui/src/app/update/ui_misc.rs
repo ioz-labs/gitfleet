@@ -101,6 +101,10 @@ impl GitFleetApp {
                     self.rename_branch_modal = None;
                     return Task::none();
                 }
+                if self.commit_modal.is_some() {
+                    self.commit_modal = None;
+                    return Task::none();
+                }
                 if self.context_menu.is_some() {
                     self.context_menu = None;
                     return Task::none();
@@ -522,9 +526,6 @@ impl GitFleetApp {
                     ConfirmAction::AbortGitOp => self.update(Message::AbortGitOp),
                     ConfirmAction::DropStash { index } => self.update(Message::DropStash(index)),
                     ConfirmAction::DeleteTag { name } => self.update(Message::DeleteTag(name)),
-                    ConfirmAction::DeleteBranch { name, force } => {
-                        self.update(Message::DeleteBranch(name, force))
-                    }
                     ConfirmAction::DeleteBranches { names, force } => {
                         self.update(Message::DeleteBranches(names, force))
                     }
@@ -542,6 +543,9 @@ impl GitFleetApp {
                     }
                     ConfirmAction::ResetVaultKey => self.update(Message::ResetVaultKey),
                     ConfirmAction::ForceCommit { push_after } => self.execute_commit(push_after),
+                    ConfirmAction::CommitAllWorkingTree { push_after } => {
+                        self.execute_commit_all(push_after)
+                    }
                     ConfirmAction::ExecuteMerge { target, mode } => {
                         self.update(Message::ExecuteMerge(target, mode))
                     }

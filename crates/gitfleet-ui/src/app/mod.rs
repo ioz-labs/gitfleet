@@ -140,6 +140,10 @@ pub(crate) struct GitFleetApp {
     pub(crate) rename_branch_modal: Option<RenameBranchModalState>,
     pub(crate) rename_branch_input_id: text_input::Id,
 
+    // Commit Popup Modal (right-click Repo -> Commit...)
+    pub(crate) commit_modal: Option<CommitModalState>,
+    pub(crate) commit_modal_editor: text_editor::Content,
+
     // Interactive Conflict Solver
     pub(crate) conflict_file_path: Option<String>,
     pub(crate) conflict_parsed: ParsedConflictFile,
@@ -352,6 +356,8 @@ impl GitFleetApp {
             merge_forecast: None,
             rename_branch_modal: None,
             rename_branch_input_id: text_input::Id::unique(),
+            commit_modal: None,
+            commit_modal_editor: text_editor::Content::new(),
             conflict_file_path: None,
             conflict_parsed: ParsedConflictFile::default(),
             conflict_active_hunk: None,
@@ -553,6 +559,7 @@ impl GitFleetApp {
             || self.cherry_pick_modal.is_some()
             || self.discard_modal.is_some()
             || self.rename_branch_modal.is_some()
+            || self.commit_modal.is_some()
     }
 
     pub(crate) fn default_terminal_profile_id(&self) -> String {

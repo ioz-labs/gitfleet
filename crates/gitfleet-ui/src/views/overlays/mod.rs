@@ -1,6 +1,7 @@
 mod branch_popover;
 mod cherry_pick_modal;
 mod command_palette;
+mod commit_modal;
 mod confirm_modal;
 mod context_menu;
 mod discard_modal;

@@ -188,6 +188,13 @@ impl GitFleetApp {
                     .padding([2, 10]),
                 );
                 items = items.push(close_sub(ctx_btn(
+                    icons::check(12.0, p.success_fg).into(),
+                    "Commit…".into(),
+                    Message::OpenCommitModal(id.clone()),
+                    false,
+                )));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(close_sub(ctx_btn(
                     icons::refresh(12.0, p.text_secondary).into(),
                     "Refresh".into(),
                     Message::ContextRepoGitOp(id.clone(), "refresh"),
@@ -634,13 +641,7 @@ impl GitFleetApp {
                     items = items.push(ctx_btn(
                         icons::trash(12.0, p.danger_fg).into(),
                         format!("Delete Branch '{}'…", truncate_chars(name, 16)),
-                        Message::RequestConfirm(PendingConfirm::delete_branch(name.clone(), false)),
-                        true,
-                    ));
-                    items = items.push(ctx_btn(
-                        icons::trash(12.0, p.danger_fg).into(),
-                        "Force Delete Branch (-D)…".into(),
-                        Message::RequestConfirm(PendingConfirm::delete_branch(name.clone(), true)),
+                        Message::RequestDeleteBranches(vec![name.clone()]),
                         true,
                     ));
                 }
