@@ -109,21 +109,48 @@ impl GitFleetApp {
             .as_deref()
             .unwrap_or(self.toast_message.as_str());
         if !status_msg.is_empty() {
-            left = left.push(
-                container(theme::clipped_line(
-                    text(truncate_chars(status_msg, 56))
-                        .size(type_scale::CAPTION)
-                        .color(if self.toast_is_error {
-                            p.danger_fg
-                        } else if self.busy_label.is_some() {
-                            p.accent_fg
-                        } else {
-                            p.text_muted
-                        }),
-                    Length::Shrink,
-                ))
-                .padding([0, 8]),
-            );
+            if self.toast_is_error
+                && self.busy_label.is_none()
+                && self.last_action_error.is_some()
+            {
+                left = left.push(tip(
+                    button(
+                        row![
+                            icons::alert_triangle(12.0, p.danger_fg),
+                            theme::clipped_line(
+                                text(truncate_chars(status_msg, 52))
+                                    .size(type_scale::CAPTION)
+                                    .color(p.danger_fg),
+                                Length::Shrink,
+                            ),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([2, 8])
+                    .style(theme::vscode_status_item(p))
+                    .on_press(Message::OpenLastErrorModal),
+                    "Click to open full error details popup",
+                    tooltip::Position::Top,
+                    p,
+                ));
+            } else {
+                left = left.push(
+                    container(theme::clipped_line(
+                        text(truncate_chars(status_msg, 56))
+                            .size(type_scale::CAPTION)
+                            .color(if self.toast_is_error {
+                                p.danger_fg
+                            } else if self.busy_label.is_some() {
+                                p.accent_fg
+                            } else {
+                                p.text_muted
+                            }),
+                        Length::Shrink,
+                    ))
+                    .padding([0, 8]),
+                );
+            }
         }
 
         // Right side: context telemetry + Bottom Dock panel toggles (Search, Secrets, Terminal, Output)

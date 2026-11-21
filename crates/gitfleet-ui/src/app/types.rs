@@ -138,9 +138,29 @@ pub(crate) enum FilesViewMode {
 pub(crate) enum BottomViewMode {
     UnifiedDiff,
     SideBySideDiff,
+    ImageDiff,
+    CsvDiff,
     Preview,
     Edit,
     ResolveConflicts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SettingsTab {
+    #[default]
+    General,
+    Terminal,
+    Automation,
+    Diagnostics,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActionErrorState {
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) detail: Option<String>,
+    pub(crate) context: Option<String>,
+    pub(crate) show_output_shortcut: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -823,6 +843,9 @@ pub(crate) enum ContextMenuTarget {
     ChangedFile {
         file: FileChange,
         is_working_tree: bool,
+    },
+    RepoFile {
+        path: String,
     },
 }
 

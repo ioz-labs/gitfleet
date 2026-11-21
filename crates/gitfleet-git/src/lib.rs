@@ -23,8 +23,8 @@ pub use conflicts::{
     has_conflict_markers,
 };
 pub use diff::{
-    DiffBlock, DiffChangeBlock, DiffChangeKind, DiffContextLine, DiffHunk, DiffStats, ParsedDiff,
-    parse_unified_diff,
+    DiffBlock, DiffChangeBlock, DiffChangeKind, DiffContextLine, DiffHunk, DiffStats,
+    FileVersionPair, ParsedDiff, diff_two_texts, parse_unified_diff,
 };
 pub use git_flow::{GitFlowKind, GitFlowState};
 pub use models::*;

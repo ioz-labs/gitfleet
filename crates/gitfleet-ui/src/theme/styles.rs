@@ -537,6 +537,111 @@ pub fn filter_pill_btn(p: Palette, active: bool) -> impl Fn(&Theme, button::Stat
     }
 }
 
+/// Crisp button inside a `segmented_group` track (used by Settings & Image/CSV Diff toolbars).
+pub fn segmented_btn(p: Palette, active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = if active {
+            p.accent_primary
+        } else if matches!(status, button::Status::Hovered) {
+            p.fill_hover
+        } else if matches!(status, button::Status::Pressed) {
+            p.fill_active
+        } else {
+            Color::TRANSPARENT
+        };
+        let fg = if active {
+            Color::WHITE
+        } else if matches!(status, button::Status::Hovered) {
+            p.text_primary
+        } else {
+            p.text_secondary
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: fg,
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+/// Left-rail navigation item button for the redesigned Settings dialog.
+pub fn settings_nav_btn(
+    p: Palette,
+    active: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = if active {
+            p.fill_selected
+        } else if matches!(status, button::Status::Hovered) {
+            p.fill_hover
+        } else if matches!(status, button::Status::Pressed) {
+            p.fill_active
+        } else {
+            Color::TRANSPARENT
+        };
+        let fg = if active || matches!(status, button::Status::Hovered) {
+            p.text_primary
+        } else {
+            p.text_secondary
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: fg,
+            border: Border {
+                color: if active {
+                    Color {
+                        a: 0.55,
+                        ..p.accent_primary
+                    }
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: if active { 1.0 } else { 0.0 },
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+/// Interactive selectable card button (Theme cards, Shell profile cards, Font cards in Settings).
+pub fn choice_card_btn(
+    p: Palette,
+    selected: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = if selected {
+            p.fill_selected
+        } else if matches!(status, button::Status::Hovered) {
+            p.fill_hover
+        } else {
+            p.surface_panel
+        };
+        let border_color = if selected {
+            p.accent_primary
+        } else if matches!(status, button::Status::Hovered) {
+            p.border_strong
+        } else {
+            p.border_subtle
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: p.text_primary,
+            border: Border {
+                color: border_color,
+                width: if selected { 1.5 } else { 1.0 },
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
 pub fn dark_input(p: Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
     move |_, status| {
         let border_color = match status {

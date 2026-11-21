@@ -1,10 +1,13 @@
 mod branches;
 pub(crate) mod commit_files;
 mod conflict_solver;
+pub(crate) mod csv_diff;
+pub(crate) mod detached_viewer;
 pub(crate) mod diff_viewer;
 mod dock;
 mod graph_pane;
 mod host;
+pub(crate) mod image_diff;
 mod overlays;
 mod repositories;
 mod status_bar;
@@ -18,18 +21,9 @@ impl GitFleetApp {
     pub(crate) fn view(&self, window_id: window::Id) -> Element<'_, Message> {
         let p = self.theme_mode.palette();
         match self.windows.get(&window_id) {
-            Some(WindowKind::DetachedViewer) => self.view_detached_viewer(p),
+            Some(WindowKind::DetachedViewer) => self.view_detached_viewer(window_id, p),
             _ => self.view_host(p),
         }
-    }
-
-    pub(crate) fn view_detached_viewer(&self, p: Palette) -> Element<'_, Message> {
-        container(self.view_bottom_viewer(p))
-            .padding(10)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(theme::app_bg(p))
-            .into()
     }
 }
 

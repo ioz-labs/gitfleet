@@ -40,8 +40,7 @@ impl GitFleetApp {
                             format!("Opened external terminal in {}", cwd.display());
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("External terminal failed: {e}");
+                        self.report_action_error("External Terminal Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -224,6 +223,11 @@ impl GitFleetApp {
                 self.active_resize = None;
                 if let Some(sel) = &mut self.diff_selection {
                     sel.dragging = false;
+                }
+                for viewer in self.detached_viewers.values_mut() {
+                    if let Some(sel) = &mut viewer.diff_selection {
+                        sel.dragging = false;
+                    }
                 }
                 if let Some((repo_id, _)) = self.dragging_repo.take() {
                     self.repo_drag_candidate = None;

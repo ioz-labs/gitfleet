@@ -225,8 +225,11 @@ impl GitFleetApp {
         let raw = self.commit_editor.text();
         let msg = raw.trim();
         if msg.is_empty() {
-            self.toast_is_error = true;
-            self.toast_message = "Commit message cannot be empty".into();
+            self.report_action_error(
+                "Commit Failed",
+                "Commit message cannot be empty. Enter a commit message before committing.",
+                false,
+            );
             return Task::none();
         }
         if !self.amend_commit
@@ -247,8 +250,11 @@ impl GitFleetApp {
                 ));
                 return Task::none();
             }
-            self.toast_is_error = true;
-            self.toast_message = "Working tree is clean — nothing to commit".into();
+            self.report_action_error(
+                "Nothing to Commit",
+                "Working tree is clean — there are no staged or modified changes to commit.",
+                false,
+            );
             return Task::none();
         }
         if !self.staged_secrets.is_empty() {
@@ -272,8 +278,11 @@ impl GitFleetApp {
         let raw = self.commit_editor.text();
         let msg = raw.trim().replace("\r\n", "\n");
         if msg.is_empty() {
-            self.toast_is_error = true;
-            self.toast_message = "Commit message cannot be empty".into();
+            self.report_action_error(
+                "Commit Failed",
+                "Commit message cannot be empty. Enter a commit message before committing.",
+                false,
+            );
             return Task::none();
         }
         let amend = self.amend_commit;
@@ -296,8 +305,11 @@ impl GitFleetApp {
         let raw = self.commit_editor.text();
         let msg = raw.trim().replace("\r\n", "\n");
         if msg.is_empty() {
-            self.toast_is_error = true;
-            self.toast_message = "Commit message cannot be empty".into();
+            self.report_action_error(
+                "Commit Failed",
+                "Commit message cannot be empty. Enter a commit message before committing.",
+                false,
+            );
             return Task::none();
         }
         let amend = self.amend_commit;

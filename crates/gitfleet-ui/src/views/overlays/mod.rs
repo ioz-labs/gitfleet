@@ -5,6 +5,7 @@ mod commit_modal;
 mod confirm_modal;
 mod context_menu;
 mod discard_modal;
+mod error_modal;
 mod git_flow_modal;
 mod merge_modal;
 mod rename_branch_modal;

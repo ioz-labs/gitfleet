@@ -307,6 +307,59 @@ impl Default for PreviewState {
 }
 
 impl PreviewState {
+    /// Creates an independent deep copy of this preview state (re-parsing markdown items when
+    /// needed) so detached popup windows stay completely decoupled from the host panel.
+    pub fn clone_snapshot(&self) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Markdown { raw, .. } => Self::Markdown {
+                items: markdown::parse(raw).collect(),
+                raw: raw.clone(),
+            },
+            Self::Image { path, size_bytes } => Self::Image {
+                path: path.clone(),
+                size_bytes: *size_bytes,
+            },
+            Self::Svg { path, size_bytes } => Self::Svg {
+                path: path.clone(),
+                size_bytes: *size_bytes,
+            },
+            Self::Json {
+                pretty,
+                valid,
+                error,
+            } => Self::Json {
+                pretty: pretty.clone(),
+                valid: *valid,
+                error: error.clone(),
+            },
+            Self::Table {
+                delimiter,
+                headers,
+                rows,
+                total_rows,
+                raw,
+            } => Self::Table {
+                delimiter: *delimiter,
+                headers: headers.clone(),
+                rows: rows.clone(),
+                total_rows: *total_rows,
+                raw: raw.clone(),
+            },
+            Self::Config { kind, content } => Self::Config {
+                kind,
+                content: content.clone(),
+            },
+            Self::Code { lang, content } => Self::Code {
+                lang: lang.clone(),
+                content: content.clone(),
+            },
+            Self::Binary { ext, size_bytes } => Self::Binary {
+                ext: ext.clone(),
+                size_bytes: *size_bytes,
+            },
+        }
+    }
     pub fn from_file(full_path: &Path, text_content: Option<&str>) -> Self {
         let size_bytes = std::fs::metadata(full_path).map(|m| m.len()).unwrap_or(0);
         let file_name = full_path

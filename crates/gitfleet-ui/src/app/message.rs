@@ -1,9 +1,13 @@
 use crate::app::types::{
     BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuSubmenu, ContextMenuTarget,
     DiffGapExpandMode, DiffSelectionSide, DrawerTab, FilesViewMode, GraphTab, PendingConfirm,
-    RepoFilter, ScanLevelPreset, TerminalMenuSubmenu,
+    RepoFilter, ScanLevelPreset, SettingsTab, TerminalMenuSubmenu,
 };
 use crate::terminal::TerminalCanvasAction;
+use crate::theme::ThemeMode;
+use crate::views::csv_diff::CsvDiffData;
+use crate::views::detached_viewer::DetachedAction;
+use crate::views::image_diff::{ImageDiffData, ImageDiffMode, ImageDiffZoom};
 use gitfleet_core::RepoId;
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{
@@ -61,7 +65,13 @@ pub(crate) enum Message {
     ToggleBulkSelect(RepoId, bool),
     ClearBulkSelection,
     RunBulkOp(BulkOperation),
-    BulkOpDone(String, usize, usize),
+    BulkOpDone {
+        label: String,
+        ok: usize,
+        fail: usize,
+        failures: Vec<(String, String)>,
+        is_scheduled: bool,
+    },
     RemoveRepo(RepoId),
     RemoveBulkSelected,
 
@@ -210,9 +220,22 @@ pub(crate) enum Message {
     DiffJumpChange(isize),
     DiffSelStart { side: DiffSelectionSide, row: usize, col: usize },
     DiffSelDrag { side: DiffSelectionSide, row: usize, col: usize },
-    CopyDiffSelection,
-    SelectAllFocused,
+    CopyDiffSelection(window::Id),
+    SelectAllFocused(window::Id),
     DiffLoaded(String, Result<String, String>),
+    ImageDiffLoaded(u64, String, ImageDiffData),
+    CsvDiffLoaded(u64, String, CsvDiffData),
+    SetImageDiffMode(ImageDiffMode),
+    SetImageDiffZoom(ImageDiffZoom),
+    ToggleImageDiffSwap,
+    ImageDiffSwipeChanged(f32),
+    ImageDiffOnionChanged(f32),
+    ImageDiffBlinkTick,
+    ImageDiffBlinkFlip,
+    ToggleImageDiffBlinkPause,
+    SetCsvDiffChangesOnly(bool),
+    ToggleCsvDiffIgnoreFormat,
+    CsvDiffFilterChanged(String),
     PreviewLinkClicked(String),
     PreviewEditorAction(text_editor::Action),
     TogglePreviewRaw,
@@ -226,6 +249,7 @@ pub(crate) enum Message {
     ClearCommandLog,
     OpenDetachedViewer,
     ViewerOpened(window::Id),
+    Detached(window::Id, DetachedAction),
     WindowClosed(window::Id),
 
     // Milestone 3: Groups, Multi-Workspace, Clone/Create/Locate, Submodules, Worktrees
@@ -268,6 +292,8 @@ pub(crate) enum Message {
     DismissPrefixRelocation,
     CancelBulkOp,
     RevealSelectedInExplorer,
+    RevealPathInExplorer(PathBuf),
+    RevealRepoFileInExplorer(String),
     SubmodulesLoaded(RepoId, Result<Vec<SubmoduleInfo>, String>),
     WorktreesLoaded(RepoId, Result<Vec<WorktreeInfo>, String>),
     SubmoduleUrlChanged(String),
@@ -372,6 +398,11 @@ pub(crate) enum Message {
     // Milestone 6: Background Tick, Watcher, Scheduled Fetch, Settings & Diagnostics
     BackgroundTick,
     ToggleSettingsModal,
+    SetSettingsTab(SettingsTab),
+    SettingsFontFilterChanged(String),
+    SetThemeMode(ThemeMode),
+    SetMaxParallelBulkOps(usize),
+    RescanExternalTools,
     ToggleFsWatcher(bool),
     ToggleScheduledFetch(bool),
     SetFetchInterval(u64),
@@ -379,6 +410,11 @@ pub(crate) enum Message {
     GitVersionLoaded(String),
     PickExportDiagnostics,
     ExportDiagnosticsPath(Option<PathBuf>),
+
+    // Action Error Notification Modal
+    CloseErrorModal,
+    OpenLastErrorModal,
+    OpenErrorCommandOutput,
 
     // Context Menus, Confirmations & Clipboard
     CursorMoved(window::Id, Point),

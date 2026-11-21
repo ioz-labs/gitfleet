@@ -1506,46 +1506,50 @@ impl GitFleetApp {
                 (k.short_code(), fg, bg)
             });
 
-            files_col = files_col.push(
-                button(
-                    row![
-                        theme::clipped_line(
-                            row![
-                                icons::file_code(
-                                    12.0,
-                                    status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_muted),
-                                ),
-                                text(name).size(type_scale::BODY).color(
-                                    status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_primary)
-                                ),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                            Length::Fill,
-                        ),
-                        if let Some((code, fg, bg)) = status_info {
-                            let border = Color { a: 0.42, ..fg };
-                            Element::from(
-                                container(
-                                    text(code)
-                                        .size(type_scale::BADGE)
-                                        .color(fg)
-                                        .wrapping(text::Wrapping::None),
-                                )
-                                .padding([1, 5])
-                                .style(theme::pill_box(bg, fg, border)),
+            let file_btn = button(
+                row![
+                    theme::clipped_line(
+                        row![
+                            icons::file_code(
+                                12.0,
+                                status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_muted),
+                            ),
+                            text(name).size(type_scale::BODY).color(
+                                status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_primary)
+                            ),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                        Length::Fill,
+                    ),
+                    if let Some((code, fg, bg)) = status_info {
+                        let border = Color { a: 0.42, ..fg };
+                        Element::from(
+                            container(
+                                text(code)
+                                    .size(type_scale::BADGE)
+                                    .color(fg)
+                                    .wrapping(text::Wrapping::None),
                             )
-                        } else {
-                            Space::with_width(Length::Shrink).into()
-                        }
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
-                )
-                .width(Length::Fill)
-                .padding([4, 7])
-                .style(theme::repo_row_btn(p, active))
-                .on_press(Message::SelectRepoFile(f.clone())),
+                            .padding([1, 5])
+                            .style(theme::pill_box(bg, fg, border)),
+                        )
+                    } else {
+                        Space::with_width(Length::Shrink).into()
+                    }
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding([4, 7])
+            .style(theme::repo_row_btn(p, active))
+            .on_press(Message::SelectRepoFile(f.clone()));
+
+            files_col = files_col.push(
+                mouse_area(file_btn).on_right_press(Message::OpenContextMenu(
+                    ContextMenuTarget::RepoFile { path: f.clone() },
+                )),
             );
         }
 

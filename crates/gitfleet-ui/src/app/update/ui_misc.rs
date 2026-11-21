@@ -27,6 +27,23 @@ impl GitFleetApp {
                     ThemeMode::Dark => ThemeMode::Light,
                     ThemeMode::Light => ThemeMode::Dark,
                 };
+                let mut s = self.service.settings();
+                s.theme = match self.theme_mode {
+                    ThemeMode::Dark => "dark".into(),
+                    ThemeMode::Light => "light".into(),
+                };
+                self.service.update_settings(s);
+                self.persist_ui_prefs();
+                Task::none()
+            }
+            Message::SetThemeMode(mode) => {
+                self.theme_mode = mode;
+                let mut s = self.service.settings();
+                s.theme = match mode {
+                    ThemeMode::Dark => "dark".into(),
+                    ThemeMode::Light => "light".into(),
+                };
+                self.service.update_settings(s);
                 self.persist_ui_prefs();
                 Task::none()
             }
@@ -79,6 +96,10 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::CloseOverlays => {
+                if self.action_error.is_some() {
+                    self.action_error = None;
+                    return Task::none();
+                }
                 if self.dragging_repo.is_some() || self.repo_drag_candidate.is_some() {
                     self.dragging_repo = None;
                     self.repo_drag_candidate = None;
@@ -183,15 +204,11 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::OpenDetachedViewer => {
-                if self
-                    .windows
-                    .values()
-                    .any(|k| *k == WindowKind::DetachedViewer)
-                {
-                    return Task::none();
-                }
+                let snapshot = crate::views::detached_viewer::DetachedViewerState::from_host(self);
+                self.pending_detached_viewers.push_back(snapshot);
                 let (_id, task) = window::open(window::Settings {
-                    size: iced::Size::new(980.0, 720.0),
+                    size: iced::Size::new(1080.0, 740.0),
+                    min_size: Some(iced::Size::new(640.0, 420.0)),
                     icon: crate::app::app_window_icon(),
                     ..Default::default()
                 });
@@ -199,9 +216,16 @@ impl GitFleetApp {
             }
             Message::ViewerOpened(id) => {
                 self.windows.insert(id, WindowKind::DetachedViewer);
+                let state = self
+                    .pending_detached_viewers
+                    .pop_front()
+                    .unwrap_or_else(crate::views::detached_viewer::DetachedViewerState::empty);
+                self.detached_viewers.insert(id, state);
                 Task::none()
             }
+            Message::Detached(id, action) => self.update_detached_viewer(id, action),
             Message::WindowClosed(id) => {
+                self.detached_viewers.remove(&id);
                 let kind = self.windows.remove(&id);
                 if kind == Some(WindowKind::Host) || self.windows.is_empty() {
                     return iced::exit();
@@ -288,11 +312,12 @@ impl GitFleetApp {
                     return self.load_status_task(repo);
                 }
                 if self.service.scheduler.take_scheduled_fetch_due() {
-                    let targets: Vec<(RepoId, PathBuf)> = self
-                        .service
-                        .workspace
-                        .current()
-                        .repos
+                    let ws_repos = self.service.workspace.current().repos;
+                    let name_map: std::collections::HashMap<RepoId, String> = ws_repos
+                        .iter()
+                        .map(|r| (r.id.clone(), r.name.clone()))
+                        .collect();
+                    let targets: Vec<(RepoId, PathBuf)> = ws_repos
                         .into_iter()
                         .filter(|r| r.available)
                         .map(|r| (r.id, r.path))
@@ -312,9 +337,31 @@ impl GitFleetApp {
                                     )
                                     .await;
                                 let ok = results.iter().filter(|r| r.ok).count();
-                                ("Scheduled Fetch".to_string(), ok, results.len() - ok)
+                                let failures: Vec<(String, String)> = results
+                                    .iter()
+                                    .filter(|r| !r.ok)
+                                    .map(|r| {
+                                        let name = name_map
+                                            .get(&r.repo_id)
+                                            .cloned()
+                                            .unwrap_or_else(|| r.repo_id.0.clone());
+                                        (name, r.message.clone())
+                                    })
+                                    .collect();
+                                (
+                                    "Scheduled Fetch".to_string(),
+                                    ok,
+                                    failures.len(),
+                                    failures,
+                                )
                             },
-                            |(l, ok, fail)| Message::BulkOpDone(l, ok, fail),
+                            |(label, ok, fail, failures)| Message::BulkOpDone {
+                                label,
+                                ok,
+                                fail,
+                                failures,
+                                is_scheduled: true,
+                            },
                         );
                     }
                 }
@@ -330,9 +377,50 @@ impl GitFleetApp {
                 self.terminal_menu_submenu = TerminalMenuSubmenu::None;
                 self.show_settings_modal = !self.show_settings_modal;
                 if self.show_settings_modal {
+                    self.settings_font_filter.clear();
                     self.detected_tools = self.service.scan_diff_tools();
                     let _ = self.service.terminal.refresh_profiles();
                 }
+                Task::none()
+            }
+            Message::SetSettingsTab(tab) => {
+                self.settings_tab = tab;
+                Task::none()
+            }
+            Message::SettingsFontFilterChanged(q) => {
+                self.settings_font_filter = q;
+                Task::none()
+            }
+            Message::SetMaxParallelBulkOps(n) => {
+                let mut s = self.service.settings();
+                s.max_parallel_bulk_ops = n.clamp(1, 16);
+                self.service.update_settings(s);
+                Task::none()
+            }
+            Message::RescanExternalTools => {
+                self.detected_tools = self.service.scan_diff_tools();
+                let _ = self.service.terminal.refresh_profiles();
+                self.toast_is_error = false;
+                self.toast_message = format!(
+                    "Detected {} external tool(s) on PATH",
+                    self.detected_tools.len()
+                );
+                Task::none()
+            }
+            Message::CloseErrorModal => {
+                self.action_error = None;
+                Task::none()
+            }
+            Message::OpenLastErrorModal => {
+                if let Some(err) = self.last_action_error.clone() {
+                    self.action_error = Some(err);
+                }
+                Task::none()
+            }
+            Message::OpenErrorCommandOutput => {
+                self.action_error = None;
+                self.drawer_tab = Some(DrawerTab::CommandLog);
+                self.terminal_focused = false;
                 Task::none()
             }
             Message::ToggleFsWatcher(enabled) => {
@@ -389,8 +477,7 @@ impl GitFleetApp {
                         self.toast_message = format!("Exported diagnostics to {}", path.display());
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Export failed: {e}");
+                        self.report_action_error("Export Diagnostics Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -488,6 +575,7 @@ impl GitFleetApp {
             }
             Message::OpenContextMenu(target) => {
                 if self.pending_confirm.is_some()
+                    || self.action_error.is_some()
                     || self.cherry_pick_modal.is_some()
                     || self.discard_modal.is_some()
                     || self.rename_branch_modal.is_some()
@@ -707,8 +795,21 @@ impl GitFleetApp {
                     self.toast_message = "Working tree is clean — nothing to discard.".into();
                     return Task::none();
                 }
+                // Default to Index (revert working tree only, preserving staged changes) whenever
+                // any selected file has unstaged working-tree edits; default to HEAD when only
+                // staged-only / conflict entries are selected.
+                let unstaged_paths: HashSet<&str> =
+                    st.unstaged_files.iter().map(|f| f.path.as_str()).collect();
+                let any_selected_unstaged = files
+                    .iter()
+                    .any(|f| f.selected && unstaged_paths.contains(f.path.as_str()));
+                let default_target = if any_selected_unstaged {
+                    DiscardTarget::Index
+                } else {
+                    DiscardTarget::Head
+                };
                 self.discard_modal = Some(DiscardModalState {
-                    target: DiscardTarget::Head,
+                    target: default_target,
                     files,
                 });
                 Task::none()

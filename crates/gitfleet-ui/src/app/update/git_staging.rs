@@ -71,8 +71,7 @@ impl GitFleetApp {
                         }
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Status error: {e}");
+                        self.record_background_error("Repository Status Error", e, true);
                     }
                 }
                 Task::none()
@@ -228,8 +227,7 @@ impl GitFleetApp {
                         self.toast_message = format!("{label} succeeded");
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("{label} failed: {e}");
+                        self.report_action_error(format!("{label} Failed"), e, true);
                     }
                 }
                 self.update(Message::RefreshSelected)
@@ -306,20 +304,35 @@ impl GitFleetApp {
             Message::PushPreflightLoaded(res) => {
                 match res {
                     Ok(orphans) => {
-                        self.toast_is_error = !orphans.is_empty();
-                        self.toast_message = if orphans.is_empty() {
-                            "Push preflight OK — no orphan submodule commits".into()
+                        if orphans.is_empty() {
+                            self.toast_is_error = false;
+                            self.toast_message =
+                                "Push preflight OK — no orphan submodule commits".into();
                         } else {
-                            format!(
-                                "Preflight: {} submodule(s) have unpushed commits — use Ordered Push",
-                                orphans.len()
-                            )
-                        };
+                            let details = orphans
+                                .iter()
+                                .map(|o| {
+                                    format!(
+                                        "{} ({})",
+                                        o.submodule_path,
+                                        &o.commit_oid[..o.commit_oid.len().min(7)]
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            self.report_action_error(
+                                "Push Preflight Warning",
+                                format!(
+                                    "{} submodule(s) have unpushed commits — use Ordered Push before pushing the parent repository:\n{details}",
+                                    orphans.len()
+                                ),
+                                false,
+                            );
+                        }
                         self.orphan_gitlinks = orphans;
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Preflight failed: {e}");
+                        self.report_action_error("Push Preflight Failed", e, true);
                     }
                 }
                 Task::none()

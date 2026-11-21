@@ -66,8 +66,54 @@ pub struct ParsedDiff {
     pub raw: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FileVersionPair {
+    pub file_path: String,
+    pub before_label: String,
+    pub after_label: String,
+    pub before_bytes: Option<Vec<u8>>,
+    pub after_bytes: Option<Vec<u8>>,
+}
+
 const MAX_FULL_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MEDIA_DIFF_BYTES: u64 = 24 * 1024 * 1024;
 const UNTRACKED_MAX_LINES: usize = 10_000;
+
+fn read_disk_capped(path: &Path) -> AppResult<Option<Vec<u8>>> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(None);
+    };
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    if meta.len() > MAX_MEDIA_DIFF_BYTES {
+        return Err(AppError::Git(format!(
+            "File exceeds {} MB diff limit ({:.1} MB)",
+            MAX_MEDIA_DIFF_BYTES / (1024 * 1024),
+            meta.len() as f64 / (1024.0 * 1024.0)
+        )));
+    }
+    Ok(Some(std::fs::read(path)?))
+}
+
+async fn read_git_blob_capped(repo_path: &Path, spec: &str) -> AppResult<Option<Vec<u8>>> {
+    // Check blob size first so huge LFS/binary blobs never blow up memory
+    if let Ok(size_str) =
+        runner::run_git_ok(repo_path, &["cat-file", "-s", spec], None, None, false).await
+        && let Ok(size) = size_str.trim().parse::<u64>()
+        && size > MAX_MEDIA_DIFF_BYTES
+    {
+        return Err(AppError::Git(format!(
+            "Git object '{spec}' exceeds {} MB diff limit ({:.1} MB)",
+            MAX_MEDIA_DIFF_BYTES / (1024 * 1024),
+            size as f64 / (1024.0 * 1024.0)
+        )));
+    }
+    match runner::run_git_bytes(repo_path, &["show", spec]).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(_) => Ok(None),
+    }
+}
 
 impl GitService {
     pub async fn get_diff(
@@ -186,6 +232,125 @@ impl GitService {
             .filter(|l| !l.trim().is_empty())
             .map(String::from)
             .collect())
+    }
+
+    /// Loads raw `(before, after)` byte payloads for a working-tree or staged file so rich visual
+    /// diff viewers (Image Diff & CSV Table Diff) have exact unmodified contents for both sides.
+    pub async fn get_working_file_versions(
+        &self,
+        repo_path: &Path,
+        file_path: &str,
+        staged: bool,
+        untracked: bool,
+    ) -> AppResult<FileVersionPair> {
+        let git_path = file_path.replace('\\', "/");
+        if untracked {
+            let after_bytes = read_disk_capped(&repo_path.join(file_path))?;
+            return Ok(FileVersionPair {
+                file_path: file_path.to_string(),
+                before_label: "New file".into(),
+                after_label: "Working Tree".into(),
+                before_bytes: None,
+                after_bytes,
+            });
+        }
+
+        if staged {
+            let head_spec = format!("HEAD:{git_path}");
+            let index_spec = format!(":{git_path}");
+            let before_bytes = read_git_blob_capped(repo_path, &head_spec).await?;
+            let after_bytes = read_git_blob_capped(repo_path, &index_spec).await?;
+            return Ok(FileVersionPair {
+                file_path: file_path.to_string(),
+                before_label: "HEAD".into(),
+                after_label: "Index (Staged)".into(),
+                before_bytes,
+                after_bytes,
+            });
+        }
+
+        // Unstaged working-tree change: compare Index (or HEAD fallback) vs disk
+        let index_spec = format!(":{git_path}");
+        let mut before_label = "Index".to_string();
+        let mut before_bytes = read_git_blob_capped(repo_path, &index_spec).await?;
+        if before_bytes.is_none() {
+            let head_spec = format!("HEAD:{git_path}");
+            before_bytes = read_git_blob_capped(repo_path, &head_spec).await?;
+            if before_bytes.is_some() {
+                before_label = "HEAD".into();
+            }
+        }
+        let after_bytes = read_disk_capped(&repo_path.join(file_path))?;
+        Ok(FileVersionPair {
+            file_path: file_path.to_string(),
+            before_label,
+            after_label: "Working Tree".into(),
+            before_bytes,
+            after_bytes,
+        })
+    }
+
+    /// Loads raw `(before, after)` byte payloads for a file inside a historical commit `oid`
+    /// (`<oid>^:<path>` vs `<oid>:<path>`), following renames automatically.
+    pub async fn get_commit_file_versions(
+        &self,
+        repo_path: &Path,
+        oid: &str,
+        file_path: &str,
+    ) -> AppResult<FileVersionPair> {
+        let git_path = file_path.replace('\\', "/");
+        let short_oid = &oid[..oid.len().min(7)];
+
+        let after_spec = format!("{oid}:{git_path}");
+        let after_bytes = read_git_blob_capped(repo_path, &after_spec).await?;
+
+        let parent_spec = format!("{oid}^:{git_path}");
+        let mut before_bytes = read_git_blob_capped(repo_path, &parent_spec).await?;
+        let mut before_label = format!("{short_oid}^");
+
+        // Follow commit rename if `<oid>^:<file_path>` didn't exist under the new path
+        if before_bytes.is_none()
+            && let Ok(tree_out) = runner::run_git_ok(
+                repo_path,
+                &[
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-status",
+                    "-r",
+                    "-M",
+                    "--root",
+                    oid,
+                ],
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            for line in tree_out.lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 3
+                    && (parts[0].starts_with('R') || parts[0].starts_with('C'))
+                    && parts[2] == git_path
+                {
+                    let prev_path = parts[1];
+                    let prev_spec = format!("{oid}^:{prev_path}");
+                    if let Ok(Some(bytes)) = read_git_blob_capped(repo_path, &prev_spec).await {
+                        before_bytes = Some(bytes);
+                        before_label = format!("{short_oid}^ ({prev_path})");
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(FileVersionPair {
+            file_path: file_path.to_string(),
+            before_label,
+            after_label: short_oid.to_string(),
+            before_bytes,
+            after_bytes,
+        })
     }
 }
 
@@ -411,6 +576,109 @@ fn build_hunk_patch(file_header: &str, hunk_header: &str, lines: &[String]) -> S
     patch
 }
 
+/// Computes a full-file `ParsedDiff` between two in-memory text strings without requiring a Git
+/// repository (used by the standalone Detached Diff / Preview window when comparing arbitrary files).
+pub fn diff_two_texts(left_label: &str, left: &str, right_label: &str, right: &str) -> ParsedDiff {
+    let a: Vec<&str> = left.lines().collect();
+    let b: Vec<&str> = right.lines().collect();
+
+    let file_header = format!("--- {left_label}\n+++ {right_label}");
+    let mut prefix = 0usize;
+    while prefix < a.len() && prefix < b.len() && a[prefix] == b[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < a.len() - prefix
+        && suffix < b.len() - prefix
+        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mut raw = format!(
+        "{file_header}\n@@ -1,{} +1,{} @@\n",
+        a.len(),
+        b.len()
+    );
+
+    for line in &a[..prefix] {
+        raw.push(' ');
+        raw.push_str(line);
+        raw.push('\n');
+    }
+
+    let a_mid = &a[prefix..a.len() - suffix];
+    let b_mid = &b[prefix..b.len() - suffix];
+    let m = a_mid.len();
+    let n = b_mid.len();
+
+    if m == 0 || n == 0 || m.saturating_mul(n) > 400_000 {
+        for line in a_mid {
+            raw.push('-');
+            raw.push_str(line);
+            raw.push('\n');
+        }
+        for line in b_mid {
+            raw.push('+');
+            raw.push_str(line);
+            raw.push('\n');
+        }
+    } else {
+        let cols = n + 1;
+        let mut dp = vec![0u32; (m + 1) * cols];
+        for i in (0..m).rev() {
+            for j in (0..n).rev() {
+                dp[i * cols + j] = if a_mid[i] == b_mid[j] {
+                    1 + dp[(i + 1) * cols + (j + 1)]
+                } else {
+                    dp[(i + 1) * cols + j].max(dp[i * cols + (j + 1)])
+                };
+            }
+        }
+        let mut i = 0usize;
+        let mut j = 0usize;
+        while i < m && j < n {
+            if a_mid[i] == b_mid[j] {
+                raw.push(' ');
+                raw.push_str(a_mid[i]);
+                raw.push('\n');
+                i += 1;
+                j += 1;
+            } else if dp[(i + 1) * cols + j] >= dp[i * cols + (j + 1)] {
+                raw.push('-');
+                raw.push_str(a_mid[i]);
+                raw.push('\n');
+                i += 1;
+            } else {
+                raw.push('+');
+                raw.push_str(b_mid[j]);
+                raw.push('\n');
+                j += 1;
+            }
+        }
+        while i < m {
+            raw.push('-');
+            raw.push_str(a_mid[i]);
+            raw.push('\n');
+            i += 1;
+        }
+        while j < n {
+            raw.push('+');
+            raw.push_str(b_mid[j]);
+            raw.push('\n');
+            j += 1;
+        }
+    }
+
+    for line in &a[a.len() - suffix..] {
+        raw.push(' ');
+        raw.push_str(line);
+        raw.push('\n');
+    }
+
+    parse_unified_diff(&raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +767,89 @@ diff --git a/main.go b/main.go
             }
             other => panic!("expected modified block, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn loads_binary_and_csv_file_versions_for_working_staged_and_commits() {
+        use gitfleet_core::{CommandLogStore, EventBus};
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_file_versions_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Tester"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
+            .await
+            .unwrap();
+
+        // Commit v1 binary bytes (contains non-UTF8 0x89 PNG magic) + CSV
+        let bin_v1: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x00, 0xFF, 0x01];
+        let bin_v2: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x00, 0xFE, 0x02];
+        let bin_v3: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x00, 0xFD, 0x03];
+        std::fs::write(dir.join("hero.png"), &bin_v1).unwrap();
+        std::fs::write(dir.join("data.csv"), "sku,stock\nSF-1,10\n").unwrap();
+        svc.stage(&dir, &["hero.png".into(), "data.csv".into()])
+            .await
+            .unwrap();
+        svc.commit(&dir, "initial", false).await.unwrap();
+
+        // Stage v2 and modify working tree to v3
+        std::fs::write(dir.join("hero.png"), &bin_v2).unwrap();
+        svc.stage(&dir, &["hero.png".into()]).await.unwrap();
+        std::fs::write(dir.join("hero.png"), &bin_v3).unwrap();
+
+        let staged_pair = svc
+            .get_working_file_versions(&dir, "hero.png", true, false)
+            .await
+            .unwrap();
+        assert_eq!(staged_pair.before_bytes.as_deref(), Some(bin_v1.as_slice()));
+        assert_eq!(staged_pair.after_bytes.as_deref(), Some(bin_v2.as_slice()));
+
+        let unstaged_pair = svc
+            .get_working_file_versions(&dir, "hero.png", false, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            unstaged_pair.before_bytes.as_deref(),
+            Some(bin_v2.as_slice())
+        );
+        assert_eq!(
+            unstaged_pair.after_bytes.as_deref(),
+            Some(bin_v3.as_slice())
+        );
+
+        // Commit v3 and verify commit version loading
+        svc.stage(&dir, &["hero.png".into()]).await.unwrap();
+        svc.commit(&dir, "update hero", false).await.unwrap();
+        let head = svc.head_oid(&dir).await.unwrap();
+        let commit_pair = svc
+            .get_commit_file_versions(&dir, &head, "hero.png")
+            .await
+            .unwrap();
+        assert_eq!(commit_pair.before_bytes.as_deref(), Some(bin_v1.as_slice()));
+        assert_eq!(commit_pair.after_bytes.as_deref(), Some(bin_v3.as_slice()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diffs_two_arbitrary_texts_into_structured_blocks() {
+        let left = "alpha\nbeta\ngamma\ndelta\n";
+        let right = "alpha\nbeta_2\ngamma\nepsilon\ndelta\n";
+        let parsed = diff_two_texts("a.txt", left, "b.txt", right);
+        assert!(parsed.is_full_file);
+        assert_eq!(parsed.stats.modified_blocks, 1);
+        assert_eq!(parsed.stats.added_blocks, 1);
+        assert_eq!(parsed.stats.removed_blocks, 0);
     }
 }

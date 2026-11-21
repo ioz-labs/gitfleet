@@ -51,6 +51,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Pure Rust GUI (Multi-window daemon)
 iced = { version = "0.13", features = ["tokio", "advanced", "svg", "image", "markdown", "canvas"] }
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+resvg = { version = "0.42", default-features = false }
+tiny-skia = "0.11"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 directories = "6"
 
@@ -74,5 +77,5 @@ unsafe_code = "forbid"
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 1
+codegen-units = 16
 strip = "symbols"

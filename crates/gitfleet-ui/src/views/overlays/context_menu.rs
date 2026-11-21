@@ -543,6 +543,12 @@ impl GitFleetApp {
 
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
+                    icons::folder_open(12.0, p.accent_fg).into(),
+                    "Open in Explorer".into(),
+                    Message::RevealPathInExplorer(path.clone()),
+                    false,
+                )));
+                items = items.push(close_sub(ctx_btn(
                     icons::terminal(12.0, p.text_secondary).into(),
                     "Open Terminal Here".into(),
                     Message::ContextRepoGitOp(id.clone(), "terminal"),
@@ -1042,6 +1048,12 @@ impl GitFleetApp {
                     false,
                 ));
                 items = items.push(ctx_btn(
+                    icons::folder_open(12.0, p.accent_fg).into(),
+                    "Open in Explorer".into(),
+                    Message::RevealRepoFileInExplorer(file.path.clone()),
+                    false,
+                ));
+                items = items.push(ctx_btn(
                     icons::copy(12.0, p.text_secondary).into(),
                     "Copy Relative Path".into(),
                     Message::CopyText("file path".into(), file.path.clone()),
@@ -1069,6 +1081,35 @@ impl GitFleetApp {
                         ));
                     }
                 }
+            }
+            ContextMenuTarget::RepoFile { path } => {
+                let fname = path.rsplit('/').next().unwrap_or(path);
+                items = items.push(
+                    container(
+                        text(truncate_chars(fname, 26))
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([2, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::file_code(12.0, p.accent_fg).into(),
+                    "Open Preview".into(),
+                    Message::SelectRepoFile(path.clone()),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::folder_open(12.0, p.accent_fg).into(),
+                    "Open in Explorer".into(),
+                    Message::RevealRepoFileInExplorer(path.clone()),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::copy(12.0, p.text_secondary).into(),
+                    "Copy Relative Path".into(),
+                    Message::CopyText("file path".into(), path.clone()),
+                    false,
+                ));
             }
         }
 

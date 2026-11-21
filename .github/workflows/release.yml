@@ -16,11 +16,55 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Fast verification gate running once on Linux in parallel with release builds.
+  # Keeps Windows/macOS runners dedicated solely to release compilation (avoiding
+  # compiling debug + test PDBs + release 3x on every runner).
+  verify:
+    name: Check & Unit Tests
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Linux GUI system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libfontconfig1-dev \
+            libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: verify-linux
+          cache-on-failure: true
+
+      - name: Check workspace (zero warnings)
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run unit tests
+        run: cargo test --workspace --lib --bins --locked
+
   build:
-    name: Build & Test (${{ matrix.label }})
+    name: Build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,33 +75,30 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: gitfleet-windows-x86_64
             platform: windows
-            run_tests: true
+            inno_arch: x64compatible
           - label: Windows ARM64
             os: windows-11-arm
             target: aarch64-pc-windows-msvc
             artifact_name: gitfleet-windows-arm64
             platform: windows
-            run_tests: true
+            inno_arch: arm64
           - label: macOS Apple Silicon (arm64)
             os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: gitfleet-macos-arm64
             platform: macos
-            run_tests: true
           - label: Linux x86_64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_name: gitfleet-linux-x86_64
             platform: linux
             deb_arch: amd64
-            run_tests: true
           - label: Linux ARM64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: gitfleet-linux-arm64
             platform: linux
             deb_arch: arm64
-            run_tests: true
 
     steps:
       - name: Checkout repository
@@ -75,6 +116,17 @@ jobs:
             VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Exclude Cargo & workspace from Windows Defender
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup" -ErrorAction Stop
+            Write-Host "Added Windows Defender exclusions for faster Rust builds."
+          } catch {
+            Write-Host "Skipping Defender exclusions: $_"
+          }
 
       - name: Install Linux GUI system libraries
         if: matrix.platform == 'linux'
@@ -100,28 +152,77 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
-
-      - name: Check workspace (zero warnings)
-        run: cargo check --workspace --all-targets --locked --target ${{ matrix.target }}
-
-      - name: Run unit tests
-        if: matrix.run_tests
-        run: cargo test --workspace --lib --bins --locked --target ${{ matrix.target }}
+          shared-key: release-${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} -p gitfleet-ui
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST=$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')
+          if [ "$HOST" = "${{ matrix.target }}" ]; then
+            echo "Native build ($HOST) — omitting --target to avoid compiling proc-macros twice"
+            cargo build --release --locked -p gitfleet-ui
+            echo "bin_dir=target/release" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cross build ($HOST -> ${{ matrix.target }})"
+            cargo build --release --locked --target "${{ matrix.target }}" -p gitfleet-ui
+            echo "bin_dir=target/${{ matrix.target }}/release" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Package Windows (.zip)
+      - name: Package Windows (.zip + Setup Installer .exe)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $ver = "${{ steps.meta.outputs.version }}"
+          $binDir = "${{ steps.build.outputs.bin_dir }}"
+          $exePath = (Resolve-Path "$binDir\gitfleet.exe").Path
           $stage = "dist\stage"
           New-Item -ItemType Directory -Force -Path $stage, "dist\out" | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\gitfleet.exe" "$stage\gitfleet.exe"
+          $outDir = (Resolve-Path "dist\out").Path
+
+          # 1. Portable .zip archive
+          Copy-Item $exePath "$stage\gitfleet.exe"
           Copy-Item "README.md" "$stage\README.md"
           Copy-Item "LICENSE" "$stage\LICENSE"
-          Compress-Archive -Path "$stage\*" -DestinationPath "dist\out\${{ matrix.artifact_name }}.zip" -Force
+          Compress-Archive -Path "$stage\*" -DestinationPath "$outDir\${{ matrix.artifact_name }}.zip" -Force
+
+          # 2. Windows Setup Installer (.exe) via Inno Setup 6
+          $isccCandidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+            if ($cmd) { $iscc = $cmd.Source }
+          }
+          if (-not $iscc) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              Write-Host "Installing Inno Setup 6 via Chocolatey..."
+              choco install innosetup -y --no-progress
+            } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+              Write-Host "Installing Inno Setup 6 via winget..."
+              winget install --id JRSoftware.InnoSetup --exact --silent --accept-package-agreements --accept-source-agreements
+            }
+            $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) {
+            throw "Inno Setup compiler (ISCC.exe) could not be found."
+          }
+
+          & $iscc `
+            "/DMyAppVersion=$ver" `
+            "/DMyExePath=$exePath" `
+            "/DMyArch=${{ matrix.inno_arch }}" `
+            "/DMyOutputDir=$outDir" `
+            "/DMyOutputName=${{ matrix.artifact_name }}-setup" `
+            "packaging\windows\gitfleet.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "ISCC.exe failed with exit code $LASTEXITCODE"
+          }
 
       - name: Package macOS (.app + .dmg)
         if: matrix.platform == 'macos'
@@ -129,9 +230,10 @@ jobs:
         run: |
           set -euo pipefail
           VER="${{ steps.meta.outputs.version }}"
+          BIN_DIR="${{ steps.build.outputs.bin_dir }}"
           APP_DIR="dist/dmg/GitFleet.app"
           mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" dist/out
-          cp "target/${{ matrix.target }}/release/gitfleet" "$APP_DIR/Contents/MacOS/gitfleet"
+          cp "${BIN_DIR}/gitfleet" "$APP_DIR/Contents/MacOS/gitfleet"
           chmod +x "$APP_DIR/Contents/MacOS/gitfleet"
 
           ICONSET="dist/AppIcon.iconset"
@@ -193,9 +295,10 @@ jobs:
         run: |
           set -euo pipefail
           VER="${{ steps.meta.outputs.version }}"
+          BIN_DIR="${{ steps.build.outputs.bin_dir }}"
           mkdir -p "dist/tar/${{ matrix.artifact_name }}" dist/out
 
-          cp "target/${{ matrix.target }}/release/gitfleet" "dist/tar/${{ matrix.artifact_name }}/gitfleet"
+          cp "${BIN_DIR}/gitfleet" "dist/tar/${{ matrix.artifact_name }}/gitfleet"
           chmod +x "dist/tar/${{ matrix.artifact_name }}/gitfleet"
           cp README.md LICENSE assets/icon.png "dist/tar/${{ matrix.artifact_name }}/"
 
@@ -215,7 +318,7 @@ jobs:
           # Build Debian/Ubuntu .deb package
           DEB_ROOT="dist/deb"
           mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/usr/bin" "$DEB_ROOT/usr/share/applications" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
-          cp "target/${{ matrix.target }}/release/gitfleet" "$DEB_ROOT/usr/bin/gitfleet"
+          cp "${BIN_DIR}/gitfleet" "$DEB_ROOT/usr/bin/gitfleet"
           chmod 755 "$DEB_ROOT/usr/bin/gitfleet"
           cp "dist/tar/${{ matrix.artifact_name }}/gitfleet.desktop" "$DEB_ROOT/usr/share/applications/gitfleet.desktop"
           cp assets/icon.png "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/gitfleet.png"
@@ -241,7 +344,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: build
+    needs: [verify, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:

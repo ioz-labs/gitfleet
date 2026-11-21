@@ -97,7 +97,7 @@ impl GitFleetApp {
                         .padding([4, 7])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::OpenDetachedViewer),
-                    "Open Detached Diff / Preview Window",
+                    "Open Detached Diff / Preview Window (independent popup)",
                     tooltip::Position::Bottom,
                     p,
                 ),
@@ -546,59 +546,73 @@ impl GitFleetApp {
             .style(theme::app_bg(p))
             .into();
 
-        // Keep `base` permanently at child index 0 of a single stable root `Stack` so opening or
-        // closing context menus, popovers, or modals NEVER recreates `base`'s widget tree or resets
-        // scrollable positions (Branches, Graph, Repositories, Files, Diff).
-        let mut layers: Vec<Element<'_, Message>> = vec![base];
+        // Keep `base` permanently at child index 0 of a single stable root `Stack` wrapped in a
+        // stable `inert_when` guard so:
+        // 1) Opening/closing popups NEVER recreates `base`'s widget tree or resets scrollbars.
+        // 2) While any modal/popover/menu is open, hover states & tooltips (such as Graph commit
+        //    author avatar cards) NEVER bleed through popups above `base`.
+        let has_overlay = self.has_modal_or_menu_open();
+        let mut layers: Vec<Element<'_, Message>> = vec![theme::inert_when(base, has_overlay)];
+        let mut modal_layers: Vec<Element<'_, Message>> = Vec::new();
 
         if self.show_palette {
-            layers.push(self.view_command_palette(p, &ws.repos));
+            modal_layers.push(self.view_command_palette(p, &ws.repos));
         } else if self.show_branch_popover {
-            layers.push(self.view_branch_popover(p));
+            modal_layers.push(self.view_branch_popover(p));
         } else if self.show_merge_modal {
-            layers.push(self.view_merge_modal(p));
+            modal_layers.push(self.view_merge_modal(p));
         } else if self.show_git_flow_modal {
-            layers.push(self.view_git_flow_modal(p));
+            modal_layers.push(self.view_git_flow_modal(p));
         } else if self.show_workspace_modal {
-            layers.push(self.view_workspace_modal(p));
+            modal_layers.push(self.view_workspace_modal(p));
         } else if self.show_settings_modal {
-            layers.push(self.view_settings_modal(p));
+            modal_layers.push(self.view_settings_modal(p));
         }
 
         if self.show_terminal_menu {
-            layers.push(self.view_terminal_profile_menu(p));
+            modal_layers.push(self.view_terminal_profile_menu(p));
         }
 
         if let Some(menu) = &self.context_menu {
-            layers.push(self.view_context_menu(p, menu));
+            modal_layers.push(self.view_context_menu(p, menu));
         }
 
         if let Some(modal) = &self.cherry_pick_modal {
-            layers.push(self.view_cherry_pick_modal(p, modal));
+            modal_layers.push(self.view_cherry_pick_modal(p, modal));
         }
 
         if let Some(modal) = &self.discard_modal {
-            layers.push(self.view_discard_modal(p, modal));
+            modal_layers.push(self.view_discard_modal(p, modal));
         }
 
         if let Some(modal) = &self.rename_branch_modal {
-            layers.push(self.view_rename_branch_modal(p, modal));
+            modal_layers.push(self.view_rename_branch_modal(p, modal));
         }
 
         if let Some(modal) = &self.rename_workspace_modal {
-            layers.push(self.view_rename_workspace_modal(p, modal));
+            modal_layers.push(self.view_rename_workspace_modal(p, modal));
         }
 
         if let Some(modal) = &self.commit_modal {
-            layers.push(self.view_commit_modal(p, modal));
+            modal_layers.push(self.view_commit_modal(p, modal));
         }
 
         if let Some(modal) = &self.scan_modal {
-            layers.push(self.view_scan_modal(p, modal));
+            modal_layers.push(self.view_scan_modal(p, modal));
         }
 
         if let Some(confirm) = &self.pending_confirm {
-            layers.push(self.view_confirm_modal(p, confirm));
+            modal_layers.push(self.view_confirm_modal(p, confirm));
+        }
+
+        if let Some(err) = &self.action_error {
+            modal_layers.push(self.view_error_modal(p, err));
+        }
+
+        let modal_count = modal_layers.len();
+        for (idx, layer) in modal_layers.into_iter().enumerate() {
+            let occluded = idx + 1 < modal_count;
+            layers.push(theme::inert_when(layer, occluded));
         }
 
         if let Some((_, repo_name)) = &self.dragging_repo {

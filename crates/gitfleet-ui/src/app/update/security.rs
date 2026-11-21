@@ -60,8 +60,7 @@ impl GitFleetApp {
                         self.refresh_vault_and_ignore();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Key create failed: {e}");
+                        self.report_action_error("Create Age Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -73,8 +72,7 @@ impl GitFleetApp {
                         self.toast_message = "Copied Age public key to clipboard".into();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Copy failed: {e}");
+                        self.report_action_error("Copy Public Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -87,8 +85,7 @@ impl GitFleetApp {
                             "Copied Age private key — paste into your password manager or another machine".into();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Copy private key failed: {e}");
+                        self.report_action_error("Copy Private Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -120,8 +117,7 @@ impl GitFleetApp {
                         self.refresh_vault_and_ignore();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Import key failed: {e}");
+                        self.report_action_error("Import Age Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -151,8 +147,7 @@ impl GitFleetApp {
                         self.refresh_vault_summary();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Rename key failed: {e}");
+                        self.report_action_error("Rename Age Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -172,8 +167,7 @@ impl GitFleetApp {
                         self.refresh_vault_summary();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Set default key failed: {e}");
+                        self.report_action_error("Set Default Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -195,8 +189,7 @@ impl GitFleetApp {
                         self.toast_message = "Deleted Age key from keyring".into();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Delete key failed: {e}");
+                        self.report_action_error("Delete Age Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -221,8 +214,7 @@ impl GitFleetApp {
                         }
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Set repo key failed: {e}");
+                        self.report_action_error("Assign Repository Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -251,8 +243,7 @@ impl GitFleetApp {
                         self.refresh_vault_summary();
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Set group key failed: {e}");
+                        self.report_action_error("Assign Group Key Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -274,8 +265,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Re-key failed: {e}");
+                            self.report_action_error("Re-key Vault Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -296,8 +286,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Delete vault failed: {e}");
+                            self.report_action_error("Delete Vault Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -323,8 +312,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Encrypt failed: {e}");
+                            self.report_action_error("Encrypt Secrets Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -348,8 +336,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Restore failed: {e}");
+                            self.report_action_error("Restore Secrets Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -375,8 +362,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Encrypt failed: {e}");
+                            self.report_action_error("Encrypt Secrets Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -399,8 +385,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Restore failed: {e}");
+                            self.report_action_error("Restore Secrets Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -444,8 +429,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Cannot add secret file: {e}");
+                            self.report_action_error("Add Secret File Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -490,8 +474,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Remove failed: {e}");
+                            self.report_action_error("Remove Secret File Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -521,8 +504,7 @@ impl GitFleetApp {
                             self.toast_message = format!("Copied '{key}' directly to clipboard");
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Copy failed: {e}");
+                            self.report_action_error("Copy Secret Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -570,8 +552,7 @@ impl GitFleetApp {
                             return self.load_status_task(repo);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Save secret failed: {e}");
+                            self.report_action_error("Save Secret Failed", e.to_string(), false);
                         }
                     }
                 }
@@ -606,8 +587,7 @@ impl GitFleetApp {
                             return self.update(Message::RefreshSelected);
                         }
                         Err(e) => {
-                            self.toast_is_error = true;
-                            self.toast_message = format!("Save ignore failed: {e}");
+                            self.report_action_error("Save Ignore File Failed", e.to_string(), false);
                         }
                     }
                 }

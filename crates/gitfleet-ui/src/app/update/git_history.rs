@@ -51,6 +51,14 @@ impl GitFleetApp {
             }
             Message::InspectStash(index) => {
                 self.diff_is_working_file = false;
+                self.diff_image = None;
+                self.diff_csv = None;
+                if matches!(
+                    self.bottom_mode,
+                    BottomViewMode::ImageDiff | BottomViewMode::CsvDiff
+                ) {
+                    self.bottom_mode = self.last_text_diff_mode;
+                }
                 if let Some(repo) = self.current_repo() {
                     let svc = self.service.clone();
                     let title = format!("stash@{{{index}}}");
@@ -525,9 +533,12 @@ impl GitFleetApp {
                 }
                 let remaining = self.conflict_parsed.unresolved_count();
                 if mark_resolved && remaining > 0 {
-                    self.toast_is_error = true;
-                    self.toast_message = format!(
-                        "{remaining} conflict(s) still unresolved — resolve all hunks before marking resolved"
+                    self.report_action_error(
+                        "Unresolved Conflicts Remaining",
+                        format!(
+                            "{remaining} conflict hunk(s) are still unresolved. Choose Ours, Theirs, Both, or Edit for every conflict before marking this file resolved."
+                        ),
+                        false,
                     );
                     return Task::none();
                 }
@@ -820,8 +831,7 @@ impl GitFleetApp {
                             ));
                             return Task::none();
                         }
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Delete Branch failed: {e}");
+                        self.report_action_error("Delete Branch Failed", e, true);
                         self.update(Message::RefreshSelected)
                     }
                 }
@@ -951,8 +961,11 @@ impl GitFleetApp {
                 let raw = self.commit_modal_editor.text();
                 let msg = raw.trim().replace("\r\n", "\n");
                 if msg.is_empty() {
-                    self.toast_is_error = true;
-                    self.toast_message = "Commit message cannot be empty".into();
+                    self.report_action_error(
+                        "Commit Failed",
+                        "Commit message cannot be empty. Enter a commit message before committing.",
+                        false,
+                    );
                     return Task::none();
                 }
                 let Some(modal) = self.commit_modal.take() else {
@@ -1020,8 +1033,16 @@ impl GitFleetApp {
             }
             Message::CompareRefs(base_ref, target_ref) => {
                 self.diff_is_working_file = false;
-                if matches!(self.bottom_mode, BottomViewMode::Preview | BottomViewMode::Edit) {
-                    self.bottom_mode = BottomViewMode::SideBySideDiff;
+                self.diff_image = None;
+                self.diff_csv = None;
+                if matches!(
+                    self.bottom_mode,
+                    BottomViewMode::Preview
+                        | BottomViewMode::Edit
+                        | BottomViewMode::ImageDiff
+                        | BottomViewMode::CsvDiff
+                ) {
+                    self.bottom_mode = self.last_text_diff_mode;
                 }
                 if let Some(repo) = self.current_repo() {
                     let svc = self.service.clone();
@@ -1065,8 +1086,7 @@ impl GitFleetApp {
             Message::BranchCommitResolved(res) => match res {
                 Ok(oid) => self.update(Message::SelectCommit(oid)),
                 Err(e) => {
-                    self.toast_is_error = true;
-                    self.toast_message = format!("Could not resolve branch commit: {e}");
+                    self.report_action_error("Resolve Branch Failed", e, true);
                     Task::none()
                 }
             },

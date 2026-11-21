@@ -23,14 +23,6 @@ impl GitFleetApp {
                 .size(type_scale::BODY)
                 .color(p.text_secondary),
             radio(
-                "HEAD",
-                DiscardTarget::Head,
-                Some(modal.target),
-                Message::SetDiscardTarget,
-            )
-            .size(14)
-            .text_size(type_scale::BODY),
-            radio(
                 "Index",
                 DiscardTarget::Index,
                 Some(modal.target),
@@ -38,10 +30,18 @@ impl GitFleetApp {
             )
             .size(14)
             .text_size(type_scale::BODY),
+            radio(
+                "HEAD",
+                DiscardTarget::Head,
+                Some(modal.target),
+                Message::SetDiscardTarget,
+            )
+            .size(14)
+            .text_size(type_scale::BODY),
             Space::with_width(Length::Fill),
             text(match modal.target {
-                DiscardTarget::Head => "Resets staged + unstaged back to HEAD",
-                DiscardTarget::Index => "Keeps staged changes; reverts working tree",
+                DiscardTarget::Index => "Reverts working tree to Index (keeps staged changes)",
+                DiscardTarget::Head => "Resets both staged & working tree back to HEAD",
             })
             .size(type_scale::CAPTION)
             .color(p.text_muted),

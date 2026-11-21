@@ -113,17 +113,50 @@ impl AppService {
     }
 
     pub fn reveal_in_file_manager(&self, path: &Path) -> AppResult<()> {
+        let mut target = path.to_path_buf();
+        let mut is_file = target.is_file();
+        if !target.exists() {
+            is_file = false;
+            while let Some(parent) = target.parent() {
+                if parent.exists() {
+                    target = parent.to_path_buf();
+                    break;
+                }
+                target = parent.to_path_buf();
+            }
+        }
+
         #[cfg(target_os = "windows")]
         {
-            let _ = std::process::Command::new("explorer.exe").arg(path).spawn()?;
+            let win_path = target.to_string_lossy().replace('/', "\\");
+            let mut cmd = std::process::Command::new("explorer.exe");
+            if is_file {
+                cmd.arg("/select,").arg(&win_path);
+            } else {
+                cmd.arg(&win_path);
+            }
+            let _ = cmd.spawn()?;
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = std::process::Command::new("open").arg(path).spawn()?;
+            let mut cmd = std::process::Command::new("open");
+            if is_file {
+                cmd.arg("-R").arg(&target);
+            } else {
+                cmd.arg(&target);
+            }
+            let _ = cmd.spawn()?;
         }
         #[cfg(target_os = "linux")]
         {
-            let _ = std::process::Command::new("xdg-open").arg(path).spawn()?;
+            let open_dir = if is_file {
+                target.parent().unwrap_or(&target)
+            } else {
+                target.as_path()
+            };
+            let _ = std::process::Command::new("xdg-open")
+                .arg(open_dir)
+                .spawn()?;
         }
         Ok(())
     }

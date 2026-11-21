@@ -382,6 +382,287 @@ where
     })
 }
 
+/// Wraps a layer (such as the main workspace beneath popups/modals) so that while `inert` is
+/// `true`, hover states, tooltips/overlays, pointer interactions, and clicks NEVER bleed through
+/// overlays above it — while keeping a stable widget type at Stack index 0 so scroll positions
+/// never reset when opening or closing popups.
+pub fn inert_when<'a, M>(content: impl Into<Element<'a, M>>, inert: bool) -> Element<'a, M>
+where
+    M: 'a,
+{
+    struct InertWhen<'a, M> {
+        content: Element<'a, M>,
+        inert: bool,
+    }
+
+    impl<'a, M> Widget<M, Theme, Renderer> for InertWhen<'a, M> {
+        fn tag(&self) -> tree::Tag {
+            tree::Tag::stateless()
+        }
+
+        fn state(&self) -> tree::State {
+            tree::State::None
+        }
+
+        fn children(&self) -> Vec<Tree> {
+            vec![Tree::new(&self.content)]
+        }
+
+        fn diff(&self, tree: &mut Tree) {
+            tree.diff_children(std::slice::from_ref(&self.content));
+        }
+
+        fn size(&self) -> Size<Length> {
+            self.content.as_widget().size()
+        }
+
+        fn size_hint(&self) -> Size<Length> {
+            self.content.as_widget().size_hint()
+        }
+
+        fn layout(
+            &self,
+            tree: &mut Tree,
+            renderer: &Renderer,
+            limits: &adv_layout::Limits,
+        ) -> adv_layout::Node {
+            let child = self
+                .content
+                .as_widget()
+                .layout(&mut tree.children[0], renderer, limits);
+            adv_layout::Node::with_children(child.size(), vec![child])
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut Renderer,
+            theme: &Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            let eff_cursor = if self.inert {
+                mouse::Cursor::Unavailable
+            } else {
+                cursor
+            };
+            if let Some(child_layout) = layout.children().next() {
+                self.content.as_widget().draw(
+                    &tree.children[0],
+                    renderer,
+                    theme,
+                    style,
+                    child_layout,
+                    eff_cursor,
+                    viewport,
+                );
+            }
+        }
+
+        fn on_event(
+            &mut self,
+            tree: &mut Tree,
+            event: iced::Event,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            renderer: &Renderer,
+            clipboard: &mut dyn Clipboard,
+            shell: &mut Shell<'_, M>,
+            viewport: &Rectangle,
+        ) -> event::Status {
+            let Some(child_layout) = layout.children().next() else {
+                return event::Status::Ignored;
+            };
+            if self.inert {
+                if matches!(
+                    event,
+                    iced::Event::Mouse(
+                        mouse::Event::CursorMoved { .. }
+                            | mouse::Event::CursorLeft
+                            | mouse::Event::CursorEntered
+                            | mouse::Event::ButtonReleased(_)
+                    ) | iced::Event::Window(_)
+                ) {
+                    let _ = self.content.as_widget_mut().on_event(
+                        &mut tree.children[0],
+                        event,
+                        child_layout,
+                        mouse::Cursor::Unavailable,
+                        renderer,
+                        clipboard,
+                        shell,
+                        viewport,
+                    );
+                }
+                return event::Status::Ignored;
+            }
+            self.content.as_widget_mut().on_event(
+                &mut tree.children[0],
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            )
+        }
+
+        fn mouse_interaction(
+            &self,
+            tree: &Tree,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+            renderer: &Renderer,
+        ) -> mouse::Interaction {
+            if self.inert {
+                return mouse::Interaction::None;
+            }
+            let Some(child_layout) = layout.children().next() else {
+                return mouse::Interaction::None;
+            };
+            self.content.as_widget().mouse_interaction(
+                &tree.children[0],
+                child_layout,
+                cursor,
+                viewport,
+                renderer,
+            )
+        }
+
+        fn operate(
+            &self,
+            tree: &mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            operation: &mut dyn iced::advanced::widget::Operation,
+        ) {
+            if let Some(child_layout) = layout.children().next() {
+                self.content.as_widget().operate(
+                    &mut tree.children[0],
+                    child_layout,
+                    renderer,
+                    operation,
+                );
+            }
+        }
+
+        fn overlay<'b>(
+            &'b mut self,
+            tree: &'b mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            translation: Vector,
+        ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+            if self.inert {
+                return None;
+            }
+            let child_layout = layout.children().next()?;
+            self.content.as_widget_mut().overlay(
+                &mut tree.children[0],
+                child_layout,
+                renderer,
+                translation,
+            )
+        }
+    }
+
+    Element::new(InertWhen {
+        content: content.into(),
+        inert,
+    })
+}
+
+/// Modern pill toggle switch (38×20px) for Settings & Preferences rows.
+pub fn toggle_switch<'a, M>(p: Palette, checked: bool, on_toggle: M) -> Element<'a, M>
+where
+    M: Clone + 'a,
+{
+    let thumb = container(Space::new(Length::Fixed(14.0), Length::Fixed(14.0))).style(
+        move |_| container::Style {
+            background: Some(Background::Color(Color::WHITE)),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 999.0.into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+                offset: Vector::new(0.0, 1.0),
+                blur_radius: 3.0,
+            },
+            ..Default::default()
+        },
+    );
+
+    let track_inner = if checked {
+        row![Space::with_width(Length::Fill), thumb].align_y(Alignment::Center)
+    } else {
+        row![thumb, Space::with_width(Length::Fill)].align_y(Alignment::Center)
+    };
+
+    button(
+        container(track_inner)
+            .width(Length::Fixed(36.0))
+            .height(Length::Fixed(20.0))
+            .padding(Padding::from([3, 3]))
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .padding(0)
+    .style(move |_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        let bg = if checked {
+            if hovered {
+                p.accent_hover
+            } else {
+                p.accent_primary
+            }
+        } else if hovered {
+            p.border_strong
+        } else {
+            p.border_default
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: Color::WHITE,
+            border: Border {
+                color: if checked {
+                    p.accent_primary
+                } else {
+                    p.border_strong
+                },
+                width: 1.0,
+                radius: 999.0.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .on_press(on_toggle)
+    .into()
+}
+
+/// Grouped segmented-control track container for mutually exclusive options.
+pub fn segmented_group<'a, M>(p: Palette, content: impl Into<Element<'a, M>>) -> Element<'a, M>
+where
+    M: 'a,
+{
+    container(content)
+        .padding(2)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(p.surface_input)),
+            border: Border {
+                color: p.border_subtle,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 /// Wraps an overlay's full-screen positioned container in an `opaque` click-catching backdrop so
 /// clicks, right-clicks, hover states, tooltips, and wheel scrolling NEVER leak through to widgets
 /// behind the popup/modal.

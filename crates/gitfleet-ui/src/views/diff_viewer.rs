@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::icons;
 use crate::preview::{PreviewHighlightSettings, PreviewHighlighter, PreviewState};
-use crate::theme::{self, Palette, type_scale};
+use crate::theme::{self, Palette, ThemeMode, type_scale};
 use crate::views::{slim_scroll_h, tip};
 use gitfleet_git::{DiffBlock, DiffChangeKind, ParsedDiff};
 use iced::advanced::layout as adv_layout;
@@ -13,8 +13,8 @@ use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, overlay, renderer};
 use iced::widget::canvas::{self, Canvas, Geometry, Path as CanvasPath, Stroke};
 use iced::widget::{
-    Space, button, column, container, horizontal_rule, rich_text, row, span, text, text_editor,
-    tooltip,
+    Space, button, column, container, horizontal_rule, rich_text, row, scrollable, span, text,
+    text_editor, tooltip,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Length, Padding, Point, Rectangle, Renderer,
@@ -1797,39 +1797,122 @@ impl GitFleetApp {
             ));
         }
 
-        header = header
-            .push(tip(
+        let is_image_file = self.diff_image.is_some()
+            || self
+                .active_file_path
+                .as_deref()
+                .is_some_and(crate::views::image_diff::is_image_diff_path);
+        let is_raster_only = self
+            .diff_image
+            .as_ref()
+            .is_some_and(|d| !d.is_svg)
+            || self
+                .active_file_path
+                .as_deref()
+                .is_some_and(crate::views::image_diff::is_raster_image_path);
+        let is_csv_file = self.diff_csv.is_some()
+            || self
+                .active_file_path
+                .as_deref()
+                .is_some_and(crate::views::csv_diff::is_csv_diff_path);
+
+        if is_image_file {
+            header = header.push(tip(
                 button(
-                    text("Unified")
-                        .size(type_scale::CAPTION)
-                        .wrapping(text::Wrapping::None),
+                    row![
+                        icons::image_frame(
+                            12.0,
+                            if self.bottom_mode == BottomViewMode::ImageDiff {
+                                p.accent_fg
+                            } else {
+                                p.text_muted
+                            }
+                        ),
+                        text("Image Diff")
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
                 )
                 .padding([3, 8])
                 .style(theme::filter_pill_btn(
                     p,
-                    self.bottom_mode == BottomViewMode::UnifiedDiff,
+                    self.bottom_mode == BottomViewMode::ImageDiff,
                 ))
-                .on_press(Message::SetBottomViewMode(BottomViewMode::UnifiedDiff)),
-                "Unified Diff with Line Numbers & Hunk Staging",
-                tooltip::Position::Top,
-                p,
-            ))
-            .push(tip(
-                button(
-                    text("Side by Side")
-                        .size(type_scale::CAPTION)
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([3, 8])
-                .style(theme::filter_pill_btn(
-                    p,
-                    self.bottom_mode == BottomViewMode::SideBySideDiff,
-                ))
-                .on_press(Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),
-                "SmartGit-style Side-by-Side Diff (Synced Vertical & Horizontal Scroll + Connectors)",
+                .on_press(Message::SetBottomViewMode(BottomViewMode::ImageDiff)),
+                "Visual Image Diff (2-up, Blink, Swipe, Onion Skin & Pixel Diff)",
                 tooltip::Position::Top,
                 p,
             ));
+        }
+
+        if is_csv_file {
+            header = header.push(tip(
+                button(
+                    row![
+                        icons::table_grid(
+                            12.0,
+                            if self.bottom_mode == BottomViewMode::CsvDiff {
+                                p.accent_fg
+                            } else {
+                                p.text_muted
+                            }
+                        ),
+                        text("Table")
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([3, 8])
+                .style(theme::filter_pill_btn(
+                    p,
+                    self.bottom_mode == BottomViewMode::CsvDiff,
+                ))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::CsvDiff)),
+                "Spreadsheet Table Diff with cell-level highlights",
+                tooltip::Position::Top,
+                p,
+            ));
+        }
+
+        if !is_raster_only {
+            header = header
+                .push(tip(
+                    button(
+                        text("Unified")
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([3, 8])
+                    .style(theme::filter_pill_btn(
+                        p,
+                        self.bottom_mode == BottomViewMode::UnifiedDiff,
+                    ))
+                    .on_press(Message::SetBottomViewMode(BottomViewMode::UnifiedDiff)),
+                    "Unified Diff with Line Numbers & Hunk Staging",
+                    tooltip::Position::Top,
+                    p,
+                ))
+                .push(tip(
+                    button(
+                        text("Side by Side")
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([3, 8])
+                    .style(theme::filter_pill_btn(
+                        p,
+                        self.bottom_mode == BottomViewMode::SideBySideDiff,
+                    ))
+                    .on_press(Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),
+                    "SmartGit-style Side-by-Side Diff (Synced Vertical & Horizontal Scroll + Connectors)",
+                    tooltip::Position::Top,
+                    p,
+                ));
+        }
 
         if is_diff_mode {
             header = header.push(tip(
@@ -1872,24 +1955,25 @@ impl GitFleetApp {
             }
         }
 
-        header = header
-            .push(tip(
-                button(
-                    text("Preview")
-                        .size(type_scale::CAPTION)
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([3, 8])
-                .style(theme::filter_pill_btn(
-                    p,
-                    self.bottom_mode == BottomViewMode::Preview,
-                ))
-                .on_press(Message::SetBottomViewMode(BottomViewMode::Preview)),
-                "Selectable Rich Preview (.md, images, SVG, JSON, CSV, configs, code)",
-                tooltip::Position::Top,
+        header = header.push(tip(
+            button(
+                text("Preview")
+                    .size(type_scale::CAPTION)
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding([3, 8])
+            .style(theme::filter_pill_btn(
                 p,
+                self.bottom_mode == BottomViewMode::Preview,
             ))
-            .push(tip(
+            .on_press(Message::SetBottomViewMode(BottomViewMode::Preview)),
+            "Selectable Rich Preview (.md, images, SVG, JSON, CSV, configs, code)",
+            tooltip::Position::Top,
+            p,
+        ));
+
+        if !is_raster_only {
+            header = header.push(tip(
                 button(
                     text("Edit")
                         .size(type_scale::CAPTION)
@@ -1905,6 +1989,7 @@ impl GitFleetApp {
                 tooltip::Position::Top,
                 p,
             ));
+        }
 
         if self.bottom_mode == BottomViewMode::Preview {
             if self.preview_state.has_rich_view() {
@@ -1991,6 +2076,8 @@ impl GitFleetApp {
         let body: Element<'_, Message> = match self.bottom_mode {
             BottomViewMode::UnifiedDiff => self.view_unified_diff(p),
             BottomViewMode::SideBySideDiff => self.view_side_by_side_diff(p),
+            BottomViewMode::ImageDiff => self.view_image_diff(p),
+            BottomViewMode::CsvDiff => self.view_csv_diff(p),
             BottomViewMode::Preview => self.view_file_preview(p),
             BottomViewMode::Edit => self.view_file_editor(p),
             BottomViewMode::ResolveConflicts => self.view_conflict_solver(p),
@@ -2009,308 +2096,7 @@ impl GitFleetApp {
     /// Unified Diff with dual `old | new` line numbers, Compact/Full toggle, expandable hidden
     /// sections, and per-change Stage/Unstage/Discard Hunk controls.
     pub(crate) fn view_unified_diff(&self, p: Palette) -> Element<'_, Message> {
-        if self.diff_parsed.raw.is_empty() {
-            return theme::empty_state(
-                p,
-                icons::file_code(theme::icon_size::LG, p.text_muted),
-                "No diff selected",
-                "Select a file from Changed, Dir, or All Files to inspect diff, preview, or edit.",
-                None,
-            );
-        }
-
-        if self.diff_parsed.blocks.is_empty() {
-            let mut raw_col = column![].spacing(0);
-            let mut max_chars: usize = 40;
-            let raw_dragging = self
-                .diff_selection
-                .is_some_and(|s| s.dragging && s.side == DiffSelectionSide::Raw);
-            for (i, line) in self.diff_parsed.raw.lines().take(2000).enumerate() {
-                let clean = theme::sanitize_code_line(line);
-                let char_len = clean.chars().count();
-                max_chars = max_chars.max(char_len);
-                let gutter = container(
-                    text(format!("{}", i + 1))
-                        .size(type_scale::CAPTION)
-                        .font(theme::CODE_FONT)
-                        .color(p.text_muted)
-                        .wrapping(text::Wrapping::None),
-                )
-                .width(Length::Fixed(LINE_NUM_W))
-                .height(Length::Fixed(DIFF_LINE_H))
-                .padding([0, 6])
-                .align_x(alignment::Horizontal::Right)
-                .align_y(alignment::Vertical::Center);
-                let code_cell = container(
-                    text(clean.clone())
-                        .size(type_scale::CODE)
-                        .font(theme::CODE_FONT)
-                        .color(p.text_secondary)
-                        .wrapping(text::Wrapping::None),
-                )
-                .width(Length::Fill)
-                .height(Length::Fixed(DIFF_LINE_H))
-                .padding([0, 8])
-                .align_y(alignment::Vertical::Center);
-                let sel_cfg = DiffRowSelConfig {
-                    side: DiffSelectionSide::Raw,
-                    row_idx: i,
-                    code_start_x: LINE_NUM_W + 8.0,
-                    line_text: clean,
-                    sel_range: row_selection_range(
-                        self.diff_selection,
-                        DiffSelectionSide::Raw,
-                        i,
-                        char_len,
-                    ),
-                    is_dragging_same_side: raw_dragging,
-                    sel_bg: Color {
-                        a: 0.42,
-                        ..p.accent_primary
-                    },
-                    sel_overlay: Color {
-                        a: 0.16,
-                        ..p.accent_hover
-                    },
-                };
-                raw_col = raw_col.push(diff_code_row_box(
-                    Color::TRANSPARENT,
-                    None,
-                    None,
-                    None,
-                    None,
-                    LINE_NUM_W,
-                    p.border_subtle,
-                    sel_cfg,
-                    row![gutter, code_cell].align_y(Alignment::Center),
-                ));
-            }
-            let min_w = (max_chars as f32 * 8.0 + LINE_NUM_W + 32.0).clamp(380.0, 2800.0);
-            return slim_scroll_h(raw_col, min_w, p);
-        }
-
-        let layout = build_diff_layout(
-            &self.diff_parsed,
-            self.diff_compact,
-            &self.diff_expanded_gaps,
-        );
-        let mut lines_col = column![].spacing(0);
-        let gutter_total = LINE_NUM_W * 2.0 + 16.0;
-        let unified_dragging = self
-            .diff_selection
-            .is_some_and(|s| s.dragging && s.side == DiffSelectionSide::Unified);
-
-        for (row_idx, item) in layout.unified_rows.iter().enumerate() {
-            match item {
-                UnifiedRow::HunkHeader {
-                    header,
-                    patch,
-                    kind,
-                } => {
-                    let (_, accent, _) = change_colors(*kind, p);
-                    let mut bar = row![
-                        text(header.clone())
-                            .size(type_scale::CAPTION)
-                            .font(theme::CODE_FONT)
-                            .color(accent)
-                            .wrapping(text::Wrapping::None),
-                        Space::with_width(Length::Fill),
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center);
-
-                    if self.diff_is_working_file {
-                        if self.diff_is_staged {
-                            bar = bar.push(
-                                button(text("Unstage Hunk").size(type_scale::BADGE))
-                                    .padding([2, 8])
-                                    .style(theme::subtle_btn(p))
-                                    .on_press(Message::ApplyHunk {
-                                        patch: patch.clone(),
-                                        cached: true,
-                                        reverse: true,
-                                    }),
-                            );
-                        } else {
-                            bar = bar
-                                .push(
-                                    button(text("Stage Hunk").size(type_scale::BADGE))
-                                        .padding([2, 8])
-                                        .style(theme::primary_btn(p))
-                                        .on_press(Message::ApplyHunk {
-                                            patch: patch.clone(),
-                                            cached: true,
-                                            reverse: false,
-                                        }),
-                                )
-                                .push(
-                                    button(
-                                        text("Discard Hunk")
-                                            .size(type_scale::BADGE)
-                                            .color(p.danger_fg),
-                                    )
-                                    .padding([2, 8])
-                                    .style(theme::subtle_btn(p))
-                                    .on_press(Message::RequestConfirm(
-                                        PendingConfirm::discard_hunk(
-                                            &self.diff_title,
-                                            header,
-                                            patch.clone(),
-                                        ),
-                                    )),
-                                );
-                        }
-                    }
-
-                    lines_col = lines_col.push(
-                        container(bar)
-                            .width(Length::Fill)
-                            .height(Length::Fixed(DIFF_SEP_H))
-                            .padding([0, 8])
-                            .align_y(alignment::Vertical::Center)
-                            .style(theme::diff_line_box(p.fill_selected, accent)),
-                    );
-                }
-                UnifiedRow::Code {
-                    old_line,
-                    new_line,
-                    sign,
-                    text: code,
-                    spans,
-                    kind,
-                } => {
-                    let (bg, sign_color, fg) = match kind {
-                        Some(DiffChangeKind::Added) => (p.success_bg, p.success_fg, p.text_primary),
-                        Some(DiffChangeKind::Removed) => (p.danger_bg, p.danger_fg, p.text_primary),
-                        Some(DiffChangeKind::Modified) => {
-                            (p.warning_bg, p.warning_fg, p.text_primary)
-                        }
-                        None => (Color::TRANSPARENT, p.text_muted, p.text_secondary),
-                    };
-                    let hl_accent = kind.map(|k| change_colors(k, p).1);
-                    let old_s = old_line.map(|n| n.to_string()).unwrap_or_default();
-                    let new_s = new_line.map(|n| n.to_string()).unwrap_or_default();
-
-                    let row_inner = row![
-                        container(
-                            text(old_s)
-                                .size(type_scale::CAPTION)
-                                .font(theme::CODE_FONT)
-                                .color(p.text_muted)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .width(Length::Fixed(LINE_NUM_W))
-                        .height(Length::Fixed(DIFF_LINE_H))
-                        .padding([0, 5])
-                        .align_x(alignment::Horizontal::Right)
-                        .align_y(alignment::Vertical::Center),
-                        container(
-                            text(new_s)
-                                .size(type_scale::CAPTION)
-                                .font(theme::CODE_FONT)
-                                .color(p.text_muted)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .width(Length::Fixed(LINE_NUM_W))
-                        .height(Length::Fixed(DIFF_LINE_H))
-                        .padding([0, 5])
-                        .align_x(alignment::Horizontal::Right)
-                        .align_y(alignment::Vertical::Center),
-                        container(
-                            text(sign.to_string())
-                                .size(type_scale::CODE)
-                                .font(theme::CODE_FONT)
-                                .color(sign_color)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .width(Length::Fixed(16.0))
-                        .height(Length::Fixed(DIFF_LINE_H))
-                        .align_x(alignment::Horizontal::Center)
-                        .align_y(alignment::Vertical::Center),
-                        container(render_highlighted_code(code, spans, fg, hl_accent))
-                            .width(Length::Fill)
-                            .height(Length::Fixed(DIFF_LINE_H))
-                            .padding([0, 6])
-                            .align_y(alignment::Vertical::Center),
-                    ]
-                    .align_y(Alignment::Center);
-
-                    let char_len = code.chars().count();
-                    let sel_cfg = DiffRowSelConfig {
-                        side: DiffSelectionSide::Unified,
-                        row_idx,
-                        code_start_x: gutter_total + 6.0,
-                        line_text: code.clone(),
-                        sel_range: row_selection_range(
-                            self.diff_selection,
-                            DiffSelectionSide::Unified,
-                            row_idx,
-                            char_len,
-                        ),
-                        is_dragging_same_side: unified_dragging,
-                        sel_bg: Color {
-                            a: 0.42,
-                            ..p.accent_primary
-                        },
-                        sel_overlay: Color {
-                            a: 0.16,
-                            ..p.accent_hover
-                        },
-                    };
-
-                    lines_col = lines_col.push(diff_code_row_box(
-                        bg,
-                        None,
-                        None,
-                        None,
-                        None,
-                        gutter_total,
-                        p.border_subtle,
-                        sel_cfg,
-                        row_inner,
-                    ));
-                }
-                UnifiedRow::Hidden {
-                    gap_id,
-                    hidden_count,
-                    can_expand_top,
-                    can_expand_bottom,
-                } => {
-                    lines_col = lines_col.push(hidden_gap_bar(
-                        *gap_id,
-                        *hidden_count,
-                        *can_expand_top,
-                        *can_expand_bottom,
-                        p,
-                    ));
-                }
-                UnifiedRow::Separator(hdr) => {
-                    lines_col = lines_col.push(
-                        container(
-                            text(theme::sanitize_code_line(hdr))
-                                .size(type_scale::CAPTION)
-                                .font(theme::CODE_FONT)
-                                .color(p.accent_fg)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .width(Length::Fill)
-                        .height(Length::Fixed(DIFF_SEP_H))
-                        .padding([0, 8])
-                        .align_y(alignment::Vertical::Center)
-                        .style(theme::diff_line_box(p.fill_selected, p.accent_fg)),
-                    );
-                }
-            }
-        }
-
-        let min_w = (layout.max_unified_chars as f32 * 8.0 + gutter_total + 40.0)
-            .clamp(420.0, 2800.0);
-        theme::responsive_hscroll_with_id(
-            lines_col,
-            min_w,
-            self.diff_unified_scroll_id.clone(),
-            p,
-        )
+        render_unified_diff_with(self.host_text_diff_ctx(), p)
     }
 
     /// SmartGit-style Side-by-Side Diff:
@@ -2319,176 +2105,34 @@ impl GitFleetApp {
     /// - Smooth cubic Bezier connector ribbons in the center + overview strips on left & right edges.
     /// - Compact mode collapses unchanged runs into expandable `N lines hidden · show` bars; Compact OFF shows full file.
     pub(crate) fn view_side_by_side_diff(&self, p: Palette) -> Element<'_, Message> {
-        if self.diff_parsed.blocks.is_empty() {
-            return self.view_unified_diff(p);
-        }
+        render_side_by_side_diff_with(self.host_text_diff_ctx(), p)
+    }
 
-        let layout = build_diff_layout(
-            &self.diff_parsed,
-            self.diff_compact,
-            &self.diff_expanded_gaps,
-        );
-
-        let mut left_col = column![].spacing(0);
-        for (idx, item) in layout.left_rows.iter().enumerate() {
-            left_col = left_col.push(render_side_row(
-                item,
-                DiffSelectionSide::Left,
-                idx,
-                self.diff_selection,
-                p,
-            ));
-        }
-
-        let mut right_col = column![].spacing(0);
-        for (idx, item) in layout.right_rows.iter().enumerate() {
-            right_col = right_col.push(render_side_row(
-                item,
-                DiffSelectionSide::Right,
-                idx,
-                self.diff_selection,
-                p,
-            ));
-        }
-
-        let left_min_w =
-            (layout.max_left_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
-        let right_min_w =
-            (layout.max_right_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
-        // Share the wider canvas width so both horizontal scrollbars have identical range & thumb size
-        let shared_min_w = left_min_w.max(right_min_w);
-
-        let left_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
-            spans: layout.connectors.clone(),
-            is_left: true,
-            total_h: layout.total_left_h,
-            p,
-        })
-        .width(Length::Fixed(OVERVIEW_BAR_W))
-        .height(Length::Fill)
-        .into();
-
-        let right_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
-            spans: layout.connectors.clone(),
-            is_left: false,
-            total_h: layout.total_right_h,
-            p,
-        })
-        .width(Length::Fixed(OVERVIEW_BAR_W))
-        .height(Length::Fill)
-        .into();
-
-        let left_pane = container(theme::responsive_hscroll_synced(
-            left_col,
-            shared_min_w,
-            self.diff_left_scroll_id.clone(),
-            Message::DiffLeftScrolled,
-            p,
-        ))
-        .width(Length::FillPortion(1))
-        .height(Length::Fill);
-
-        let connector: Element<'_, Message> = Canvas::new(DiffConnectorCanvas {
-            spans: layout.connectors,
+    fn host_text_diff_ctx(&self) -> TextDiffRenderCtx<'_> {
+        TextDiffRenderCtx {
+            parsed: &self.diff_parsed,
+            compact: self.diff_compact,
+            expanded_gaps: &self.diff_expanded_gaps,
+            is_working_file: self.diff_is_working_file,
+            is_staged: self.diff_is_staged,
+            diff_title: &self.diff_title,
+            selection: self.diff_selection,
+            left_scroll_id: self.diff_left_scroll_id.clone(),
+            right_scroll_id: self.diff_right_scroll_id.clone(),
+            unified_scroll_id: self.diff_unified_scroll_id.clone(),
             left_scroll_y: self.diff_left_scroll_y,
             right_scroll_y: self.diff_right_scroll_y,
-            p,
-        })
-        .width(Length::Fixed(CONNECTOR_W))
-        .height(Length::Fill)
-        .into();
-
-        let right_pane = container(theme::responsive_hscroll_synced(
-            right_col,
-            shared_min_w,
-            self.diff_right_scroll_id.clone(),
-            Message::DiffRightScrolled,
-            p,
-        ))
-        .width(Length::FillPortion(1))
-        .height(Length::Fill);
-
-        row![left_overview, left_pane, connector, right_pane, right_overview]
-            .spacing(0)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        }
     }
 
     pub(crate) fn view_file_preview(&self, p: Palette) -> Element<'_, Message> {
-        if self.preview_state.uses_selectable_editor(self.preview_raw_mode) {
-            let mut col = column![].spacing(6).height(Length::Fill);
-            match &self.preview_state {
-                PreviewState::Json {
-                    valid,
-                    error: Some(err),
-                    ..
-                } if !valid => {
-                    col = col.push(
-                        container(
-                            text(format!("Invalid JSON: {err}"))
-                                .size(type_scale::CAPTION)
-                                .color(p.danger_fg),
-                        )
-                        .padding([4, 8])
-                        .width(Length::Fill)
-                        .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
-                    );
-                }
-                PreviewState::Json { valid: true, .. } => {
-                    col = col.push(
-                        text("Valid JSON — formatted (select text & Ctrl+C to copy)")
-                            .size(type_scale::CAPTION)
-                            .color(p.success_fg),
-                    );
-                }
-                PreviewState::Config { kind, content } => {
-                    col = col.push(
-                        text(format!(
-                            "{kind} Preview  •  {} lines  (select & Ctrl+C to copy)",
-                            content.lines().count()
-                        ))
-                        .size(type_scale::CAPTION)
-                        .color(p.text_muted),
-                    );
-                }
-                PreviewState::Code { lang, content } => {
-                    col = col.push(
-                        text(format!(
-                            "{lang}  •  {} lines  (select & Ctrl+C to copy)",
-                            content.lines().count()
-                        ))
-                        .size(type_scale::CAPTION)
-                        .color(p.text_muted),
-                    );
-                }
-                _ => {}
-            }
-
-            let hl_settings = PreviewHighlightSettings {
-                kind: self.preview_state.highlight_kind(),
-                theme_mode: self.theme_mode,
-            };
-            let editor = text_editor(&self.preview_editor)
-                .on_action(Message::PreviewEditorAction)
-                .highlight_with::<PreviewHighlighter>(hl_settings, |color, _theme| {
-                    adv_text::highlighter::Format {
-                        color: Some(*color),
-                        font: None,
-                    }
-                })
-                .font(theme::CODE_FONT)
-                .size(type_scale::CODE)
-                .height(Length::Fill)
-                .style(theme::dark_editor(p));
-
-            return col.push(editor).into();
-        }
-
-        let content = self
-            .preview_state
-            .view(p, self.theme_mode, Message::PreviewLinkClicked);
-        slim_scroll_h(content, 380.0, p)
+        render_file_preview(
+            &self.preview_state,
+            &self.preview_editor,
+            self.preview_raw_mode,
+            self.theme_mode,
+            p,
+        )
     }
 
     pub(crate) fn view_file_editor(&self, p: Palette) -> Element<'_, Message> {
@@ -2509,6 +2153,486 @@ impl GitFleetApp {
             .style(theme::dark_editor(p))
             .into()
     }
+}
+
+pub(crate) struct TextDiffRenderCtx<'a> {
+    pub(crate) parsed: &'a ParsedDiff,
+    pub(crate) compact: bool,
+    pub(crate) expanded_gaps: &'a HashMap<usize, DiffGapExpansion>,
+    pub(crate) is_working_file: bool,
+    pub(crate) is_staged: bool,
+    pub(crate) diff_title: &'a str,
+    pub(crate) selection: Option<DiffTextSelection>,
+    pub(crate) left_scroll_id: scrollable::Id,
+    pub(crate) right_scroll_id: scrollable::Id,
+    pub(crate) unified_scroll_id: scrollable::Id,
+    pub(crate) left_scroll_y: f32,
+    pub(crate) right_scroll_y: f32,
+}
+
+pub(crate) fn render_unified_diff_with<'a>(
+    ctx: TextDiffRenderCtx<'a>,
+    p: Palette,
+) -> Element<'a, Message> {
+    if ctx.parsed.raw.is_empty() {
+        return theme::empty_state(
+            p,
+            icons::file_code(theme::icon_size::LG, p.text_muted),
+            "No diff selected",
+            "Select a file from Changed, Dir, or All Files to inspect diff, preview, or edit.",
+            None,
+        );
+    }
+
+    if ctx.parsed.blocks.is_empty() {
+        let mut raw_col = column![].spacing(0);
+        let mut max_chars: usize = 40;
+        let raw_dragging = ctx
+            .selection
+            .is_some_and(|s| s.dragging && s.side == DiffSelectionSide::Raw);
+        for (i, line) in ctx.parsed.raw.lines().take(2000).enumerate() {
+            let clean = theme::sanitize_code_line(line);
+            let char_len = clean.chars().count();
+            max_chars = max_chars.max(char_len);
+            let gutter = container(
+                text(format!("{}", i + 1))
+                    .size(type_scale::CAPTION)
+                    .font(theme::CODE_FONT)
+                    .color(p.text_muted)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fixed(LINE_NUM_W))
+            .height(Length::Fixed(DIFF_LINE_H))
+            .padding([0, 6])
+            .align_x(alignment::Horizontal::Right)
+            .align_y(alignment::Vertical::Center);
+            let code_cell = container(
+                text(clean.clone())
+                    .size(type_scale::CODE)
+                    .font(theme::CODE_FONT)
+                    .color(p.text_secondary)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(DIFF_LINE_H))
+            .padding([0, 8])
+            .align_y(alignment::Vertical::Center);
+            let sel_cfg = DiffRowSelConfig {
+                side: DiffSelectionSide::Raw,
+                row_idx: i,
+                code_start_x: LINE_NUM_W + 8.0,
+                line_text: clean,
+                sel_range: row_selection_range(ctx.selection, DiffSelectionSide::Raw, i, char_len),
+                is_dragging_same_side: raw_dragging,
+                sel_bg: Color {
+                    a: 0.42,
+                    ..p.accent_primary
+                },
+                sel_overlay: Color {
+                    a: 0.16,
+                    ..p.accent_hover
+                },
+            };
+            raw_col = raw_col.push(diff_code_row_box(
+                Color::TRANSPARENT,
+                None,
+                None,
+                None,
+                None,
+                LINE_NUM_W,
+                p.border_subtle,
+                sel_cfg,
+                row![gutter, code_cell].align_y(Alignment::Center),
+            ));
+        }
+        let min_w = (max_chars as f32 * 8.0 + LINE_NUM_W + 32.0).clamp(380.0, 2800.0);
+        return slim_scroll_h(raw_col, min_w, p);
+    }
+
+    let layout = build_diff_layout(ctx.parsed, ctx.compact, ctx.expanded_gaps);
+    let mut lines_col = column![].spacing(0);
+    let gutter_total = LINE_NUM_W * 2.0 + 16.0;
+    let unified_dragging = ctx
+        .selection
+        .is_some_and(|s| s.dragging && s.side == DiffSelectionSide::Unified);
+
+    for (row_idx, item) in layout.unified_rows.iter().enumerate() {
+        match item {
+            UnifiedRow::HunkHeader {
+                header,
+                patch,
+                kind,
+            } => {
+                let (_, accent, _) = change_colors(*kind, p);
+                let mut bar = row![
+                    text(header.clone())
+                        .size(type_scale::CAPTION)
+                        .font(theme::CODE_FONT)
+                        .color(accent)
+                        .wrapping(text::Wrapping::None),
+                    Space::with_width(Length::Fill),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center);
+
+                if ctx.is_working_file {
+                    if ctx.is_staged {
+                        bar = bar.push(
+                            button(text("Unstage Hunk").size(type_scale::BADGE))
+                                .padding([2, 8])
+                                .style(theme::subtle_btn(p))
+                                .on_press(Message::ApplyHunk {
+                                    patch: patch.clone(),
+                                    cached: true,
+                                    reverse: true,
+                                }),
+                        );
+                    } else {
+                        bar = bar
+                            .push(
+                                button(text("Stage Hunk").size(type_scale::BADGE))
+                                    .padding([2, 8])
+                                    .style(theme::primary_btn(p))
+                                    .on_press(Message::ApplyHunk {
+                                        patch: patch.clone(),
+                                        cached: true,
+                                        reverse: false,
+                                    }),
+                            )
+                            .push(
+                                button(
+                                    text("Discard Hunk")
+                                        .size(type_scale::BADGE)
+                                        .color(p.danger_fg),
+                                )
+                                .padding([2, 8])
+                                .style(theme::subtle_btn(p))
+                                .on_press(Message::RequestConfirm(PendingConfirm::discard_hunk(
+                                    ctx.diff_title,
+                                    header,
+                                    patch.clone(),
+                                ))),
+                            );
+                    }
+                }
+
+                lines_col = lines_col.push(
+                    container(bar)
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DIFF_SEP_H))
+                        .padding([0, 8])
+                        .align_y(alignment::Vertical::Center)
+                        .style(theme::diff_line_box(p.fill_selected, accent)),
+                );
+            }
+            UnifiedRow::Code {
+                old_line,
+                new_line,
+                sign,
+                text: code,
+                spans,
+                kind,
+            } => {
+                let (bg, sign_color, fg) = match kind {
+                    Some(DiffChangeKind::Added) => (p.success_bg, p.success_fg, p.text_primary),
+                    Some(DiffChangeKind::Removed) => (p.danger_bg, p.danger_fg, p.text_primary),
+                    Some(DiffChangeKind::Modified) => (p.warning_bg, p.warning_fg, p.text_primary),
+                    None => (Color::TRANSPARENT, p.text_muted, p.text_secondary),
+                };
+                let hl_accent = kind.map(|k| change_colors(k, p).1);
+                let old_s = old_line.map(|n| n.to_string()).unwrap_or_default();
+                let new_s = new_line.map(|n| n.to_string()).unwrap_or_default();
+
+                let row_inner = row![
+                    container(
+                        text(old_s)
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.text_muted)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fixed(LINE_NUM_W))
+                    .height(Length::Fixed(DIFF_LINE_H))
+                    .padding([0, 5])
+                    .align_x(alignment::Horizontal::Right)
+                    .align_y(alignment::Vertical::Center),
+                    container(
+                        text(new_s)
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.text_muted)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fixed(LINE_NUM_W))
+                    .height(Length::Fixed(DIFF_LINE_H))
+                    .padding([0, 5])
+                    .align_x(alignment::Horizontal::Right)
+                    .align_y(alignment::Vertical::Center),
+                    container(
+                        text(sign.to_string())
+                            .size(type_scale::CODE)
+                            .font(theme::CODE_FONT)
+                            .color(sign_color)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fixed(16.0))
+                    .height(Length::Fixed(DIFF_LINE_H))
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center),
+                    container(render_highlighted_code(code, spans, fg, hl_accent))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(DIFF_LINE_H))
+                        .padding([0, 6])
+                        .align_y(alignment::Vertical::Center),
+                ]
+                .align_y(Alignment::Center);
+
+                let char_len = code.chars().count();
+                let sel_cfg = DiffRowSelConfig {
+                    side: DiffSelectionSide::Unified,
+                    row_idx,
+                    code_start_x: gutter_total + 6.0,
+                    line_text: code.clone(),
+                    sel_range: row_selection_range(
+                        ctx.selection,
+                        DiffSelectionSide::Unified,
+                        row_idx,
+                        char_len,
+                    ),
+                    is_dragging_same_side: unified_dragging,
+                    sel_bg: Color {
+                        a: 0.42,
+                        ..p.accent_primary
+                    },
+                    sel_overlay: Color {
+                        a: 0.16,
+                        ..p.accent_hover
+                    },
+                };
+
+                lines_col = lines_col.push(diff_code_row_box(
+                    bg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gutter_total,
+                    p.border_subtle,
+                    sel_cfg,
+                    row_inner,
+                ));
+            }
+            UnifiedRow::Hidden {
+                gap_id,
+                hidden_count,
+                can_expand_top,
+                can_expand_bottom,
+            } => {
+                lines_col = lines_col.push(hidden_gap_bar(
+                    *gap_id,
+                    *hidden_count,
+                    *can_expand_top,
+                    *can_expand_bottom,
+                    p,
+                ));
+            }
+            UnifiedRow::Separator(hdr) => {
+                lines_col = lines_col.push(
+                    container(
+                        text(theme::sanitize_code_line(hdr))
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.accent_fg)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fixed(DIFF_SEP_H))
+                    .padding([0, 8])
+                    .align_y(alignment::Vertical::Center)
+                    .style(theme::diff_line_box(p.fill_selected, p.accent_fg)),
+                );
+            }
+        }
+    }
+
+    let min_w =
+        (layout.max_unified_chars as f32 * 8.0 + gutter_total + 40.0).clamp(420.0, 2800.0);
+    theme::responsive_hscroll_with_id(lines_col, min_w, ctx.unified_scroll_id, p)
+}
+
+pub(crate) fn render_side_by_side_diff_with<'a>(
+    ctx: TextDiffRenderCtx<'a>,
+    p: Palette,
+) -> Element<'a, Message> {
+    if ctx.parsed.blocks.is_empty() {
+        return render_unified_diff_with(ctx, p);
+    }
+
+    let layout = build_diff_layout(ctx.parsed, ctx.compact, ctx.expanded_gaps);
+
+    let mut left_col = column![].spacing(0);
+    for (idx, item) in layout.left_rows.iter().enumerate() {
+        left_col = left_col.push(render_side_row(
+            item,
+            DiffSelectionSide::Left,
+            idx,
+            ctx.selection,
+            p,
+        ));
+    }
+
+    let mut right_col = column![].spacing(0);
+    for (idx, item) in layout.right_rows.iter().enumerate() {
+        right_col = right_col.push(render_side_row(
+            item,
+            DiffSelectionSide::Right,
+            idx,
+            ctx.selection,
+            p,
+        ));
+    }
+
+    let left_min_w =
+        (layout.max_left_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
+    let right_min_w =
+        (layout.max_right_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
+    let shared_min_w = left_min_w.max(right_min_w);
+
+    let left_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
+        spans: layout.connectors.clone(),
+        is_left: true,
+        total_h: layout.total_left_h,
+        p,
+    })
+    .width(Length::Fixed(OVERVIEW_BAR_W))
+    .height(Length::Fill)
+    .into();
+
+    let right_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
+        spans: layout.connectors.clone(),
+        is_left: false,
+        total_h: layout.total_right_h,
+        p,
+    })
+    .width(Length::Fixed(OVERVIEW_BAR_W))
+    .height(Length::Fill)
+    .into();
+
+    let left_pane = container(theme::responsive_hscroll_synced(
+        left_col,
+        shared_min_w,
+        ctx.left_scroll_id,
+        Message::DiffLeftScrolled,
+        p,
+    ))
+    .width(Length::FillPortion(1))
+    .height(Length::Fill);
+
+    let connector: Element<'_, Message> = Canvas::new(DiffConnectorCanvas {
+        spans: layout.connectors,
+        left_scroll_y: ctx.left_scroll_y,
+        right_scroll_y: ctx.right_scroll_y,
+        p,
+    })
+    .width(Length::Fixed(CONNECTOR_W))
+    .height(Length::Fill)
+    .into();
+
+    let right_pane = container(theme::responsive_hscroll_synced(
+        right_col,
+        shared_min_w,
+        ctx.right_scroll_id,
+        Message::DiffRightScrolled,
+        p,
+    ))
+    .width(Length::FillPortion(1))
+    .height(Length::Fill);
+
+    row![left_overview, left_pane, connector, right_pane, right_overview]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+pub(crate) fn render_file_preview<'a>(
+    state: &'a PreviewState,
+    editor: &'a text_editor::Content,
+    raw_mode: bool,
+    theme_mode: ThemeMode,
+    p: Palette,
+) -> Element<'a, Message> {
+    if state.uses_selectable_editor(raw_mode) {
+        let mut col = column![].spacing(6).height(Length::Fill);
+        match state {
+            PreviewState::Json {
+                valid,
+                error: Some(err),
+                ..
+            } if !valid => {
+                col = col.push(
+                    container(
+                        text(format!("Invalid JSON: {err}"))
+                            .size(type_scale::CAPTION)
+                            .color(p.danger_fg),
+                    )
+                    .padding([4, 8])
+                    .width(Length::Fill)
+                    .style(theme::pill_box(p.danger_bg, p.danger_fg, p.danger_fg)),
+                );
+            }
+            PreviewState::Json { valid: true, .. } => {
+                col = col.push(
+                    text("Valid JSON — formatted (select text & Ctrl+C to copy)")
+                        .size(type_scale::CAPTION)
+                        .color(p.success_fg),
+                );
+            }
+            PreviewState::Config { kind, content } => {
+                col = col.push(
+                    text(format!(
+                        "{kind} Preview  •  {} lines  (select & Ctrl+C to copy)",
+                        content.lines().count()
+                    ))
+                    .size(type_scale::CAPTION)
+                    .color(p.text_muted),
+                );
+            }
+            PreviewState::Code { lang, content } => {
+                col = col.push(
+                    text(format!(
+                        "{lang}  •  {} lines  (select & Ctrl+C to copy)",
+                        content.lines().count()
+                    ))
+                    .size(type_scale::CAPTION)
+                    .color(p.text_muted),
+                );
+            }
+            _ => {}
+        }
+
+        let hl_settings = PreviewHighlightSettings {
+            kind: state.highlight_kind(),
+            theme_mode,
+        };
+        let ed = text_editor(editor)
+            .on_action(Message::PreviewEditorAction)
+            .highlight_with::<PreviewHighlighter>(hl_settings, |color, _theme| {
+                adv_text::highlighter::Format {
+                    color: Some(*color),
+                    font: None,
+                }
+            })
+            .font(theme::CODE_FONT)
+            .size(type_scale::CODE)
+            .height(Length::Fill)
+            .style(theme::dark_editor(p));
+
+        return col.push(ed).into();
+    }
+
+    let content = state.view(p, theme_mode, Message::PreviewLinkClicked);
+    slim_scroll_h(content, 380.0, p)
 }
 
 #[cfg(test)]

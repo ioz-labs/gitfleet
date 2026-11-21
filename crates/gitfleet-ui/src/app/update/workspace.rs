@@ -44,6 +44,8 @@ impl GitFleetApp {
         self.active_file_path = None;
         self.diff_title = "Select a file to inspect diff / preview / edit".into();
         self.diff_parsed = ParsedDiff::default();
+        self.diff_image = None;
+        self.diff_csv = None;
         self.diff_expanded_gaps.clear();
         self.diff_selection = None;
         self.diff_is_working_file = false;
@@ -118,8 +120,7 @@ impl GitFleetApp {
                         return self.update(Message::SelectRepo(entry.id));
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Add failed: {e}");
+                        self.report_action_error("Add Repository Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -185,8 +186,7 @@ impl GitFleetApp {
                         if let Some(modal) = &mut self.scan_modal {
                             modal.scanning = false;
                         }
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Scan failed: {e}");
+                        self.report_action_error("Scan Folder Failed", e, false);
                     }
                 }
                 Task::none()
@@ -375,8 +375,7 @@ impl GitFleetApp {
                         Task::batch(tasks)
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Import failed: {e}");
+                        self.report_action_error("Import Repositories Failed", e.to_string(), false);
                         Task::none()
                     }
                 }
@@ -424,10 +423,13 @@ impl GitFleetApp {
                 self.clear_active_repo_view_state();
                 if let Some(repo) = self.current_repo() {
                     if !repo.available {
-                        self.toast_is_error = true;
-                        self.toast_message = format!(
-                            "Submodule '{}' is not initialized on disk (run Update Submodules)",
-                            repo.name
+                        self.report_action_error(
+                            "Submodule Not Initialized",
+                            format!(
+                                "Submodule '{}' is not initialized on disk. Run 'Update Submodules' first.",
+                                repo.name
+                            ),
+                            false,
                         );
                         return Task::none();
                     }
@@ -495,6 +497,11 @@ impl GitFleetApp {
             }
             Message::RunBulkOp(op) => {
                 let ws = self.service.workspace.current();
+                let name_map: std::collections::HashMap<RepoId, String> = ws
+                    .repos
+                    .iter()
+                    .map(|r| (r.id.clone(), r.name.clone()))
+                    .collect();
                 let targets: Vec<(RepoId, PathBuf)> = ws
                     .repos
                     .into_iter()
@@ -517,17 +524,57 @@ impl GitFleetApp {
                             .bulk_execute_cancellable(op, targets, max_p, cancel_flag)
                             .await;
                         let ok = results.iter().filter(|r| r.ok).count();
-                        let fail = results.len() - ok;
-                        (label, ok, fail)
+                        let failures: Vec<(String, String)> = results
+                            .iter()
+                            .filter(|r| !r.ok)
+                            .map(|r| {
+                                let name = name_map
+                                    .get(&r.repo_id)
+                                    .cloned()
+                                    .unwrap_or_else(|| r.repo_id.0.clone());
+                                (name, r.message.clone())
+                            })
+                            .collect();
+                        (label, ok, failures.len(), failures)
                     },
-                    |(l, ok, fail)| Message::BulkOpDone(l, ok, fail),
+                    |(label, ok, fail, failures)| Message::BulkOpDone {
+                        label,
+                        ok,
+                        fail,
+                        failures,
+                        is_scheduled: false,
+                    },
                 )
             }
-            Message::BulkOpDone(label, ok, fail) => {
+            Message::BulkOpDone {
+                label,
+                ok,
+                fail,
+                failures,
+                is_scheduled,
+            } => {
                 self.busy_label = None;
                 self.bulk_cancel = None;
-                self.toast_is_error = fail > 0;
-                self.toast_message = format!("Bulk {label}: {ok} OK, {fail} failed");
+                if fail > 0 {
+                    let details = if failures.is_empty() {
+                        format!("{ok} succeeded, {fail} failed.")
+                    } else {
+                        let list = failures
+                            .iter()
+                            .map(|(name, msg)| format!("• {name}: {}", msg.trim()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!("{ok} succeeded, {fail} failed:\n{list}")
+                    };
+                    if is_scheduled {
+                        self.record_background_error(format!("{label} Completed with Errors"), details, true);
+                    } else {
+                        self.report_action_error(format!("Bulk {label} Failed ({fail})"), details, true);
+                    }
+                } else {
+                    self.toast_is_error = false;
+                    self.toast_message = format!("Bulk {label}: {ok} OK, 0 failed");
+                }
                 self.update(Message::RefreshAll)
             }
             Message::RemoveRepo(id) => {
@@ -726,8 +773,7 @@ impl GitFleetApp {
                         self.toast_message = format!("Created & switched to workspace '{name}'");
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Create workspace failed: {e}");
+                        self.report_action_error("Create Workspace Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -736,8 +782,7 @@ impl GitFleetApp {
                 let (path, old_name, file_hint) = if let Some(target) = target_path {
                     let all = self.service.workspace.list_workspaces();
                     let Some(item) = all.into_iter().find(|w| w.path == target) else {
-                        self.toast_is_error = true;
-                        self.toast_message = "Workspace not found".into();
+                        self.report_action_error("Workspace Not Found", "The selected workspace file could not be found.", false);
                         return Task::none();
                     };
                     let hint = item
@@ -814,8 +859,7 @@ impl GitFleetApp {
                         );
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Rename workspace failed: {e}");
+                        self.report_action_error("Rename Workspace Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -844,8 +888,7 @@ impl GitFleetApp {
                     Task::batch(tasks)
                 }
                 Err(e) => {
-                    self.toast_is_error = true;
-                    self.toast_message = format!("Open workspace failed: {e}");
+                    self.report_action_error("Open Workspace Failed", e.to_string(), false);
                     Task::none()
                 }
             },
@@ -868,8 +911,7 @@ impl GitFleetApp {
                     Task::none()
                 }
                 Err(e) => {
-                    self.toast_is_error = true;
-                    self.toast_message = format!("Save workspace failed: {e}");
+                    self.report_action_error("Save Workspace Failed", e.to_string(), false);
                     Task::none()
                 }
             },
@@ -912,8 +954,7 @@ impl GitFleetApp {
                         Task::none()
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Delete workspace failed: {e}");
+                        self.report_action_error("Delete Workspace Failed", e.to_string(), false);
                         Task::none()
                     }
                 }
@@ -958,8 +999,11 @@ impl GitFleetApp {
                 let url = self.clone_url_input.trim().to_string();
                 let folder = self.clone_folder_input.trim().to_string();
                 let Some(parent) = self.clone_parent_dir.clone() else {
-                    self.toast_is_error = true;
-                    self.toast_message = "Pick a parent directory for Clone first".into();
+                    self.report_action_error(
+                        "Clone Repository Failed",
+                        "Pick a parent directory before cloning a repository.",
+                        false,
+                    );
                     return Task::none();
                 };
                 if url.is_empty() || folder.is_empty() {
@@ -991,8 +1035,7 @@ impl GitFleetApp {
                         }
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Clone failed: {e}");
+                        self.report_action_error("Clone / Init Repository Failed", e, true);
                     }
                 }
                 Task::none()
@@ -1018,8 +1061,11 @@ impl GitFleetApp {
             Message::CreateRepoSubmitted => {
                 let name = self.create_repo_name.trim().to_string();
                 let Some(parent) = self.create_parent_dir.clone() else {
-                    self.toast_is_error = true;
-                    self.toast_message = "Pick a parent directory first".into();
+                    self.report_action_error(
+                        "Create Repository Failed",
+                        "Pick a parent directory before creating a new repository.",
+                        false,
+                    );
                     return Task::none();
                 };
                 if name.is_empty() {
@@ -1056,8 +1102,7 @@ impl GitFleetApp {
                         return self.update(Message::SelectRepo(repo_id));
                     }
                     Err(e) => {
-                        self.toast_is_error = true;
-                        self.toast_message = format!("Locate failed: {e}");
+                        self.report_action_error("Locate Repository Failed", e.to_string(), false);
                     }
                 }
                 Task::none()
@@ -1085,8 +1130,25 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::RevealSelectedInExplorer => {
+                if let Some(repo) = self.current_repo()
+                    && let Err(e) = self.service.reveal_in_file_manager(&repo.path)
+                {
+                    self.report_action_error("Open in Explorer Failed", e.to_string(), false);
+                }
+                Task::none()
+            }
+            Message::RevealPathInExplorer(path) => {
+                if let Err(e) = self.service.reveal_in_file_manager(&path) {
+                    self.report_action_error("Open in Explorer Failed", e.to_string(), false);
+                }
+                Task::none()
+            }
+            Message::RevealRepoFileInExplorer(rel_path) => {
                 if let Some(repo) = self.current_repo() {
-                    let _ = self.service.reveal_in_file_manager(&repo.path);
+                    let full = repo.path.join(&rel_path);
+                    if let Err(e) = self.service.reveal_in_file_manager(&full) {
+                        self.report_action_error("Open in Explorer Failed", e.to_string(), false);
+                    }
                 }
                 Task::none()
             }

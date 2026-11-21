@@ -1,4 +1,5 @@
-use crate::app::{DrawerTab, GitFleetApp, Message};
+use crate::app::{BottomViewMode, DrawerTab, GitFleetApp, Message};
+use crate::views::image_diff::ImageDiffMode;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::{Subscription, event, mouse, time, window};
 use std::time::Duration;
@@ -16,6 +17,15 @@ impl GitFleetApp {
 
         if self.drawer_tab == Some(DrawerTab::Terminal) && !self.terminal_tabs.is_empty() {
             subs.push(time::every(Duration::from_millis(33)).map(|_| Message::TerminalTick));
+        }
+
+        let host_needs_blink = self.bottom_mode == BottomViewMode::ImageDiff
+            && self.image_diff_mode == ImageDiffMode::Blink
+            && !self.image_diff_blink_paused
+            && self.diff_image.is_some();
+        let any_detached_needs_blink = self.detached_viewers.values().any(|v| v.needs_blink_timer());
+        if host_needs_blink || any_detached_needs_blink {
+            subs.push(time::every(Duration::from_millis(750)).map(|_| Message::ImageDiffBlinkTick));
         }
 
         if terminal_capture_keys {
@@ -114,10 +124,10 @@ fn handle_window_event(
                         return Some(Message::DiscardSelectedFiles);
                     }
                     Key::Character("c") | Key::Character("C") => {
-                        return Some(Message::CopyDiffSelection);
+                        return Some(Message::CopyDiffSelection(id));
                     }
                     Key::Character("a") | Key::Character("A") => {
-                        return Some(Message::SelectAllFocused);
+                        return Some(Message::SelectAllFocused(id));
                     }
                     _ => {}
                 }

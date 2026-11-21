@@ -16,6 +16,14 @@ pub struct GitOutput {
     pub exit_code: i32,
 }
 
+fn format_command_arg(arg: &str) -> String {
+    if arg.is_empty() || arg.chars().any(|c| c.is_whitespace() || c == '"') {
+        format!("\"{}\"", arg.replace('"', "\\\""))
+    } else {
+        arg.to_string()
+    }
+}
+
 pub async fn run_git(
     repo_path: &Path,
     args: &[&str],
@@ -77,7 +85,13 @@ pub async fn run_git_with_stdin(
             id: format!("{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
             timestamp: Utc::now(),
             repo_path: Some(repo_path.display().to_string()),
-            command: format!("git {}", args.join(" ")),
+            command: format!(
+                "git {}",
+                args.iter()
+                    .map(|a| format_command_arg(a))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
             exit_code: Some(exit_code),
             duration_ms,
             stderr_preview: if stderr.trim().is_empty() {
@@ -118,4 +132,35 @@ pub async fn run_git_ok(
         return Err(AppError::Git(msg));
     }
     Ok(out.stdout)
+}
+
+/// Runs `git` and returns the raw unmodified `stdout` bytes (safe for binary blobs such as
+/// PNG/JPEG/WebP/SVG images and exact CSV byte contents).
+pub async fn run_git_bytes(repo_path: &Path, args: &[&str]) -> AppResult<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path).args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("LC_MESSAGES", "C");
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| AppError::Git(format!("Failed to execute git: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::Git(if stderr.is_empty() {
+            format!("git {} failed", args.join(" "))
+        } else {
+            stderr
+        }));
+    }
+
+    Ok(output.stdout)
 }

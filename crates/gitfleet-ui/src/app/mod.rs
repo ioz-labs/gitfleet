@@ -10,6 +10,7 @@ pub(crate) use types::*;
 use crate::{graph, preview};
 use crate::terminal::TerminalFontCatalog;
 use crate::theme::ThemeMode;
+use crate::views::detached_viewer::DetachedViewerState;
 use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
 use gitfleet_git::{
@@ -24,7 +25,7 @@ use gitfleet_security::{
 use gitfleet_workspace::{PrefixRelocation, RepoEntry};
 use iced::widget::{scrollable, text_editor, text_input};
 use iced::{Point, Size, Task, Theme, window};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -32,6 +33,8 @@ use std::time::Instant;
 pub(crate) struct GitFleetApp {
     pub(crate) service: Arc<AppService>,
     pub(crate) windows: BTreeMap<window::Id, WindowKind>,
+    pub(crate) detached_viewers: BTreeMap<window::Id, DetachedViewerState>,
+    pub(crate) pending_detached_viewers: VecDeque<DetachedViewerState>,
     pub(crate) theme_mode: ThemeMode,
 
     // Top-Left: Repositories
@@ -88,6 +91,21 @@ pub(crate) struct GitFleetApp {
 
     // Bottom: Diff / Preview / Edit Viewer
     pub(crate) bottom_mode: BottomViewMode,
+    pub(crate) last_text_diff_mode: BottomViewMode,
+    pub(crate) csv_prefer_table: bool,
+    pub(crate) diff_request_id: u64,
+    pub(crate) diff_image: Option<crate::views::image_diff::ImageDiffData>,
+    pub(crate) image_diff_mode: crate::views::image_diff::ImageDiffMode,
+    pub(crate) image_diff_zoom: crate::views::image_diff::ImageDiffZoom,
+    pub(crate) image_diff_swapped: bool,
+    pub(crate) image_diff_swipe: f32,
+    pub(crate) image_diff_onion: f32,
+    pub(crate) image_diff_blink_after: bool,
+    pub(crate) image_diff_blink_paused: bool,
+    pub(crate) diff_csv: Option<crate::views::csv_diff::CsvDiffData>,
+    pub(crate) csv_diff_changes_only: bool,
+    pub(crate) csv_diff_ignore_format: bool,
+    pub(crate) csv_diff_filter: String,
     pub(crate) active_file_path: Option<String>,
     pub(crate) selected_changed_file: Option<FileChange>,
     pub(crate) selected_changed_files: HashSet<(String, bool)>,
@@ -235,14 +253,18 @@ pub(crate) struct GitFleetApp {
 
     // Milestone 6: Settings & Diagnostics Modal
     pub(crate) show_settings_modal: bool,
+    pub(crate) settings_tab: SettingsTab,
+    pub(crate) settings_font_filter: String,
     pub(crate) git_version: String,
     pub(crate) detected_tools: Vec<DetectedTool>,
 
-    // Context Menus & Confirmation Dialogs
+    // Context Menus, Confirmations, Error Popup & Clipboard
     pub(crate) cursor_pos: Point,
     pub(crate) window_size: Size,
     pub(crate) context_menu: Option<ContextMenuState>,
     pub(crate) pending_confirm: Option<PendingConfirm>,
+    pub(crate) action_error: Option<ActionErrorState>,
+    pub(crate) last_action_error: Option<ActionErrorState>,
     pub(crate) cherry_pick_modal: Option<CherryPickModalState>,
     pub(crate) discard_modal: Option<DiscardModalState>,
     pub(crate) inline_group_input_id: text_input::Id,
@@ -289,6 +311,8 @@ impl GitFleetApp {
             collapsed_repo_submodules: HashSet::new(),
             service,
             windows,
+            detached_viewers: BTreeMap::new(),
+            pending_detached_viewers: VecDeque::new(),
             filter_query: String::new(),
             repo_filter: RepoFilter::All,
             bulk_selected: HashSet::new(),
@@ -329,6 +353,21 @@ impl GitFleetApp {
             commit_files: Vec::new(),
             all_repo_files: Vec::new(),
             bottom_mode: BottomViewMode::SideBySideDiff,
+            last_text_diff_mode: BottomViewMode::SideBySideDiff,
+            csv_prefer_table: true,
+            diff_request_id: 0,
+            diff_image: None,
+            image_diff_mode: crate::views::image_diff::ImageDiffMode::Swipe,
+            image_diff_zoom: crate::views::image_diff::ImageDiffZoom::Fit,
+            image_diff_swapped: false,
+            image_diff_swipe: 0.5,
+            image_diff_onion: 0.5,
+            image_diff_blink_after: false,
+            image_diff_blink_paused: false,
+            diff_csv: None,
+            csv_diff_changes_only: false,
+            csv_diff_ignore_format: false,
+            csv_diff_filter: String::new(),
             active_file_path: None,
             selected_changed_file: None,
             selected_changed_files: HashSet::new(),
@@ -449,12 +488,16 @@ impl GitFleetApp {
             terminal_menu_submenu: TerminalMenuSubmenu::None,
             terminal_fonts: crate::terminal::detect_terminal_fonts(),
             show_settings_modal: false,
+            settings_tab: SettingsTab::General,
+            settings_font_filter: String::new(),
             git_version: "checking…".into(),
             detected_tools: Vec::new(),
             cursor_pos: Point::ORIGIN,
             window_size: Size::new(1440.0, 900.0),
             context_menu: None,
             pending_confirm: None,
+            action_error: None,
+            last_action_error: None,
             cherry_pick_modal: None,
             discard_modal: None,
             inline_group_input_id: text_input::Id::unique(),
@@ -616,12 +659,61 @@ impl GitFleetApp {
             || self.show_terminal_menu
             || self.context_menu.is_some()
             || self.pending_confirm.is_some()
+            || self.action_error.is_some()
             || self.cherry_pick_modal.is_some()
             || self.discard_modal.is_some()
             || self.rename_branch_modal.is_some()
             || self.rename_workspace_modal.is_some()
             || self.commit_modal.is_some()
             || self.scan_modal.is_some()
+    }
+
+    pub(crate) fn active_error_context(&self) -> Option<String> {
+        let repo = self.current_repo()?;
+        let branch = self.active_status().and_then(|s| s.branch.as_deref());
+        Some(match branch {
+            Some(b) => format!("{}  ·  {}", repo.name, b),
+            None => repo.name,
+        })
+    }
+
+    /// Records an error in the status bar AND displays a clear popup notification modal so
+    /// action failures are never silently missed in the bottom status strip.
+    pub(crate) fn report_action_error(
+        &mut self,
+        title: impl Into<String>,
+        raw_error: impl Into<String>,
+        show_output_shortcut: bool,
+    ) {
+        let state = build_action_error_state(
+            title.into(),
+            raw_error.into(),
+            self.active_error_context(),
+            show_output_shortcut,
+        );
+        self.toast_is_error = true;
+        self.toast_message = format!("{}: {}", state.title, state.summary);
+        self.last_action_error = Some(state.clone());
+        self.action_error = Some(state);
+    }
+
+    /// Records a background/non-interactive error in the status bar while keeping full details
+    /// one click away (clicking the error indicator in the status bar opens the Error Modal).
+    pub(crate) fn record_background_error(
+        &mut self,
+        title: impl Into<String>,
+        raw_error: impl Into<String>,
+        show_output_shortcut: bool,
+    ) {
+        let state = build_action_error_state(
+            title.into(),
+            raw_error.into(),
+            self.active_error_context(),
+            show_output_shortcut,
+        );
+        self.toast_is_error = true;
+        self.toast_message = format!("{}: {}", state.title, state.summary);
+        self.last_action_error = Some(state);
     }
 
     pub(crate) fn default_terminal_profile_id(&self) -> String {
@@ -655,8 +747,11 @@ impl GitFleetApp {
             self.service.terminal.profile_by_id(&fallback)
         });
         let Some(prof) = prof else {
-            self.toast_is_error = true;
-            self.toast_message = "No terminal profile available on this system".into();
+            self.report_action_error(
+                "Terminal Failed",
+                "No terminal profile is available on this system.",
+                false,
+            );
             return;
         };
 
@@ -726,8 +821,7 @@ impl GitFleetApp {
                 self.toast_message = format!("Started {} in {}", prof.label, cwd.display());
             }
             Err(e) => {
-                self.toast_is_error = true;
-                self.toast_message = format!("Terminal failed: {e}");
+                self.report_action_error("Terminal Failed", e.to_string(), false);
             }
         }
     }
@@ -980,7 +1074,14 @@ impl GitFleetApp {
 
     pub(crate) fn title(&self, window_id: window::Id) -> String {
         match self.windows.get(&window_id) {
-            Some(WindowKind::DetachedViewer) => format!("GitFleet Viewer — {}", self.diff_title),
+            Some(WindowKind::DetachedViewer) => {
+                let label = self
+                    .detached_viewers
+                    .get(&window_id)
+                    .map(|v| v.title.as_str())
+                    .unwrap_or("Standalone Diff & Preview");
+                format!("GitFleet Viewer — {label}")
+            }
             _ => {
                 if let Some(repo) = self.current_repo() {
                     format!("GitFleet — {}", repo.name)
@@ -996,6 +1097,57 @@ impl GitFleetApp {
     }
 }
 
+pub(crate) fn build_action_error_state(
+    title: String,
+    raw_error: String,
+    context: Option<String>,
+    show_output_shortcut: bool,
+) -> ActionErrorState {
+    let cleaned = raw_error.trim();
+    let stripped = cleaned
+        .strip_prefix("Git error: ")
+        .or_else(|| cleaned.strip_prefix("git error: "))
+        .or_else(|| cleaned.strip_prefix("IO error: "))
+        .unwrap_or(cleaned)
+        .trim();
+
+    let lines: Vec<&str> = stripped
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() {
+        return ActionErrorState {
+            title,
+            summary: "The operation could not be completed.".into(),
+            detail: None,
+            context,
+            show_output_shortcut,
+        };
+    }
+
+    let first_line = lines[0].to_string();
+    let has_multiline_or_long = lines.len() > 1 || stripped.chars().count() > 120;
+    if has_multiline_or_long {
+        ActionErrorState {
+            title,
+            summary: first_line,
+            detail: Some(stripped.to_string()),
+            context,
+            show_output_shortcut,
+        }
+    } else {
+        ActionErrorState {
+            title,
+            summary: first_line,
+            detail: None,
+            context,
+            show_output_shortcut,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1007,5 +1159,30 @@ mod tests {
         assert_eq!(size.width, 64);
         assert_eq!(size.height, 64);
         assert_eq!(rgba.len(), 64 * 64 * 4);
+    }
+
+    #[test]
+    fn formats_single_and_multiline_action_errors_cleanly() {
+        let short = build_action_error_state(
+            "Commit Failed".into(),
+            "Git error: nothing to commit".into(),
+            Some("gitfleet · main".into()),
+            true,
+        );
+        assert_eq!(short.summary, "nothing to commit");
+        assert!(short.detail.is_none());
+
+        let multi = build_action_error_state(
+            "Pull Failed".into(),
+            "Git error: error: Your local changes would be overwritten\n\tsrc/main.rs\nAborting"
+                .into(),
+            Some("gitfleet · main".into()),
+            true,
+        );
+        assert_eq!(
+            multi.summary,
+            "error: Your local changes would be overwritten"
+        );
+        assert!(multi.detail.as_deref().unwrap().contains("src/main.rs"));
     }
 }
