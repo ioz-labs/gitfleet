@@ -16,9 +16,11 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
-authors = ["GitFleet Contributors"]
-repository = "https://github.com/example/gitfleet"
+license = "MIT"
+authors = ["IOZ Labs", "GitFleet Contributors"]
+description = "Open-source, 100% pure-Rust multi-repository Git desktop workspace manager"
+homepage = "https://github.com/ioz-labs/gitfleet"
+repository = "https://github.com/ioz-labs/gitfleet"
 
 [workspace.dependencies]
 # Internal crates

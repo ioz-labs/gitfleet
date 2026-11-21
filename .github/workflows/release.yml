@@ -126,6 +126,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage, "dist\out" | Out-Null
           Copy-Item "target\${{ matrix.target }}\release\gitfleet.exe" "$stage\gitfleet.exe"
           Copy-Item "README.md" "$stage\README.md"
+          Copy-Item "LICENSE" "$stage\LICENSE"
           Compress-Archive -Path "$stage\*" -DestinationPath "dist\out\${{ matrix.artifact_name }}.zip" -Force
 
       - name: Package macOS (.app + .dmg)
@@ -189,7 +190,7 @@ jobs:
 
           cp "target/${{ matrix.target }}/release/gitfleet" "dist/tar/${{ matrix.artifact_name }}/gitfleet"
           chmod +x "dist/tar/${{ matrix.artifact_name }}/gitfleet"
-          cp README.md "dist/tar/${{ matrix.artifact_name }}/README.md"
+          cp README.md LICENSE "dist/tar/${{ matrix.artifact_name }}/"
 
           cat > "dist/tar/${{ matrix.artifact_name }}/gitfleet.desktop" <<'EOF'
           [Desktop Entry]
