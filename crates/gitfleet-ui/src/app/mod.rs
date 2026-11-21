@@ -878,6 +878,76 @@ impl GitFleetApp {
         self.load_conflict_state_for_file(rel_path);
     }
 
+    /// Reloads Preview & Editor from disk if the file changed externally (or switched), while
+    /// preserving unsaved user typing (`editor_dirty == true`) and cursor position when unchanged.
+    pub(crate) fn reload_file_for_preview_and_edit_if_changed(&mut self, rel_path: &str) {
+        if self.editor_dirty {
+            return;
+        }
+        let Some(repo) = self.current_repo() else {
+            return;
+        };
+        let full_path = repo.path.join(rel_path);
+        let same_path = self.active_file_path.as_deref() == Some(rel_path);
+        match self.service.docs.open_document(&full_path) {
+            Ok(cap) => {
+                if same_path && self.open_doc_version.as_deref() == Some(cap.version.as_str()) {
+                    return;
+                }
+                self.active_file_path = Some(rel_path.to_string());
+                self.preview_state =
+                    preview::PreviewState::from_file(&full_path, Some(&cap.content));
+                self.sync_preview_editor();
+                self.editor_content = text_editor::Content::with_text(&cap.content);
+                self.open_doc_id = Some(cap.document_id);
+                self.open_doc_version = Some(cap.version);
+                self.editor_dirty = false;
+            }
+            Err(_) => {
+                self.active_file_path = Some(rel_path.to_string());
+                self.preview_state = preview::PreviewState::from_file(&full_path, None);
+                self.sync_preview_editor();
+                self.editor_content = text_editor::Content::new();
+                self.open_doc_id = None;
+                self.open_doc_version = None;
+                self.editor_dirty = false;
+            }
+        }
+        self.load_conflict_state_for_file(rel_path);
+    }
+
+    /// Clears the active diff/preview viewer when the currently selected working-tree file is no
+    /// longer changed (e.g. after Discard, Commit, or external revert).
+    pub(crate) fn clear_active_diff_viewer(&mut self) {
+        self.diff_request_id = self.diff_request_id.wrapping_add(1);
+        self.selected_changed_file = None;
+        self.diff_is_working_file = false;
+        self.diff_is_staged = false;
+        self.diff_parsed = ParsedDiff::default();
+        self.diff_image = None;
+        self.diff_csv = None;
+        self.diff_selection = None;
+        self.diff_expanded_gaps.clear();
+        self.clear_conflict_state();
+        if !self.editor_dirty {
+            self.active_file_path = None;
+            self.diff_title = "No file selected".into();
+            self.preview_state = preview::PreviewState::Empty;
+            self.preview_editor = text_editor::Content::new();
+            self.editor_content = text_editor::Content::new();
+            self.open_doc_id = None;
+            self.open_doc_version = None;
+        }
+        if matches!(
+            self.bottom_mode,
+            BottomViewMode::ImageDiff
+                | BottomViewMode::CsvDiff
+                | BottomViewMode::ResolveConflicts
+        ) {
+            self.bottom_mode = self.last_text_diff_mode;
+        }
+    }
+
     pub(crate) fn load_conflict_state_for_file(&mut self, rel_path: &str) {
         let Some(repo) = self.current_repo() else {
             self.clear_conflict_state();

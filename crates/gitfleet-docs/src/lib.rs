@@ -30,6 +30,16 @@ pub struct DocsService {
     open_docs: RwLock<HashMap<DocumentId, TrackedDocument>>,
 }
 
+fn compute_doc_version(raw: &str) -> String {
+    // FNV-1a 64-bit hash + byte length so even same-length edits produce a new version
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in raw.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("len:{}:h:{hash:016x}", raw.len())
+}
+
 impl DocsService {
     pub fn new() -> Self {
         Self::default()
@@ -43,7 +53,7 @@ impl DocsService {
             LineEnding::Lf
         };
         let normalized = raw.replace("\r\n", "\n");
-        let version = format!("len:{}", raw.len());
+        let version = compute_doc_version(&raw);
         let document_id = DocumentId::new();
 
         if let Ok(mut guard) = self.open_docs.write() {
@@ -80,7 +90,7 @@ impl DocsService {
             .ok_or_else(|| AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "document capability not found")))?;
 
         let disk_raw = std::fs::read_to_string(&tracked.path)?;
-        let actual_version = format!("len:{}", disk_raw.len());
+        let actual_version = compute_doc_version(&disk_raw);
         if actual_version != expected_version {
             return Err(AppError::DocumentConflict {
                 expected: expected_version.to_string(),
@@ -93,7 +103,7 @@ impl DocsService {
             LineEnding::Lf => content.to_string(),
         };
         std::fs::write(&tracked.path, &encoded)?;
-        let new_version = format!("len:{}", encoded.len());
+        let new_version = compute_doc_version(&encoded);
         tracked.version = new_version.clone();
         Ok(new_version)
     }

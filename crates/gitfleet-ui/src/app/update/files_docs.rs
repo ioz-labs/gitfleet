@@ -234,130 +234,11 @@ impl GitFleetApp {
                 };
 
                 match &self.graph_selection {
-                    GraphSelection::WorkingTree => {
-                        self.diff_is_working_file = file.kind != FileChangeKind::Untracked;
-                        self.diff_is_staged = file.staged;
-                        let kind_label = file.kind.state_label(false);
-                        let title = if file.staged {
-                            format!("Changes of {} (Staged · {kind_label})", file.path)
-                        } else {
-                            format!("Changes of {} ({kind_label})", file.path)
-                        };
-                        self.diff_title = title.clone();
-                        let untracked = file.kind == FileChangeKind::Untracked;
-                        let mut tasks = Vec::new();
-
-                        if !is_raster {
-                            let svc = self.service.clone();
-                            let repo_path = repo.path.clone();
-                            let fpath = file.path.clone();
-                            let staged = file.staged;
-                            let t = title.clone();
-                            tasks.push(Task::perform(
-                                async move {
-                                    let res = svc
-                                        .git
-                                        .get_diff(&repo_path, &fpath, staged, untracked)
-                                        .await
-                                        .map_err(|e| e.to_string());
-                                    (t, res)
-                                },
-                                |(t, r)| Message::DiffLoaded(t, r),
-                            ));
-                        } else {
-                            self.diff_parsed = ParsedDiff::default();
-                        }
-
-                        if is_img {
-                            let svc = self.service.clone();
-                            let repo_path = repo.path.clone();
-                            let fpath = file.path.clone();
-                            let staged = file.staged;
-                            let t = title.clone();
-                            tasks.push(Task::perform(
-                                async move {
-                                    let data = match svc
-                                        .git
-                                        .get_working_file_versions(&repo_path, &fpath, staged, untracked)
-                                        .await
-                                    {
-                                        Ok(pair) => tokio::task::spawn_blocking(move || {
-                                            decode_image_diff_pair(pair)
-                                        })
-                                        .await
-                                        .unwrap_or_else(|e| ImageDiffData {
-                                            file_path: fpath.clone(),
-                                            is_svg: is_svg_path(&fpath),
-                                            before_label: "Before".into(),
-                                            after_label: "After".into(),
-                                            before: None,
-                                            after: None,
-                                            diff_handle: None,
-                                            diff_width: 0,
-                                            diff_height: 0,
-                                            diff_changed_pixels: 0,
-                                            diff_total_pixels: 0,
-                                            load_error: Some(format!("Decode task failed: {e}")),
-                                        }),
-                                        Err(e) => ImageDiffData {
-                                            file_path: fpath.clone(),
-                                            is_svg: is_svg_path(&fpath),
-                                            before_label: "Before".into(),
-                                            after_label: "After".into(),
-                                            before: None,
-                                            after: None,
-                                            diff_handle: None,
-                                            diff_width: 0,
-                                            diff_height: 0,
-                                            diff_changed_pixels: 0,
-                                            diff_total_pixels: 0,
-                                            load_error: Some(e.to_string()),
-                                        },
-                                    };
-                                    (req_id, t, data)
-                                },
-                                |(id, t, d)| Message::ImageDiffLoaded(id, t, d),
-                            ));
-                        } else if is_csv {
-                            let svc = self.service.clone();
-                            let repo_path = repo.path.clone();
-                            let fpath = file.path.clone();
-                            let staged = file.staged;
-                            let t = title.clone();
-                            tasks.push(Task::perform(
-                                async move {
-                                    let pair = svc
-                                        .git
-                                        .get_working_file_versions(&repo_path, &fpath, staged, untracked)
-                                        .await
-                                        .unwrap_or(gitfleet_git::FileVersionPair {
-                                            file_path: fpath,
-                                            before_label: "Before".into(),
-                                            after_label: "After".into(),
-                                            before_bytes: None,
-                                            after_bytes: None,
-                                        });
-                                    let data = tokio::task::spawn_blocking(move || {
-                                        compute_csv_diff(pair)
-                                    })
-                                    .await
-                                    .unwrap_or_else(|_| {
-                                        compute_csv_diff(gitfleet_git::FileVersionPair {
-                                            file_path: String::new(),
-                                            before_label: "Before".into(),
-                                            after_label: "After".into(),
-                                            before_bytes: None,
-                                            after_bytes: None,
-                                        })
-                                    });
-                                    (req_id, t, data)
-                                },
-                                |(id, t, d)| Message::CsvDiffLoaded(id, t, d),
-                            ));
-                        }
-
-                        Task::batch(tasks)
-                    }
+                    GraphSelection::WorkingTree => self.load_working_file_diff_tasks(
+                        repo.path.clone(),
+                        &file,
+                        req_id,
+                    ),
                     GraphSelection::Commit(oid) => {
                         self.diff_is_working_file = false;
                         self.diff_is_staged = false;
@@ -672,6 +553,11 @@ impl GitFleetApp {
                     self.csv_prefer_table = true;
                 }
                 self.diff_selection = None;
+                if matches!(mode, BottomViewMode::Edit | BottomViewMode::Preview)
+                    && let Some(rel) = self.active_file_path.clone()
+                {
+                    self.reload_file_for_preview_and_edit_if_changed(&rel);
+                }
                 Task::none()
             }
             Message::ToggleDiffCompact => {
@@ -1049,6 +935,20 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::DiffLoaded(title, res) => {
+                // Ignore stale in-flight working-tree diff responses after active file was cleared
+                if self.graph_selection == GraphSelection::WorkingTree
+                    && self.selected_changed_file.is_none()
+                    && self.active_file_path.is_none()
+                    && self.diff_title == "No file selected"
+                {
+                    return Task::none();
+                }
+                if let Ok(raw) = &res
+                    && self.diff_title == title
+                    && self.diff_parsed.raw == *raw
+                {
+                    return Task::none();
+                }
                 self.diff_title = title;
                 self.diff_expanded_gaps.clear();
                 self.diff_selection = None;
@@ -1300,5 +1200,189 @@ impl GitFleetApp {
             Some(msg) => Err(msg),
             None => Ok(task),
         }
+    }
+
+    pub(crate) fn load_working_file_diff_tasks(
+        &mut self,
+        repo_path: std::path::PathBuf,
+        file: &gitfleet_git::FileChange,
+        req_id: u64,
+    ) -> Task<Message> {
+        let is_img = is_image_diff_path(&file.path);
+        let is_raster = is_raster_image_path(&file.path);
+        let is_csv = is_csv_diff_path(&file.path);
+
+        self.diff_is_working_file = file.kind != FileChangeKind::Untracked;
+        self.diff_is_staged = file.staged;
+        let kind_label = file.kind.state_label(false);
+        let title = if file.staged {
+            format!("Changes of {} (Staged · {kind_label})", file.path)
+        } else {
+            format!("Changes of {} ({kind_label})", file.path)
+        };
+        self.diff_title = title.clone();
+        let untracked = file.kind == FileChangeKind::Untracked;
+        let mut tasks = Vec::new();
+
+        if !is_raster {
+            let svc = self.service.clone();
+            let rp = repo_path.clone();
+            let fpath = file.path.clone();
+            let staged = file.staged;
+            let t = title.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let res = svc
+                        .git
+                        .get_diff(&rp, &fpath, staged, untracked)
+                        .await
+                        .map_err(|e| e.to_string());
+                    (t, res)
+                },
+                |(t, r)| Message::DiffLoaded(t, r),
+            ));
+        } else {
+            self.diff_parsed = ParsedDiff::default();
+        }
+
+        if is_img {
+            let svc = self.service.clone();
+            let rp = repo_path.clone();
+            let fpath = file.path.clone();
+            let staged = file.staged;
+            let t = title.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let data = match svc
+                        .git
+                        .get_working_file_versions(&rp, &fpath, staged, untracked)
+                        .await
+                    {
+                        Ok(pair) => tokio::task::spawn_blocking(move || decode_image_diff_pair(pair))
+                            .await
+                            .unwrap_or_else(|e| ImageDiffData {
+                                file_path: fpath.clone(),
+                                is_svg: is_svg_path(&fpath),
+                                before_label: "Before".into(),
+                                after_label: "After".into(),
+                                before: None,
+                                after: None,
+                                diff_handle: None,
+                                diff_width: 0,
+                                diff_height: 0,
+                                diff_changed_pixels: 0,
+                                diff_total_pixels: 0,
+                                load_error: Some(format!("Decode task failed: {e}")),
+                            }),
+                        Err(e) => ImageDiffData {
+                            file_path: fpath.clone(),
+                            is_svg: is_svg_path(&fpath),
+                            before_label: "Before".into(),
+                            after_label: "After".into(),
+                            before: None,
+                            after: None,
+                            diff_handle: None,
+                            diff_width: 0,
+                            diff_height: 0,
+                            diff_changed_pixels: 0,
+                            diff_total_pixels: 0,
+                            load_error: Some(e.to_string()),
+                        },
+                    };
+                    (req_id, t, data)
+                },
+                |(id, t, d)| Message::ImageDiffLoaded(id, t, d),
+            ));
+        } else if is_csv {
+            let svc = self.service.clone();
+            let rp = repo_path;
+            let fpath = file.path.clone();
+            let staged = file.staged;
+            let t = title;
+            tasks.push(Task::perform(
+                async move {
+                    let pair = svc
+                        .git
+                        .get_working_file_versions(&rp, &fpath, staged, untracked)
+                        .await
+                        .unwrap_or(gitfleet_git::FileVersionPair {
+                            file_path: fpath,
+                            before_label: "Before".into(),
+                            after_label: "After".into(),
+                            before_bytes: None,
+                            after_bytes: None,
+                        });
+                    let data = tokio::task::spawn_blocking(move || compute_csv_diff(pair))
+                        .await
+                        .unwrap_or_else(|_| {
+                            compute_csv_diff(gitfleet_git::FileVersionPair {
+                                file_path: String::new(),
+                                before_label: "Before".into(),
+                                after_label: "After".into(),
+                                before_bytes: None,
+                                after_bytes: None,
+                            })
+                        });
+                    (req_id, t, data)
+                },
+                |(id, t, d)| Message::CsvDiffLoaded(id, t, d),
+            ));
+        }
+
+        Task::batch(tasks)
+    }
+
+    /// Reconciles the bottom Diff / Preview / Edit panel after a fresh `StatusLoaded`:
+    /// - Clears stale diff immediately if the selected working-tree file was discarded/committed.
+    /// - Reloads editor, preview, and diff cleanly if the active file changed on disk or in index.
+    pub(crate) fn sync_active_working_file_after_status(&mut self) -> Task<Message> {
+        if self.graph_selection != GraphSelection::WorkingTree {
+            return Task::none();
+        }
+        let Some(repo) = self.current_repo() else {
+            return Task::none();
+        };
+
+        let find_in_status =
+            |app: &Self, path: &str, prefer_staged: Option<bool>| -> Option<gitfleet_git::FileChange> {
+                let st = app.active_status()?;
+                let all = st
+                    .conflict_files
+                    .iter()
+                    .chain(st.staged_files.iter())
+                    .chain(st.unstaged_files.iter());
+                if let Some(staged) = prefer_staged
+                    && let Some(exact) = all.clone().find(|f| f.path == path && f.staged == staged)
+                {
+                    return Some(exact.clone());
+                }
+                all.into_iter().find(|f| f.path == path).cloned()
+            };
+
+        if let Some(sel) = self.selected_changed_file.clone() {
+            if let Some(fresh) = find_in_status(self, &sel.path, Some(sel.staged)) {
+                self.selected_changed_file = Some(fresh.clone());
+                self.reload_file_for_preview_and_edit_if_changed(&fresh.path);
+                self.diff_request_id = self.diff_request_id.wrapping_add(1);
+                let req_id = self.diff_request_id;
+                return self.load_working_file_diff_tasks(repo.path, &fresh, req_id);
+            } else {
+                // Selected changed file is no longer dirty (discarded, committed, or reverted)
+                self.clear_active_diff_viewer();
+                return Task::none();
+            }
+        }
+
+        if let Some(rel) = self.active_file_path.clone() {
+            self.reload_file_for_preview_and_edit_if_changed(&rel);
+            if let Some(fresh) = find_in_status(self, &rel, None) {
+                self.selected_changed_file = Some(fresh.clone());
+                self.diff_request_id = self.diff_request_id.wrapping_add(1);
+                let req_id = self.diff_request_id;
+                return self.load_working_file_diff_tasks(repo.path, &fresh, req_id);
+            }
+        }
+
+        Task::none()
     }
 }

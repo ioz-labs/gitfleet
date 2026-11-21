@@ -1,15 +1,270 @@
 use crate::app::{ContextMenuTarget, GitFleetApp, Message, PendingConfirm, RepoFilter};
 use crate::icons;
-use crate::theme::{self, Palette, tree, type_scale};
+use crate::theme::{self, Palette, ThemeMode, tree, type_scale};
 use crate::views::{slim_scroll_h, tip};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_workspace::RepoEntry;
+use iced::widget::canvas::{self, Canvas, Geometry, LineCap, LineJoin, Path as CanvasPath, Stroke};
 use iced::widget::{
     Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, text, text_input,
     tooltip,
 };
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Color, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoDiskTone {
+    Missing,
+    Conflicted,
+    Dirty,
+    CleanActive,
+    CleanIdle,
+}
+
+fn sync_push_color(dark_mode: bool) -> Color {
+    if dark_mode {
+        Color::from_rgb(1.0, 0.480, 0.150) // crisp high-contrast push orange (#ff7a26)
+    } else {
+        Color::from_rgb(0.880, 0.345, 0.045)
+    }
+}
+
+fn sync_pull_color(dark_mode: bool) -> Color {
+    if dark_mode {
+        Color::from_rgb(0.180, 0.855, 0.455) // crisp high-contrast pull emerald (#2eda74)
+    } else {
+        Color::from_rgb(0.082, 0.545, 0.265)
+    }
+}
+
+fn dirty_dot_color(dark_mode: bool) -> Color {
+    if dark_mode {
+        Color::from_rgb(0.980, 0.800, 0.200) // bright amber-yellow (#facc33)
+    } else {
+        Color::from_rgb(0.800, 0.540, 0.020)
+    }
+}
+
+/// SmartGit-style 3-layer cool-slate repository disk stack with high-contrast overlaid
+/// Push (`^` orange) / Pull (`v` green) chevrons and a distinct bottom-right amber dirty badge.
+struct RepoSyncIcon {
+    tone: RepoDiskTone,
+    ahead: usize,
+    behind: usize,
+    dark_mode: bool,
+    p: Palette,
+}
+
+impl canvas::Program<Message> for RepoSyncIcon {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let w = bounds.width;
+        let h = bounds.height;
+        let sx = w / 16.0;
+        let sy = h / 16.0;
+
+        // Keep disk bars cool neutral slate/silver so orange Push `^`, green Pull `v`, and yellow
+        // dirty dot all pop with maximum contrast and never blend into each other.
+        let (bar_stroke, bar_fill) = match self.tone {
+            RepoDiskTone::Missing => (
+                Color {
+                    a: 0.40,
+                    ..self.p.text_muted
+                },
+                Color {
+                    a: 0.08,
+                    ..self.p.text_muted
+                },
+            ),
+            RepoDiskTone::Conflicted => (
+                self.p.danger_fg,
+                Color {
+                    a: 0.22,
+                    ..self.p.danger_fg
+                },
+            ),
+            RepoDiskTone::CleanActive | RepoDiskTone::Dirty => {
+                if self.dark_mode {
+                    (
+                        Color::from_rgba(0.640, 0.710, 0.800, 0.88),
+                        Color::from_rgba(0.550, 0.630, 0.730, 0.16),
+                    )
+                } else {
+                    (
+                        Color::from_rgba(0.300, 0.365, 0.455, 0.85),
+                        Color::from_rgba(0.300, 0.365, 0.455, 0.14),
+                    )
+                }
+            }
+            RepoDiskTone::CleanIdle => {
+                if self.dark_mode {
+                    (
+                        Color::from_rgba(0.460, 0.525, 0.610, 0.72),
+                        Color::from_rgba(0.460, 0.525, 0.610, 0.12),
+                    )
+                } else {
+                    (
+                        Color::from_rgba(0.420, 0.480, 0.560, 0.68),
+                        Color::from_rgba(0.420, 0.480, 0.560, 0.10),
+                    )
+                }
+            }
+        };
+
+        // 3 stacked horizontal disk bars
+        for y0 in [1.8_f32, 6.4, 11.0] {
+            let rect = CanvasPath::rounded_rectangle(
+                Point::new(1.4 * sx, y0 * sy),
+                Size::new(13.2 * sx, 3.0 * sy),
+                (1.1 * sx).into(),
+            );
+            frame.fill(&rect, bar_fill);
+            frame.stroke(
+                &rect,
+                Stroke::default()
+                    .with_color(bar_stroke)
+                    .with_width((1.0 * sx).max(0.9)),
+            );
+        }
+
+        let halo = if self.dark_mode {
+            Color::from_rgba(0.050, 0.065, 0.090, 0.94)
+        } else {
+            Color::from_rgba(1.0, 1.0, 1.0, 0.95)
+        };
+        let push_c = sync_push_color(self.dark_mode);
+        let pull_c = sync_pull_color(self.dark_mode);
+
+        let draw_chevron = |frame: &mut canvas::Frame,
+                            p0: (f32, f32),
+                            p1: (f32, f32),
+                            p2: (f32, f32),
+                            color: Color,
+                            width: f32,
+                            halo_w: f32| {
+            let chevron = CanvasPath::new(|b| {
+                b.move_to(Point::new(p0.0 * sx, p0.1 * sy));
+                b.line_to(Point::new(p1.0 * sx, p1.1 * sy));
+                b.line_to(Point::new(p2.0 * sx, p2.1 * sy));
+            });
+            frame.stroke(
+                &chevron,
+                Stroke {
+                    width: halo_w * sx,
+                    line_cap: LineCap::Round,
+                    line_join: LineJoin::Round,
+                    ..Stroke::default()
+                }
+                .with_color(halo),
+            );
+            frame.stroke(
+                &chevron,
+                Stroke {
+                    width: width * sx,
+                    line_cap: LineCap::Round,
+                    line_join: LineJoin::Round,
+                    ..Stroke::default()
+                }
+                .with_color(color),
+            );
+        };
+
+        let is_dirty = self.tone == RepoDiskTone::Dirty;
+        let is_conflicted = self.tone == RepoDiskTone::Conflicted;
+
+        match (self.ahead > 0, self.behind > 0) {
+            (true, false) => {
+                // Needs Push: crisp coral-orange upward chevron
+                draw_chevron(
+                    &mut frame,
+                    (3.4, 9.2),
+                    (8.0, 3.7),
+                    (12.6, 9.2),
+                    push_c,
+                    2.4,
+                    4.4,
+                );
+            }
+            (false, true) => {
+                // Needs Pull: crisp emerald downward chevron
+                draw_chevron(
+                    &mut frame,
+                    (3.4, 4.3),
+                    (8.0, 9.8),
+                    (12.6, 4.3),
+                    pull_c,
+                    2.4,
+                    4.4,
+                );
+            }
+            (true, true) => {
+                // Diverged: top orange Push + bottom emerald Pull (shifted slightly left if dirty dot)
+                let cx = if is_dirty || is_conflicted { 6.8 } else { 8.0 };
+                draw_chevron(
+                    &mut frame,
+                    (cx - 3.6, 6.5),
+                    (cx, 2.4),
+                    (cx + 3.6, 6.5),
+                    push_c,
+                    2.0,
+                    3.8,
+                );
+                draw_chevron(
+                    &mut frame,
+                    (cx - 3.6, 9.5),
+                    (cx, 13.6),
+                    (cx + 3.6, 9.5),
+                    pull_c,
+                    2.0,
+                    3.8,
+                );
+            }
+            (false, false) => {}
+        }
+
+        // Distinct bottom-right status badge dot for uncommitted local changes / conflicts
+        if is_dirty || is_conflicted {
+            let dot_c = if is_conflicted {
+                self.p.danger_fg
+            } else {
+                dirty_dot_color(self.dark_mode)
+            };
+            let center = Point::new(13.0 * sx, 13.0 * sy);
+            frame.fill(&CanvasPath::circle(center, 3.4 * sx), halo);
+            frame.fill(&CanvasPath::circle(center, 2.3 * sx), dot_c);
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+fn repo_sync_icon<'a>(
+    tone: RepoDiskTone,
+    ahead: usize,
+    behind: usize,
+    dark_mode: bool,
+    p: Palette,
+) -> Element<'a, Message> {
+    Canvas::new(RepoSyncIcon {
+        tone,
+        ahead,
+        behind,
+        dark_mode,
+        p,
+    })
+    .width(Length::Fixed(16.0))
+    .height(Length::Fixed(16.0))
+    .into()
+}
 
 #[derive(Default)]
 struct RepoGroupNode {
@@ -72,22 +327,28 @@ impl GitFleetApp {
         let checked = self.bulk_selected.contains(&repo.id);
         let st = self.statuses.get(&repo.id);
 
-        let dot_color = if !repo.available {
-            p.text_muted
-        } else if let Some(s) = st {
-            if s.conflict_count > 0 {
-                p.danger_fg
-            } else if !s.is_clean {
-                p.warning_fg
-            } else {
-                p.success_fg
-            }
+        let dark_mode = self.theme_mode == ThemeMode::Dark;
+        let has_overlay = self.has_modal_or_menu_open();
+        let ahead = st.map(|s| s.ahead).unwrap_or(0);
+        let behind = st.map(|s| s.behind).unwrap_or(0);
+        let conflicts = st.map(|s| s.conflict_count).unwrap_or(0);
+        let changed = st.map(|s| s.total_changes()).unwrap_or(0);
+        let is_dirty = st.is_some_and(|s| !s.is_clean);
+
+        let disk_tone = if !repo.available {
+            RepoDiskTone::Missing
+        } else if conflicts > 0 {
+            RepoDiskTone::Conflicted
+        } else if is_dirty {
+            RepoDiskTone::Dirty
+        } else if selected || ahead > 0 || behind > 0 {
+            RepoDiskTone::CleanActive
         } else {
-            p.text_muted
+            RepoDiskTone::CleanIdle
         };
 
         let branch = st.and_then(|s| s.branch.as_deref()).unwrap_or("—");
-        let changed = st.map(|s| s.total_changes()).unwrap_or(0);
+        let upstream = st.and_then(|s| s.upstream.as_deref());
         let id_check = repo.id.clone();
 
         let left_x = tree::chevron_x(depth);
@@ -96,11 +357,21 @@ impl GitFleetApp {
         } else {
             9
         };
+        let sync_badge_w = if behind > 0 {
+            16.0 + behind.to_string().len() as f32 * 7.2
+        } else {
+            0.0
+        } + if ahead > 0 {
+            16.0 + ahead.to_string().len() as f32 * 7.2
+        } else {
+            0.0
+        };
         let repo_est_w = tree::content_x(depth)
-            + 28.0
+            + 38.0
             + repo.name.chars().count() as f32 * 7.5
             + branch_chars as f32 * 6.9
-            + if changed > 0 { 26.0 } else { 0.0 }
+            + sync_badge_w
+            + if changed > 0 { 28.0 } else { 0.0 }
             + if !repo.available { 54.0 } else { 0.0 };
         if repo_est_w > *max_row_w {
             *max_row_w = repo_est_w;
@@ -134,6 +405,129 @@ impl GitFleetApp {
         .width(Length::Fixed(tree::LEAD_W))
         .center_x(Length::Fixed(tree::LEAD_W));
 
+        let push_c = sync_push_color(dark_mode);
+        let pull_c = sync_pull_color(dark_mode);
+
+        let icon_el = repo_sync_icon(disk_tone, ahead, behind, dark_mode, p);
+        let icon_with_tip: Element<'a, Message> = if has_overlay {
+            icon_el
+        } else {
+            let mut tip_col = column![
+                text(match upstream {
+                    Some(up) => format!("{} ({branch} → {up})", repo.name),
+                    None => format!("{} ({branch})", repo.name),
+                })
+                .size(type_scale::CAPTION)
+                .color(p.text_primary),
+            ]
+            .spacing(2);
+            if !repo.available {
+                tip_col = tip_col.push(
+                    text("Repository directory missing on disk")
+                        .size(type_scale::CAPTION)
+                        .color(p.danger_fg),
+                );
+            } else {
+                if behind > 0 {
+                    tip_col = tip_col.push(
+                        text(format!(
+                            "↓ {behind} commit{} to pull",
+                            if behind == 1 { "" } else { "s" }
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(pull_c),
+                    );
+                }
+                if ahead > 0 {
+                    tip_col = tip_col.push(
+                        text(format!(
+                            "↑ {ahead} commit{} to push",
+                            if ahead == 1 { "" } else { "s" }
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(push_c),
+                    );
+                }
+                if conflicts > 0 {
+                    tip_col = tip_col.push(
+                        text(format!(
+                            "{conflicts} conflicted file{}",
+                            if conflicts == 1 { "" } else { "s" }
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(p.danger_fg),
+                    );
+                } else if changed > 0 {
+                    tip_col = tip_col.push(
+                        text(format!(
+                            "{changed} uncommitted change{}",
+                            if changed == 1 { "" } else { "s" }
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(p.warning_fg),
+                    );
+                } else if ahead == 0 && behind == 0 {
+                    tip_col = tip_col.push(
+                        text("Clean & up to date")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    );
+                }
+            }
+            tooltip(
+                icon_el,
+                container(tip_col)
+                    .padding([5, 9])
+                    .style(theme::tooltip_box(p)),
+                tooltip::Position::Right,
+            )
+            .gap(6)
+            .into()
+        };
+
+        let mut right_badges = row![].spacing(4).align_y(Alignment::Center);
+        if behind > 0 {
+            right_badges = right_badges.push(
+                text(format!("↓{behind}"))
+                    .size(type_scale::BADGE)
+                    .font(theme::CODE_FONT)
+                    .color(pull_c)
+                    .wrapping(text::Wrapping::None),
+            );
+        }
+        if ahead > 0 {
+            right_badges = right_badges.push(
+                text(format!("↑{ahead}"))
+                    .size(type_scale::BADGE)
+                    .font(theme::CODE_FONT)
+                    .color(push_c)
+                    .wrapping(text::Wrapping::None),
+            );
+        }
+        if changed > 0 {
+            let fg = if conflicts > 0 {
+                p.danger_fg
+            } else {
+                p.warning_fg
+            };
+            let bg = if conflicts > 0 {
+                p.danger_bg
+            } else {
+                p.warning_bg
+            };
+            right_badges = right_badges.push(
+                container(
+                    text(format!("{changed}"))
+                        .size(type_scale::BADGE)
+                        .font(theme::CODE_FONT)
+                        .color(fg)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([0, 4])
+                .style(theme::pill_box(bg, fg, Color { a: 0.42, ..fg })),
+            );
+        }
+
         let mut repo_row = row![
             sub_toggle,
             Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
@@ -144,7 +538,7 @@ impl GitFleetApp {
                 selected,
                 Padding::from([tree::ROW_PAD_V, tree::ROW_PAD_H]),
                 row![
-                    container(Space::new(7, 7)).style(theme::dot_box(dot_color)),
+                    icon_with_tip,
                     theme::clipped_line(
                         row![
                             text(repo.name.clone())
@@ -170,15 +564,7 @@ impl GitFleetApp {
                         .align_y(Alignment::Center),
                         Length::Fill,
                     ),
-                    if changed > 0 {
-                        Element::from(
-                            text(format!("{changed}"))
-                                .size(type_scale::BADGE)
-                                .color(p.warning_fg),
-                        )
-                    } else {
-                        Space::with_width(Length::Shrink).into()
-                    },
+                    right_badges,
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -236,32 +622,88 @@ impl GitFleetApp {
                     .is_some_and(|(pid, sp)| pid == &repo.id && sp == &sub.path);
                 let sub_dirty = sub.dirty || sub_st.is_some_and(|s| !s.is_clean);
                 let sub_changed = sub_st.map(|s| s.total_changes()).unwrap_or(0);
+                let sub_conflicts = sub_st.map(|s| s.conflict_count).unwrap_or(0);
+                let sub_ahead = sub_st.map(|s| s.ahead).unwrap_or(0);
+                let sub_behind = sub_st.map(|s| s.behind).unwrap_or(0);
                 let sub_ref = sub_st
                     .and_then(|s| s.branch.as_deref())
                     .or(sub.branch.as_deref())
                     .or(sub.head_oid.as_deref())
                     .unwrap_or(if sub.initialized { "detached" } else { "uninit" });
+                let sub_sync_w = if sub_behind > 0 { 22.0 } else { 0.0 }
+                    + if sub_ahead > 0 { 22.0 } else { 0.0 };
                 let sub_est_w = tree::content_x(sub_depth)
-                    + 22.0
+                    + 26.0
                     + sub.path.chars().count() as f32 * 7.5
                     + (sub_ref.chars().count() + 2) as f32 * 6.9
-                    + if sub_changed > 0 || sub_dirty { 24.0 } else { 0.0 };
+                    + sub_sync_w
+                    + if sub_changed > 0 || sub_dirty { 26.0 } else { 0.0 };
                 if sub_est_w > *max_row_w {
                     *max_row_w = sub_est_w;
                 }
-                let sub_icon_color = if !sub.initialized {
-                    p.text_muted
+                let sub_tone = if !sub.initialized {
+                    RepoDiskTone::Missing
+                } else if sub_conflicts > 0 {
+                    RepoDiskTone::Conflicted
                 } else if sub_dirty {
-                    p.warning_fg
+                    RepoDiskTone::Dirty
+                } else if sub_selected || sub_ahead > 0 || sub_behind > 0 {
+                    RepoDiskTone::CleanActive
                 } else {
-                    p.text_secondary
+                    RepoDiskTone::CleanIdle
                 };
+
+                let mut sub_badges = row![].spacing(4).align_y(Alignment::Center);
+                if sub_behind > 0 {
+                    sub_badges = sub_badges.push(
+                        text(format!("↓{sub_behind}"))
+                            .size(type_scale::BADGE)
+                            .font(theme::CODE_FONT)
+                            .color(pull_c)
+                            .wrapping(text::Wrapping::None),
+                    );
+                }
+                if sub_ahead > 0 {
+                    sub_badges = sub_badges.push(
+                        text(format!("↑{sub_ahead}"))
+                            .size(type_scale::BADGE)
+                            .font(theme::CODE_FONT)
+                            .color(push_c)
+                            .wrapping(text::Wrapping::None),
+                    );
+                }
+                if sub_changed > 0 {
+                    sub_badges = sub_badges.push(
+                        container(
+                            text(format!("{sub_changed}"))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(p.warning_fg)
+                                .wrapping(text::Wrapping::None),
+                        )
+                        .padding([0, 4])
+                        .style(theme::pill_box(
+                            p.warning_bg,
+                            p.warning_fg,
+                            Color {
+                                a: 0.42,
+                                ..p.warning_fg
+                            },
+                        )),
+                    );
+                } else if sub_dirty {
+                    sub_badges = sub_badges.push(
+                        container(Space::new(7, 7)).style(theme::dot_box(p.warning_fg)),
+                    );
+                }
 
                 let sub_btn = button(
                     row![
-                        container(icons::repo_stack(tree::LEAD_ICON_SIZE, sub_icon_color))
-                            .width(Length::Fixed(tree::LEAD_W))
-                            .center_x(Length::Fixed(tree::LEAD_W)),
+                        container(repo_sync_icon(
+                            sub_tone, sub_ahead, sub_behind, dark_mode, p
+                        ))
+                        .width(Length::Fixed(tree::LEAD_W))
+                        .center_x(Length::Fixed(tree::LEAD_W)),
                         Space::with_width(Length::Fixed(tree::LABEL_GAP)),
                         theme::clipped_line(
                             row![
@@ -284,36 +726,8 @@ impl GitFleetApp {
                             .align_y(Alignment::Center),
                             Length::Fill,
                         ),
-                        if sub_changed > 0 {
-                            Element::from(
-                                container(
-                                    text(format!("{sub_changed}"))
-                                        .size(type_scale::BADGE)
-                                        .color(p.warning_fg),
-                                )
-                                .padding(Padding {
-                                    top: 0.0,
-                                    right: 0.0,
-                                    bottom: 0.0,
-                                    left: 5.0,
-                                }),
-                            )
-                        } else if sub_dirty {
-                            Element::from(
-                                container(
-                                    container(Space::new(7, 7))
-                                        .style(theme::dot_box(p.warning_fg)),
-                                )
-                                .padding(Padding {
-                                    top: 0.0,
-                                    right: 0.0,
-                                    bottom: 0.0,
-                                    left: 5.0,
-                                }),
-                            )
-                        } else {
-                            Space::with_width(Length::Shrink).into()
-                        },
+                        Space::with_width(Length::Fixed(4.0)),
+                        sub_badges,
                     ]
                     .spacing(0)
                     .align_y(Alignment::Center),
@@ -323,58 +737,81 @@ impl GitFleetApp {
                 .style(theme::repo_row_btn(p, sub_selected))
                 .on_press(Message::SelectSubmodule(repo.id.clone(), sub.path.clone()));
 
-                let mut sub_tip = column![
-                    text(format!("Submodule: {}", sub.path))
-                        .size(type_scale::BODY)
-                        .color(p.text_primary),
-                    text(format!(
-                        "Ref: {sub_ref}{}",
-                        sub.head_oid
-                            .as_deref()
-                            .map(|o| format!("  ({o})"))
-                            .unwrap_or_default()
-                    ))
-                    .size(type_scale::CAPTION)
-                    .color(p.accent_fg),
-                ]
-                .spacing(2);
-                if !sub.url.is_empty() {
-                    sub_tip = sub_tip.push(
-                        text(sub.url.clone())
+                let sub_body: Element<'a, Message> = if has_overlay {
+                    sub_btn.into()
+                } else {
+                    let mut sub_tip = column![
+                        text(format!("Submodule: {}", sub.path))
+                            .size(type_scale::BODY)
+                            .color(p.text_primary),
+                        text(format!(
+                            "Ref: {sub_ref}{}",
+                            sub.head_oid
+                                .as_deref()
+                                .map(|o| format!("  ({o})"))
+                                .unwrap_or_default()
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(p.accent_fg),
+                    ]
+                    .spacing(2);
+                    if sub_behind > 0 {
+                        sub_tip = sub_tip.push(
+                            text(format!(
+                                "↓ {sub_behind} commit{} to pull",
+                                if sub_behind == 1 { "" } else { "s" }
+                            ))
                             .size(type_scale::CAPTION)
-                            .color(p.text_muted),
+                            .color(pull_c),
+                        );
+                    }
+                    if sub_ahead > 0 {
+                        sub_tip = sub_tip.push(
+                            text(format!(
+                                "↑ {sub_ahead} commit{} to push",
+                                if sub_ahead == 1 { "" } else { "s" }
+                            ))
+                            .size(type_scale::CAPTION)
+                            .color(push_c),
+                        );
+                    }
+                    if !sub.url.is_empty() {
+                        sub_tip = sub_tip.push(
+                            text(sub.url.clone())
+                                .size(type_scale::CAPTION)
+                                .color(p.text_muted),
+                        );
+                    }
+                    sub_tip = sub_tip.push(
+                        text(if !sub.initialized {
+                            "Not initialized — run Update Submodules"
+                        } else if sub_dirty {
+                            "Dirty submodule — click to open"
+                        } else {
+                            "Click to open submodule in GitFleet"
+                        })
+                        .size(type_scale::CAPTION)
+                        .color(if sub_dirty {
+                            p.warning_fg
+                        } else {
+                            p.text_muted
+                        }),
                     );
-                }
-                sub_tip = sub_tip.push(
-                    text(if !sub.initialized {
-                        "Not initialized — run Update Submodules"
-                    } else if sub_dirty {
-                        "Dirty submodule — click to open"
-                    } else {
-                        "Click to open submodule in GitFleet"
-                    })
-                    .size(type_scale::CAPTION)
-                    .color(if sub_dirty {
-                        p.warning_fg
-                    } else {
-                        p.text_muted
-                    }),
-                );
+                    tooltip(
+                        sub_btn,
+                        container(sub_tip)
+                            .padding([6, 9])
+                            .style(theme::tooltip_box(p)),
+                        tooltip::Position::Right,
+                    )
+                    .gap(6)
+                    .into()
+                };
 
                 out.push(
-                    row![
-                        Space::with_width(Length::Fixed(sub_btn_left)),
-                        tooltip(
-                            sub_btn,
-                            container(sub_tip)
-                                .padding([6, 9])
-                                .style(theme::tooltip_box(p)),
-                            tooltip::Position::Right,
-                        )
-                        .gap(6),
-                    ]
-                    .align_y(Alignment::Center)
-                    .into(),
+                    row![Space::with_width(Length::Fixed(sub_btn_left)), sub_body]
+                        .align_y(Alignment::Center)
+                        .into(),
                 );
             }
         }
@@ -798,9 +1235,10 @@ impl GitFleetApp {
             col = col.push(
                 container(
                     row![
-                        text(format!("{bulk_count} sel"))
+                        text(format!("{bulk_count} Repo"))
                             .size(type_scale::CAPTION)
-                            .color(p.accent_fg),
+                            .color(p.accent_fg)
+                            .wrapping(text::Wrapping::None),
                         Space::with_width(Length::Fill),
                         tip(
                             button(icons::fetch(14.0, iced::Color::WHITE))

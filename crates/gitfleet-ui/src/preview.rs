@@ -1,7 +1,7 @@
 use crate::theme::{self, Palette, ThemeMode, type_scale};
 use iced::advanced::text::Highlighter as TextHighlighter;
 use iced::widget::{Space, column, container, horizontal_rule, image, markdown, row, svg, text};
-use iced::{Alignment, Color, ContentFit, Element, Length};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Length, alignment};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -282,6 +282,7 @@ pub enum PreviewState {
     Table {
         delimiter: char,
         headers: Vec<String>,
+        col_widths: Vec<f32>,
         rows: Vec<Vec<String>>,
         total_rows: usize,
         raw: String,
@@ -336,12 +337,14 @@ impl PreviewState {
             Self::Table {
                 delimiter,
                 headers,
+                col_widths,
                 rows,
                 total_rows,
                 raw,
             } => Self::Table {
                 delimiter: *delimiter,
                 headers: headers.clone(),
+                col_widths: col_widths.clone(),
                 rows: rows.clone(),
                 total_rows: *total_rows,
                 raw: raw.clone(),
@@ -425,22 +428,64 @@ impl PreviewState {
             };
         }
 
-        // 5. CSV / TSV Table
+        // 5. CSV / TSV Table (RFC-4180 compliant, balanced column widths)
         if ext == "csv" || ext == "tsv" {
-            let delimiter = if ext == "tsv" { '\t' } else { ',' };
-            let mut lines = raw.lines().filter(|l| !l.trim().is_empty());
-            let headers = lines
-                .next()
-                .map(|h| parse_delimited_row(h, delimiter))
-                .unwrap_or_default();
-            let all_rows: Vec<Vec<String>> = lines
-                .map(|l| parse_delimited_row(l, delimiter))
+            let path_str = full_path.to_string_lossy();
+            let delimiter = crate::views::csv_diff::detect_delimiter(&path_str, raw);
+            let records = crate::views::csv_diff::parse_csv_records(raw, delimiter);
+            let (raw_headers, body_slice) = if records.is_empty() {
+                (Vec::new(), &records[..])
+            } else {
+                (records[0].clone(), &records[1..])
+            };
+            let col_count = raw_headers
+                .len()
+                .max(body_slice.iter().map(|r| r.len()).max().unwrap_or(0))
+                .max(1);
+            let sanitize = |s: &str| -> String {
+                let mut out = String::with_capacity(s.len());
+                for ch in s.chars() {
+                    match ch {
+                        '\r' => {}
+                        '\n' => out.push_str(" ↵ "),
+                        '\t' => out.push_str("  "),
+                        c if c.is_control() => {}
+                        c => out.push(c),
+                    }
+                }
+                out
+            };
+            let pad = |cells: &[String]| -> Vec<String> {
+                (0..col_count)
+                    .map(|i| cells.get(i).map(|s| sanitize(s)).unwrap_or_default())
+                    .collect()
+            };
+            let headers: Vec<String> = if raw_headers.is_empty() {
+                (1..=col_count).map(|i| format!("col_{i}")).collect()
+            } else {
+                pad(&raw_headers)
+            };
+            let total_rows = body_slice.len();
+            let rows: Vec<Vec<String>> = body_slice.iter().take(1000).map(|r| pad(r)).collect();
+
+            let mut max_chars: Vec<usize> =
+                headers.iter().map(|h| h.chars().count().max(4)).collect();
+            for r in rows.iter().take(400) {
+                for (i, cell) in r.iter().enumerate() {
+                    if let Some(slot) = max_chars.get_mut(i) {
+                        *slot = (*slot).max(cell.chars().count());
+                    }
+                }
+            }
+            let col_widths: Vec<f32> = max_chars
+                .into_iter()
+                .map(|chars| ((chars as f32) * 8.1 + 22.0).clamp(80.0, 280.0))
                 .collect();
-            let total_rows = all_rows.len();
-            let rows = all_rows.into_iter().take(200).collect();
+
             return Self::Table {
                 delimiter,
                 headers,
+                col_widths,
                 rows,
                 total_rows,
                 raw: raw.to_string(),
@@ -509,6 +554,15 @@ impl PreviewState {
             Self::Json { .. } | Self::Config { .. } | Self::Code { .. } => true,
             Self::Markdown { .. } | Self::Table { .. } => raw_mode,
             _ => false,
+        }
+    }
+
+    pub fn preferred_min_width(&self) -> f32 {
+        match self {
+            Self::Table { col_widths, .. } => {
+                (44.0 + col_widths.iter().sum::<f32>() + 24.0).max(420.0)
+            }
+            _ => 380.0,
         }
     }
 
@@ -672,59 +726,166 @@ impl PreviewState {
             Self::Table {
                 delimiter,
                 headers,
+                col_widths,
                 rows,
                 total_rows,
                 ..
             } => {
-                let mut tbl = column![
-                    text(format!(
-                        "{} Table  •  {} columns × {} rows",
-                        if *delimiter == '\t' { "TSV" } else { "CSV" },
-                        headers.len(),
-                        total_rows
-                    ))
-                    .size(type_scale::CAPTION)
-                    .color(p.text_muted),
-                ]
-                .spacing(4);
+                const GUTTER_W: f32 = 44.0;
+                const ROW_H: f32 = 25.0;
+                let format_tag = if *delimiter == '\t' { "TSV" } else { "CSV" };
+                let delim_label = match *delimiter {
+                    '\t' => "Tab",
+                    ';' => "Semicolon",
+                    _ => "Comma",
+                };
+                let grid_line = Color {
+                    a: 0.55,
+                    ..p.border_subtle
+                };
 
-                let mut header_row = row![].spacing(4);
-                for h in headers {
-                    header_row = header_row.push(
+                let meta_bar = container(
+                    row![
                         container(
-                            text(h.clone())
-                                .size(type_scale::CAPTION)
-                                .color(p.accent_fg),
+                            text(format_tag)
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(p.accent_fg)
+                                .wrapping(text::Wrapping::None)
                         )
-                        .width(Length::Fixed(152.0))
-                        .padding([4, 8])
-                        .style(theme::diff_line_box(p.fill_selected, p.accent_fg)),
-                    );
-                }
-                tbl = tbl.push(header_row);
+                        .padding([1, 6])
+                        .style(theme::pill_box(p.fill_selected, p.accent_fg, p.border_default)),
+                        text(format!(
+                            "{} columns × {} rows  ·  Delimiter: {delim_label}",
+                            headers.len(),
+                            total_rows
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(p.text_muted)
+                        .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .padding([4, 8]);
+
+                let make_row = |row_no: Option<usize>,
+                                cells: &[String],
+                                row_bg: Color,
+                                fg: Color,
+                                border_col: Color,
+                                is_header: bool|
+                 -> Element<'a, M> {
+                    let row_h = if is_header { ROW_H + 2.0 } else { ROW_H };
+                    let gutter_label = row_no
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| if is_header { "#".into() } else { String::new() });
+                    let mut r = row![
+                        container(
+                            text(gutter_label)
+                                .size(type_scale::CAPTION)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_muted)
+                                .wrapping(text::Wrapping::None),
+                        )
+                        .width(Length::Fixed(GUTTER_W))
+                        .height(Length::Fixed(row_h))
+                        .padding([0, 6])
+                        .align_x(alignment::Horizontal::Right)
+                        .align_y(alignment::Vertical::Center),
+                    ]
+                    .spacing(0)
+                    .align_y(Alignment::Center);
+
+                    for (idx, &w) in col_widths.iter().enumerate() {
+                        let val = cells.get(idx).cloned().unwrap_or_default();
+                        let cell_text = theme::clipped_line(
+                            text(val)
+                                .size(if is_header {
+                                    type_scale::CAPTION
+                                } else {
+                                    type_scale::CODE
+                                })
+                                .font(theme::CODE_FONT)
+                                .color(fg)
+                                .wrapping(text::Wrapping::None),
+                            Length::Fill,
+                        );
+                        r = r.push(
+                            container(cell_text)
+                                .width(Length::Fixed(w))
+                                .height(Length::Fixed(row_h))
+                                .padding([0, 9])
+                                .align_y(alignment::Vertical::Center),
+                        );
+                    }
+
+                    container(r)
+                        .width(Length::Fill)
+                        .height(Length::Fixed(row_h))
+                        .style(move |_| container::Style {
+                            background: Some(Background::Color(row_bg)),
+                            border: Border {
+                                color: border_col,
+                                width: 0.5,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                };
+
+                let mut tbl = column![
+                    meta_bar,
+                    make_row(
+                        None,
+                        headers,
+                        p.surface_titlebar,
+                        p.text_primary,
+                        p.border_strong,
+                        true,
+                    ),
+                ]
+                .spacing(0);
 
                 for (i, r) in rows.iter().enumerate() {
                     let bg = if i % 2 == 0 {
                         p.surface_panel
                     } else {
-                        p.surface_card
+                        Color {
+                            a: 0.65,
+                            ..p.surface_card
+                        }
                     };
-                    let mut r_ui = row![].spacing(4);
-                    for cell in r {
-                        r_ui = r_ui.push(
-                            container(
-                                text(cell.clone())
-                                    .size(type_scale::CAPTION)
-                                    .color(p.text_primary),
-                            )
-                            .width(Length::Fixed(152.0))
-                            .padding([4, 8])
-                            .style(theme::diff_line_box(bg, p.text_primary)),
-                        );
-                    }
-                    tbl = tbl.push(r_ui);
+                    tbl = tbl.push(make_row(
+                        Some(i + 2),
+                        r,
+                        bg,
+                        p.text_secondary,
+                        grid_line,
+                        false,
+                    ));
                 }
-                container(tbl).padding(8).width(Length::Fill).into()
+
+                if *total_rows > rows.len() {
+                    tbl = tbl.push(
+                        container(
+                            text(format!(
+                                "Showing first {} of {} rows — click 'Select Text' to inspect raw CSV.",
+                                rows.len(),
+                                total_rows
+                            ))
+                            .size(type_scale::CAPTION)
+                            .color(p.warning_fg),
+                        )
+                        .padding([8, 12])
+                        .width(Length::Fill)
+                        .style(theme::section_header_box(p)),
+                    );
+                }
+
+                tbl = tbl.push(Space::with_height(Length::Fixed(14.0)));
+                tbl.width(Length::Fill).into()
             }
 
             Self::Config { kind, content } => {
@@ -865,24 +1026,6 @@ impl PreviewState {
             .into(),
         }
     }
-}
-
-fn parse_delimited_row(line: &str, delim: char) -> Vec<String> {
-    let mut cells = Vec::new();
-    let mut cur = String::new();
-    let mut in_quotes = false;
-    for ch in line.chars() {
-        if ch == '"' {
-            in_quotes = !in_quotes;
-        } else if ch == delim && !in_quotes {
-            cells.push(cur.trim().to_string());
-            cur.clear();
-        } else {
-            cur.push(ch);
-        }
-    }
-    cells.push(cur.trim().to_string());
-    cells
 }
 
 fn format_bytes(b: u64) -> String {

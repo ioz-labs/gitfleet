@@ -2632,7 +2632,7 @@ pub(crate) fn render_file_preview<'a>(
     }
 
     let content = state.view(p, theme_mode, Message::PreviewLinkClicked);
-    slim_scroll_h(content, 380.0, p)
+    slim_scroll_h(content, state.preferred_min_width(), p)
 }
 
 #[cfg(test)]

@@ -62,12 +62,15 @@ impl GitFleetApp {
                         self.statuses.insert(id, summary);
                         if is_selected {
                             self.prune_file_selection();
+                            let mut follow_up = Vec::new();
+                            follow_up.push(self.sync_active_working_file_after_status());
                             if has_staged && let Some(repo) = self.current_repo() {
-                                return self.scan_hygiene_task(repo);
+                                follow_up.push(self.scan_hygiene_task(repo));
                             } else {
                                 self.staged_secrets.clear();
                                 self.oversized_files.clear();
                             }
+                            return Task::batch(follow_up);
                         }
                     }
                     Err(e) => {
