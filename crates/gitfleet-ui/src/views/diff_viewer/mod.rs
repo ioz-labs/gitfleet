@@ -466,113 +466,14 @@ impl GitFleetApp {
             BottomViewMode::ResolveConflicts => self.view_conflict_solver(p),
         };
 
-        let mut panel_col = column![
+        column![
             header,
             horizontal_rule(1).style(theme::subtle_rule(p)),
             body
         ]
         .spacing(6)
-        .height(Length::Fill);
-
-        let show_format_strip = !is_raster_only
-            && (self.active_file_path.is_some() || self.open_doc_id.is_some())
-            && !matches!(
-                self.bottom_mode,
-                BottomViewMode::ImageDiff | BottomViewMode::CsvDiff
-            );
-        if show_format_strip {
-            panel_col = panel_col
-                .push(horizontal_rule(1).style(theme::subtle_rule(p)))
-                .push(self.view_format_menu_strip(p));
-        }
-
-        panel_col.into()
-    }
-
-    fn view_format_menu_strip(&self, p: Palette) -> Element<'_, Message> {
-        let mut strip = row![Space::with_width(Length::Fill)]
-            .spacing(4)
-            .align_y(Alignment::Center);
-
-        if self.open_doc_id.is_some() {
-            strip = strip
-                .push(tip(
-                    button(
-                        row![
-                            text(self.open_doc_encoding.label())
-                                .size(type_scale::BADGE)
-                                .color(if self.show_encoding_modal {
-                                    p.accent_fg
-                                } else {
-                                    p.text_secondary
-                                })
-                                .wrapping(text::Wrapping::None),
-                            icons::chevron_down(10.0, p.text_muted),
-                        ]
-                        .spacing(3)
-                        .align_y(Alignment::Center),
-                    )
-                    .padding([2, 6])
-                    .style(theme::vscode_status_item(p))
-                    .on_press(Message::ToggleEncodingModal),
-                    "Select File Encoding (Save / Reopen)",
-                    tooltip::Position::Top,
-                    p,
-                ))
-                .push(tip(
-                    button(
-                        row![
-                            text(self.open_doc_line_ending.label())
-                                .size(type_scale::BADGE)
-                                .font(theme::CODE_FONT)
-                                .color(if self.show_eol_modal {
-                                    p.accent_fg
-                                } else {
-                                    p.text_secondary
-                                })
-                                .wrapping(text::Wrapping::None),
-                            icons::chevron_down(10.0, p.text_muted),
-                        ]
-                        .spacing(3)
-                        .align_y(Alignment::Center),
-                    )
-                    .padding([2, 6])
-                    .style(theme::vscode_status_item(p))
-                    .on_press(Message::ToggleEolModal),
-                    "Select End of Line Sequence (LF / CRLF)",
-                    tooltip::Position::Top,
-                    p,
-                ));
-        }
-
-        let lang_col = self.open_doc_language.badge_color(self.theme_mode);
-        strip = strip.push(tip(
-            button(
-                row![
-                    container(Space::new(Length::Fixed(6.0), Length::Fixed(6.0)))
-                        .style(theme::dot_box(lang_col)),
-                    text(self.open_doc_language.label())
-                        .size(type_scale::BADGE)
-                        .color(if self.show_syntax_modal {
-                            p.accent_fg
-                        } else {
-                            p.text_secondary
-                        })
-                        .wrapping(text::Wrapping::None),
-                    icons::chevron_down(10.0, p.text_muted),
-                ]
-                .spacing(4)
-                .align_y(Alignment::Center),
-            )
-            .padding([2, 6])
-            .style(theme::vscode_status_item(p))
-            .on_press(Message::ToggleSyntaxModal),
-            "Select Syntax Highlighting Language",
-            tooltip::Position::Top,
-            p,
-        ));
-
-        container(strip).padding([0, 2]).width(Length::Fill).into()
+        .height(Length::Fill)
+        .into()
     }
 
     pub(crate) fn view_unified_diff(&self, p: Palette) -> Element<'_, Message> {
