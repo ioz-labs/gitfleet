@@ -750,7 +750,7 @@ impl DetachedViewerState {
         } else if let Some(name) = &self.search_root_name {
             (name.clone(), false)
         } else {
-            ("Independent Studio".into(), false)
+            (String::new(), false)
         }
     }
 

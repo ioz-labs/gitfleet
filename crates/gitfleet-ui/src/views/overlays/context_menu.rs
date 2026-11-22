@@ -1042,7 +1042,7 @@ impl GitFleetApp {
                 }
                 items = items.push(ctx_btn(
                     icons::external_window(12.0, p.accent_fg).into(),
-                    "Open in Independent Popup".into(),
+                    "Open in GitFleet Studio".into(),
                     Message::OpenDetachedForChangedFile(file.clone()),
                     false,
                 ));
@@ -1111,7 +1111,7 @@ impl GitFleetApp {
                 );
                 items = items.push(ctx_btn(
                     icons::external_window(12.0, p.accent_fg).into(),
-                    "Open in Independent Popup".into(),
+                    "Open in GitFleet Studio".into(),
                     Message::OpenDetachedForRepoFile(path.clone()),
                     false,
                 ));

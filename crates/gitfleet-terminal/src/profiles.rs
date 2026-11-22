@@ -135,6 +135,8 @@ pub fn detect_profiles() -> Vec<TerminalProfile> {
 }
 
 pub fn launch_external_terminal(cwd: &Path, profile: Option<&TerminalProfile>) -> AppResult<()> {
+    let clean_cwd = gitfleet_core::strip_windows_verbatim_prefix(cwd);
+    let cwd = clean_cwd.as_path();
     #[cfg(target_os = "windows")]
     {
         if let Ok(wt) = which::which("wt") {

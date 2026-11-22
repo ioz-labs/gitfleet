@@ -1,5 +1,8 @@
 use directories::ProjectDirs;
-use gitfleet_core::{AppError, AppEvent, AppResult, EventBus, RepoId};
+use gitfleet_core::{
+    AppError, AppEvent, AppResult, EventBus, RepoId, canonicalize_clean,
+    strip_windows_verbatim_prefix,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -331,7 +334,7 @@ pub fn build_scan_result(
     existing_repos: &[RepoEntry],
     max_depth: usize,
 ) -> ScanFolderResult {
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canonical_root = canonicalize_clean(root);
     let mut existing_by_key: HashMap<String, Option<String>> =
         HashMap::with_capacity(existing_repos.len());
     for repo in existing_repos {
@@ -372,10 +375,10 @@ pub fn build_scan_result(
             .map(Path::to_path_buf)
             .ok()
             .or_else(|| {
-                repo_path
-                    .canonicalize()
+                canonicalize_clean(&repo_path)
+                    .strip_prefix(&canonical_root)
                     .ok()
-                    .and_then(|cp| cp.strip_prefix(&canonical_root).ok().map(Path::to_path_buf))
+                    .map(Path::to_path_buf)
             })
             .unwrap_or_default();
 
@@ -549,19 +552,31 @@ fn lock_file_for(workspace_path: &Path) -> PathBuf {
 }
 
 fn normalize_path_key(p: &Path) -> String {
-    let resolved = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let resolved = canonicalize_clean(p);
     let s = resolved.to_string_lossy();
     #[cfg(windows)]
     {
-        s.strip_prefix(r"\\?\")
-            .unwrap_or(&s)
-            .replace('/', "\\")
-            .to_lowercase()
+        s.replace('/', "\\").to_lowercase()
     }
     #[cfg(not(windows))]
     {
         s.into_owned()
     }
+}
+
+/// Strips legacy Windows `\\?\` / `\\?\UNC\` verbatim prefixes persisted in older workspace files
+/// and refreshes `available` flags. Returns `true` if any stored path was cleaned.
+fn sanitize_loaded_workspace_paths(cfg: &mut WorkspaceConfig) -> bool {
+    let mut cleaned_any = false;
+    for repo in &mut cfg.repos {
+        let cleaned = strip_windows_verbatim_prefix(&repo.path);
+        if cleaned != repo.path {
+            repo.path = cleaned;
+            cleaned_any = true;
+        }
+        repo.available = repo.path.exists();
+    }
+    cleaned_any
 }
 
 fn same_workspace_path(a: &Path, b: &Path) -> bool {
@@ -772,6 +787,7 @@ impl WorkspaceService {
 
         // Resume the most recently active workspace if it still exists on disk; otherwise Home Workspace.
         let mut loaded_startup = false;
+        let mut migrated_paths = false;
         if let Some(rp) = recent_workspaces_path() {
             for rec in read_recent_workspaces_file(&rp) {
                 if rec.path.exists()
@@ -779,9 +795,7 @@ impl WorkspaceService {
                     && let Ok(mut loaded) = serde_json::from_str::<WorkspaceConfig>(&raw)
                 {
                     loaded.file_path = Some(rec.path);
-                    for repo in &mut loaded.repos {
-                        repo.available = repo.path.exists();
-                    }
+                    migrated_paths = sanitize_loaded_workspace_paths(&mut loaded);
                     cfg = loaded;
                     loaded_startup = true;
                     break;
@@ -795,20 +809,22 @@ impl WorkspaceService {
                 && let Ok(mut loaded) = serde_json::from_str::<WorkspaceConfig>(&raw)
             {
                 loaded.file_path = Some(home_path.clone());
-                for repo in &mut loaded.repos {
-                    repo.available = repo.path.exists();
-                }
+                migrated_paths = sanitize_loaded_workspace_paths(&mut loaded);
                 cfg = loaded;
             } else {
                 cfg.file_path = Some(home_path);
             }
         }
         let own = Self::acquire_lock_for(cfg.file_path.as_deref());
-        Self {
+        let svc = Self {
             state: RwLock::new(cfg),
             ownership: RwLock::new(own),
             events,
+        };
+        if migrated_paths {
+            svc.auto_save();
         }
+        svc
     }
 
     fn release_current_lock(&self) {
@@ -1163,7 +1179,7 @@ impl WorkspaceService {
     }
 
     pub fn add_repo(&self, path: PathBuf, group: Option<String>) -> AppResult<RepoEntry> {
-        let normalized = path.canonicalize().unwrap_or(path);
+        let normalized = canonicalize_clean(&path);
         if let Ok(guard) = self.state.read()
             && let Some(existing) = guard
                 .repos
@@ -1375,7 +1391,7 @@ impl WorkspaceService {
         repo_id: &RepoId,
         picked_path: PathBuf,
     ) -> AppResult<Option<PrefixRelocation>> {
-        let normalized = picked_path.canonicalize().unwrap_or(picked_path);
+        let normalized = canonicalize_clean(&picked_path);
         let mut suggestion: Option<PrefixRelocation> = None;
 
         if let Ok(mut guard) = self.state.write() {
@@ -1428,7 +1444,7 @@ impl WorkspaceService {
                 if mapping.affected_repo_ids.contains(&repo.id)
                     && let Ok(rel) = repo.path.strip_prefix(&mapping.old_prefix)
                 {
-                    let candidate = mapping.new_prefix.join(rel);
+                    let candidate = strip_windows_verbatim_prefix(&mapping.new_prefix.join(rel));
                     repo.available = candidate.exists();
                     repo.path = candidate;
                     updated += 1;
@@ -1527,9 +1543,7 @@ impl WorkspaceService {
         let raw = std::fs::read_to_string(path)?;
         let mut cfg: WorkspaceConfig = serde_json::from_str(&raw)?;
         cfg.file_path = Some(path.to_path_buf());
-        for repo in &mut cfg.repos {
-            repo.available = repo.path.exists();
-        }
+        let migrated_paths = sanitize_loaded_workspace_paths(&mut cfg);
         let switching = self
             .current()
             .file_path
@@ -1544,6 +1558,9 @@ impl WorkspaceService {
         }
         if let Ok(mut guard) = self.state.write() {
             *guard = cfg.clone();
+        }
+        if migrated_paths {
+            self.auto_save();
         }
         self.record_recent(&cfg.name, path);
         Ok(cfg)
@@ -1594,7 +1611,7 @@ fn import_scanned_repos_into(
     }
 
     for (path, group) in items {
-        let normalized_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let normalized_path = canonicalize_clean(path);
         let key = normalize_path_key(&normalized_path);
         let target_group = group
             .as_deref()
@@ -2204,5 +2221,48 @@ mod tests {
         let remaining_names: Vec<&str> = cfg.repos.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(remaining_names, vec!["notes", "gitfleet"]);
         assert_eq!(cfg.ui.selected_repo_id, Some(r_sibling.id));
+    }
+
+    #[test]
+    fn migrates_legacy_windows_verbatim_paths_and_imports_clean_paths() {
+        let mut cfg = WorkspaceConfig::default();
+        cfg.repos.push(RepoEntry {
+            id: RepoId::new(),
+            name: "gitfleet".into(),
+            path: PathBuf::from(r"\\?\D:\Project\electrogit\gitfleet"),
+            group: None,
+            pinned: false,
+            available: false,
+            secret_key_id: None,
+            secret_profile: None,
+        });
+
+        assert!(sanitize_loaded_workspace_paths(&mut cfg));
+        assert_eq!(
+            cfg.repos[0].path,
+            PathBuf::from(r"D:\Project\electrogit\gitfleet")
+        );
+        // Second call is a no-op
+        assert!(!sanitize_loaded_workspace_paths(&mut cfg));
+
+        // Importing a real temp repo must never persist a `\\?\` prefix
+        let root = std::env::temp_dir().join(format!(
+            "gitfleet_clean_path_import_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo_dir = root.join("demo");
+        std::fs::create_dir_all(repo_dir.join(".git")).unwrap();
+
+        let mut imported_cfg = WorkspaceConfig::default();
+        let (rep, _) = import_scanned_repos_into(&mut imported_cfg, &[(repo_dir, None)], false);
+        assert_eq!(rep.added.len(), 1);
+        let stored = imported_cfg.repos[0].path.to_string_lossy();
+        assert!(
+            !stored.starts_with(r"\\?\"),
+            "Stored repo path should not have Windows verbatim prefix: {stored}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

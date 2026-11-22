@@ -113,7 +113,7 @@ impl AppService {
     }
 
     pub fn reveal_in_file_manager(&self, path: &Path) -> AppResult<()> {
-        let mut target = path.to_path_buf();
+        let mut target = gitfleet_core::strip_windows_verbatim_prefix(path);
         let mut is_file = target.is_file();
         if !target.exists() {
             is_file = false;

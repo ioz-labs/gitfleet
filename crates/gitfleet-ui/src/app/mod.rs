@@ -856,10 +856,12 @@ impl GitFleetApp {
             return;
         };
 
-        let cwd = self
-            .current_repo()
-            .map(|r| r.path)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let cwd = gitfleet_core::strip_windows_verbatim_prefix(
+            &self
+                .current_repo()
+                .map(|r| r.path)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        );
         let repo_id = self.active_repo_key().unwrap_or_default();
 
         // Estimate initial cols/rows based on current window width and split count
@@ -1407,8 +1409,10 @@ impl GitFleetApp {
                     .detached_viewers
                     .get(&window_id)
                     .map(|v| v.window_title_info())
-                    .unwrap_or_else(|| ("Independent Studio".into(), false));
-                if dirty {
+                    .unwrap_or_else(|| (String::new(), false));
+                if label.is_empty() {
+                    "GitFleet Studio".to_string()
+                } else if dirty {
                     format!("● {label} — GitFleet Studio")
                 } else {
                     format!("{label} — GitFleet Studio")

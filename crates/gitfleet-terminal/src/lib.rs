@@ -110,12 +110,13 @@ impl TerminalService {
             })
             .map_err(|e| AppError::Terminal(format!("Failed opening PTY: {e}")))?;
 
+        let clean_cwd = gitfleet_core::strip_windows_verbatim_prefix(cwd);
         let mut cmd = CommandBuilder::new(&profile.command);
         for arg in &profile.args {
             cmd.arg(arg);
         }
-        if cwd.exists() {
-            cmd.cwd(cwd);
+        if clean_cwd.exists() {
+            cmd.cwd(&clean_cwd);
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");

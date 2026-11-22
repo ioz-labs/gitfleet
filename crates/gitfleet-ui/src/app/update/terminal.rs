@@ -24,10 +24,14 @@ impl GitFleetApp {
             Message::TerminalOpenExternalWindow(profile_id) => {
                 self.show_terminal_menu = false;
                 self.terminal_menu_submenu = TerminalMenuSubmenu::None;
-                let cwd = self
-                    .current_repo()
-                    .map(|r| r.path)
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+                let cwd = gitfleet_core::strip_windows_verbatim_prefix(
+                    &self
+                        .current_repo()
+                        .map(|r| r.path)
+                        .unwrap_or_else(|| {
+                            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                        }),
+                );
                 let target_prof = profile_id.or_else(|| self.service.settings().default_terminal_profile);
                 match self
                     .service

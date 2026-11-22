@@ -97,7 +97,7 @@ impl GitFleetApp {
                         .padding([4, 7])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::OpenDetachedViewer),
-                    "Open Independent Studio Popup (Edit, Search & Replace, Preview, Diff)",
+                    "Open GitFleet Studio (Edit, Search & Replace, Preview, Diff)",
                     tooltip::Position::Bottom,
                     p,
                 ),

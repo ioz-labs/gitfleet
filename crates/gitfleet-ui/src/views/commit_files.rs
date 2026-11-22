@@ -1339,7 +1339,7 @@ impl GitFleetApp {
             .padding([4, 8])
             .style(theme::subtle_btn(p))
             .on_press(search_msg.clone()),
-            "VS Code-style Search & Replace in files (opens Independent Popup)",
+            "VS Code-style Search & Replace in files (opens GitFleet Studio)",
             tooltip::Position::Bottom,
             p,
         ));
@@ -1349,7 +1349,7 @@ impl GitFleetApp {
                 .padding([5, 6])
                 .style(theme::subtle_btn(p))
                 .on_press(search_msg),
-            "Search & Replace in files (opens Independent Popup)",
+            "Search & Replace in files (opens GitFleet Studio)",
             tooltip::Position::Bottom,
             p,
         ));
