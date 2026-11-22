@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 gitfleet-core.workspace = true
+gitfleet-docs.workspace = true
 ignore.workspace = true
 regex.workspace = true
 serde.workspace = true

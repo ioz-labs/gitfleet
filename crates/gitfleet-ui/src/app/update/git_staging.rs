@@ -23,7 +23,20 @@ impl GitFleetApp {
                         self.load_all_files_task(repo.clone()),
                     ];
                     if self.graph_tab == GraphTab::Reflog {
-                        tasks.push(self.load_reflog_task(repo));
+                        tasks.push(self.load_reflog_task(repo.clone()));
+                    }
+                    if self.show_git_flow_modal {
+                        let svc = self.service.clone();
+                        let rpath = repo.path.clone();
+                        tasks.push(Task::perform(
+                            async move {
+                                svc.git
+                                    .get_git_flow_state(&rpath)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            },
+                            Message::GitFlowStateLoaded,
+                        ));
                     }
                     if let Some((parent_id, _)) = &self.active_submodule
                         && let Some(parent) = self

@@ -27,6 +27,12 @@ impl GitFleetApp {
                     ThemeMode::Dark => ThemeMode::Light,
                     ThemeMode::Light => ThemeMode::Dark,
                 };
+                self.rebuild_diff_cache();
+                for viewer in self.detached_viewers.values_mut() {
+                    for tab in &mut viewer.tabs {
+                        tab.rebuild_diff_cache(self.theme_mode);
+                    }
+                }
                 let mut s = self.service.settings();
                 s.theme = match self.theme_mode {
                     ThemeMode::Dark => "dark".into(),
@@ -38,6 +44,12 @@ impl GitFleetApp {
             }
             Message::SetThemeMode(mode) => {
                 self.theme_mode = mode;
+                self.rebuild_diff_cache();
+                for viewer in self.detached_viewers.values_mut() {
+                    for tab in &mut viewer.tabs {
+                        tab.rebuild_diff_cache(self.theme_mode);
+                    }
+                }
                 let mut s = self.service.settings();
                 s.theme = match mode {
                     ThemeMode::Dark => "dark".into(),
@@ -49,6 +61,9 @@ impl GitFleetApp {
             }
             Message::ToggleCommandPalette => {
                 self.show_branch_popover = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 self.show_palette = !self.show_palette;
                 self.palette_query.clear();
                 if self.show_palette {
@@ -65,6 +80,9 @@ impl GitFleetApp {
                     return Task::none();
                 }
                 self.show_palette = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 self.context_menu = None;
                 self.show_branch_popover = !self.show_branch_popover;
                 self.branch_filter_query.clear();
@@ -158,8 +176,12 @@ impl GitFleetApp {
                 self.show_branch_popover = false;
                 self.show_merge_modal = false;
                 self.show_git_flow_modal = false;
+                self.git_flow_editing_config = false;
                 self.show_workspace_modal = false;
                 self.show_settings_modal = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 Task::none()
             }
             Message::ToggleDrawer(tab) => {
@@ -205,14 +227,33 @@ impl GitFleetApp {
             }
             Message::OpenDetachedViewer => {
                 let snapshot = crate::views::detached_viewer::DetachedViewerState::from_host(self);
-                self.pending_detached_viewers.push_back(snapshot);
-                let (_id, task) = window::open(window::Settings {
-                    size: iced::Size::new(1080.0, 740.0),
-                    min_size: Some(iced::Size::new(640.0, 420.0)),
-                    icon: crate::app::app_window_icon(),
-                    ..Default::default()
-                });
-                task.map(Message::ViewerOpened)
+                self.open_detached_viewer_window(snapshot)
+            }
+            Message::OpenDetachedForChangedFile(file) => {
+                let path = file.path.clone();
+                let state = crate::views::detached_viewer::DetachedViewerState::for_repo_file(
+                    self,
+                    &path,
+                    Some(file),
+                    false,
+                );
+                self.open_detached_viewer_window(state)
+            }
+            Message::OpenDetachedForRepoFile(rel_path) => {
+                let state = crate::views::detached_viewer::DetachedViewerState::for_repo_file(
+                    self,
+                    &rel_path,
+                    None,
+                    true,
+                );
+                self.open_detached_viewer_window(state)
+            }
+            Message::OpenDetachedSearch(initial_query) => {
+                let state = crate::views::detached_viewer::DetachedViewerState::for_search(
+                    self,
+                    initial_query,
+                );
+                self.open_detached_viewer_window(state)
             }
             Message::ViewerOpened(id) => {
                 self.windows.insert(id, WindowKind::DetachedViewer);
@@ -221,9 +262,123 @@ impl GitFleetApp {
                     .pop_front()
                     .unwrap_or_else(crate::views::detached_viewer::DetachedViewerState::empty);
                 self.detached_viewers.insert(id, state);
-                Task::none()
+                self.on_detached_viewer_opened(id)
             }
             Message::Detached(id, action) => self.update_detached_viewer(id, action),
+            Message::ShortcutSave(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::SaveEditor,
+                    )
+                } else {
+                    self.update(Message::SaveDocument)
+                }
+            }
+            Message::ShortcutFind(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::OpenInFileFind {
+                            show_replace: false,
+                        },
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutReplace(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::OpenInFileFind {
+                            show_replace: true,
+                        },
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutSearchFiles(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::OpenAndFocusSearchSidebar,
+                    )
+                } else {
+                    self.update(Message::ToggleDrawer(DrawerTab::Search))
+                }
+            }
+            Message::ShortcutExplorer(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::OpenAndFocusExplorer,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutToggleSidebar(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::ToggleSidebar,
+                    )
+                } else {
+                    self.update(Message::ToggleBranchPopover)
+                }
+            }
+            Message::ShortcutCloseTab(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::CloseActiveTab,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutOpenFile(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::PickSingleFile,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutZoomFont(id, delta) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::AdjustFontSize(delta),
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutToggleWrap(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::ToggleWordWrap,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ShortcutEscape(id) => {
+                if self.detached_viewers.contains_key(&id) {
+                    self.update_detached_viewer(
+                        id,
+                        crate::views::detached_viewer::DetachedAction::EscapePressed,
+                    )
+                } else {
+                    self.update(Message::CloseOverlays)
+                }
+            }
             Message::WindowClosed(id) => {
                 self.detached_viewers.remove(&id);
                 let kind = self.windows.remove(&id);
@@ -373,6 +528,9 @@ impl GitFleetApp {
                 self.show_merge_modal = false;
                 self.show_git_flow_modal = false;
                 self.show_workspace_modal = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 self.show_terminal_menu = false;
                 self.terminal_menu_submenu = TerminalMenuSubmenu::None;
                 self.show_settings_modal = !self.show_settings_modal;
@@ -487,6 +645,9 @@ impl GitFleetApp {
             // ── Context Menus, Confirmations & Clipboard ──────────────────────────
             Message::CursorMoved(win_id, pos) => {
                 if self.windows.get(&win_id) != Some(&WindowKind::Host) {
+                    if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                        v.cursor_pos = pos;
+                    }
                     return Task::none();
                 }
                 self.cursor_pos = pos;
@@ -571,6 +732,7 @@ impl GitFleetApp {
             }
             Message::WindowUnfocused => {
                 self.keyboard_modifiers = Modifiers::empty();
+                self.terminal_focused = false;
                 Task::none()
             }
             Message::OpenContextMenu(target) => {
@@ -588,7 +750,7 @@ impl GitFleetApp {
                 self.dragging_repo = None;
                 self.drag_hover_group = None;
                 self.context_menu = Some(ContextMenuState {
-                    position: self.cursor_pos,
+                    position: self.current_host_cursor_pos(),
                     target,
                     submenu: ContextMenuSubmenu::None,
                 });
@@ -683,6 +845,16 @@ impl GitFleetApp {
                     ConfirmAction::StashSelected => self.update(Message::StashSelected),
                     ConfirmAction::UndoLastAction => self.update(Message::UndoLastAction),
                     ConfirmAction::BulkOp { op } => self.update(Message::RunBulkOp(op)),
+                    ConfirmAction::UninitGitFlow => self.update(Message::UninitGitFlow),
+                    ConfirmAction::AbortGitFlowBranch {
+                        branch,
+                        base_branch,
+                        force,
+                    } => self.update(Message::AbortGitFlowBranch {
+                        branch,
+                        base_branch,
+                        force,
+                    }),
                 }
             }
             Message::OpenCherryPickModal { revisions, detail } => {
@@ -913,5 +1085,19 @@ impl GitFleetApp {
             Some(msg) => Err(msg),
             None => Ok(task),
         }
+    }
+
+    pub(crate) fn open_detached_viewer_window(
+        &mut self,
+        state: crate::views::detached_viewer::DetachedViewerState,
+    ) -> Task<Message> {
+        self.pending_detached_viewers.push_back(state);
+        let (_id, task) = window::open(window::Settings {
+            size: iced::Size::new(1180.0, 760.0),
+            min_size: Some(iced::Size::new(720.0, 460.0)),
+            icon: crate::app::app_window_icon(),
+            ..Default::default()
+        });
+        task.map(Message::ViewerOpened)
     }
 }

@@ -139,7 +139,17 @@ fn render_folder_tree<'a>(
     let expanded = has_children && is_folder_expanded(full_path, ctx.expanded_dirs);
     let is_sel = ctx.selected_dir == full_path;
     let indent = (depth as f32) * 12.0;
-    let est_w = indent + 50.0 + label.chars().count() as f32 * 7.0 + 30.0;
+    let count_str = format!("({})", node.total_files);
+    let est_w = indent
+        + 15.0 // chevron slot
+        + 2.0
+        + 12.0 // button h-pad
+        + 12.0 // folder icon
+        + 5.0
+        + theme::estimate_text_width(label, type_scale::CAPTION, false)
+        + 5.0
+        + theme::estimate_text_width(&count_str, type_scale::BADGE, false)
+        + 6.0;
     if est_w > *max_tree_w {
         *max_tree_w = est_w;
     }
@@ -174,20 +184,24 @@ fn render_folder_tree<'a>(
         row![
             folder_icon,
             theme::clipped_line(
-                text(label.to_string())
-                    .size(type_scale::CAPTION)
-                    .color(if is_sel {
-                        p.text_primary
-                    } else if node.has_dirty {
-                        p.warning_fg
-                    } else {
-                        p.text_primary
-                    }),
+                row![
+                    text(label.to_string())
+                        .size(type_scale::CAPTION)
+                        .color(if is_sel {
+                            p.text_primary
+                        } else if node.has_dirty {
+                            p.warning_fg
+                        } else {
+                            p.text_primary
+                        }),
+                    text(count_str)
+                        .size(type_scale::BADGE)
+                        .color(p.text_muted),
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center),
                 Length::Fill,
             ),
-            text(format!("{}", node.total_files))
-                .size(type_scale::BADGE)
-                .color(p.text_muted),
         ]
         .spacing(5)
         .align_y(Alignment::Center),
@@ -533,22 +547,19 @@ impl GitFleetApp {
                     );
                 }
 
-                let footer = row![
-                    checkbox("Amend last commit", self.amend_commit)
-                        .on_toggle(Message::AmendToggled)
-                        .size(14)
-                        .text_size(type_scale::CAPTION),
-                    Space::with_width(Length::Fill),
+                let commit_actions = row![
                     tip(
                         button(
                             row![
                                 icons::check(icon_size::XS, p.text_primary),
-                                text("Commit").size(type_scale::CAPTION),
+                                text("Commit")
+                                    .size(type_scale::CAPTION)
+                                    .wrapping(text::Wrapping::None),
                             ]
                             .spacing(5)
                             .align_y(Alignment::Center),
                         )
-                        .padding([4, 11])
+                        .padding([4, 9])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::CommitSubmitted),
                         "Create commit from staged changes (Ctrl+Enter)",
@@ -559,12 +570,14 @@ impl GitFleetApp {
                         button(
                             row![
                                 icons::push(icon_size::XS, Color::WHITE),
-                                text("Commit & Push").size(type_scale::CAPTION),
+                                text("Commit & Push")
+                                    .size(type_scale::CAPTION)
+                                    .wrapping(text::Wrapping::None),
                             ]
                             .spacing(5)
                             .align_y(Alignment::Center),
                         )
-                        .padding([4, 11])
+                        .padding([4, 9])
                         .style(theme::primary_btn(p))
                         .on_press(Message::CommitAndPushSubmitted),
                         "Commit staged changes and push to remote (Ctrl+Shift+Enter)",
@@ -574,6 +587,17 @@ impl GitFleetApp {
                 ]
                 .spacing(space::XS)
                 .align_y(Alignment::Center);
+
+                let footer = theme::responsive_pair(
+                    checkbox("Amend last commit", self.amend_commit)
+                        .on_toggle(Message::AmendToggled)
+                        .size(14)
+                        .spacing(6)
+                        .text_size(type_scale::CAPTION),
+                    commit_actions,
+                    space::XS,
+                    space::XS,
+                );
 
                 let mut pane_col = column![
                     hdr,
@@ -878,12 +902,41 @@ impl GitFleetApp {
             ]
             .spacing(space::XXS)
             .align_y(Alignment::Center),
-            text_input("Filter files…", &self.file_filter)
-                .on_input(Message::FileFilterChanged)
-                .padding([4, 8])
-                .size(type_scale::CAPTION)
-                .width(Length::Fill)
-                .style(theme::dark_input(p)),
+            row![
+                text_input("Filter files…", &self.file_filter)
+                    .on_input(Message::FileFilterChanged)
+                    .padding([4, 8])
+                    .size(type_scale::CAPTION)
+                    .width(Length::Fill)
+                    .style(theme::dark_input(p)),
+                tip(
+                    button(
+                        row![
+                            icons::folder_search(12.0, p.accent_fg),
+                            text("Search")
+                                .size(type_scale::CAPTION)
+                                .color(p.text_primary)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([4, 8])
+                    .style(theme::subtle_btn(p))
+                    .on_press(Message::OpenDetachedSearch(
+                        if self.file_filter.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.file_filter.trim().to_string())
+                        },
+                    )),
+                    "VS Code-style Search & Replace in files (opens Independent Popup)",
+                    tooltip::Position::Bottom,
+                    p,
+                ),
+            ]
+            .spacing(space::XS)
+            .align_y(Alignment::Center),
         ]
         .spacing(space::XS);
 
@@ -1115,7 +1168,8 @@ impl GitFleetApp {
         .into()
     }
 
-    /// Reusable 3-column Files table (`Name | State | Relative Directory`) with horizontal scroll.
+    /// Reusable 3-column Files table (`Name | State | Directory`) with tight content-hugging
+    /// column widths and horizontal scroll only when content truly overflows.
     fn view_files_table(
         &self,
         visible_files: Vec<FileChange>,
@@ -1123,48 +1177,74 @@ impl GitFleetApp {
         empty_hint: &'static str,
         p: Palette,
     ) -> Element<'_, Message> {
-        let max_name_chars = visible_files
-            .iter()
-            .map(|f| f.path.rsplit('/').next().unwrap_or(&f.path).chars().count())
-            .max()
-            .unwrap_or(12);
-        let max_dir_chars = visible_files
-            .iter()
-            .map(|f| {
-                let d = parent_dir(&f.path);
-                if d.is_empty() { 1 } else { d.chars().count() }
-            })
-            .max()
-            .unwrap_or(14);
+        let mut max_name_w = theme::estimate_text_width("Name", type_scale::BADGE, false) + 8.0;
+        let mut max_state_w = theme::estimate_text_width("State", type_scale::BADGE, false) + 8.0;
+        let mut max_dir_w = theme::estimate_text_width("Directory", type_scale::BADGE, false) + 8.0;
+        let mut has_conflict = false;
+        let mut has_unstaged = false;
+        let mut has_staged = false;
 
-        let name_min_w = (max_name_chars as f32 * 8.0 + 36.0).clamp(140.0, 380.0);
-        let state_w = 96.0_f32;
-        let dir_min_w = (max_dir_chars as f32 * 7.4 + 20.0).clamp(120.0, 440.0);
-        let actions_w = if is_wt { 58.0_f32 } else { 0.0_f32 };
-        let table_min_w = name_min_w + state_w + dir_min_w + actions_w + 30.0;
-        let name_portion = (name_min_w.round() as u16).max(120);
-        let dir_portion = (dir_min_w.round() as u16).max(100);
+        for f in &visible_files {
+            let fname = f.path.rsplit('/').next().unwrap_or(&f.path);
+            let nw = 12.0 + 5.0 + theme::estimate_text_width(fname, type_scale::BODY, false) + 8.0;
+            if nw > max_name_w {
+                max_name_w = nw;
+            }
+            let sw =
+                theme::estimate_text_width(f.kind.state_label(false), type_scale::BADGE, false)
+                    + 16.0;
+            if sw > max_state_w {
+                max_state_w = sw;
+            }
+            let d = parent_dir(&f.path);
+            let d_disp = if d.is_empty() { "." } else { d };
+            let dw = theme::estimate_text_width(d_disp, type_scale::CAPTION, false) + 8.0;
+            if dw > max_dir_w {
+                max_dir_w = dw;
+            }
+            if f.kind == FileChangeKind::Conflicted {
+                has_conflict = true;
+            } else if f.staged {
+                has_staged = true;
+            } else {
+                has_unstaged = true;
+            }
+        }
+
+        let name_w = max_name_w.clamp(68.0, 260.0);
+        let state_w = max_state_w.clamp(54.0, 78.0);
+        let dir_min_w = max_dir_w.clamp(56.0, 300.0);
+        let actions_w = if !is_wt {
+            0.0_f32
+        } else if has_conflict {
+            76.0_f32
+        } else if has_unstaged {
+            50.0_f32
+        } else if has_staged {
+            26.0_f32
+        } else {
+            0.0_f32
+        };
+        let table_min_w = name_w + state_w + dir_min_w + actions_w + 26.0;
 
         let mut col_hdr = row![
             theme::clipped_line(
                 text("Name").size(type_scale::BADGE).color(p.text_muted),
-                Length::FillPortion(name_portion),
+                Length::Fixed(name_w),
             ),
             theme::clipped_line(
                 text("State").size(type_scale::BADGE).color(p.text_muted),
                 Length::Fixed(state_w),
             ),
             theme::clipped_line(
-                text("Relative Directory")
-                    .size(type_scale::BADGE)
-                    .color(p.text_muted),
-                Length::FillPortion(dir_portion),
+                text("Directory").size(type_scale::BADGE).color(p.text_muted),
+                Length::Fill,
             ),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
 
-        if is_wt {
+        if actions_w > 0.0 {
             col_hdr = col_hdr.push(Space::with_width(Length::Fixed(actions_w)));
         }
 
@@ -1209,7 +1289,10 @@ impl GitFleetApp {
             // since Unstaged and Staged now live in separate panels like SmartGit.
             let state_text = file.kind.state_label(false);
 
-            let row_btn = button(
+            let row_btn = theme::pressable_row(
+                p,
+                selected,
+                iced::Padding::from([3, 7]),
                 row![
                     theme::clipped_line(
                         row![
@@ -1220,7 +1303,7 @@ impl GitFleetApp {
                         ]
                         .spacing(5)
                         .align_y(Alignment::Center),
-                        Length::FillPortion(name_portion),
+                        Length::Fixed(name_w),
                     ),
                     container(
                         container(
@@ -1238,16 +1321,13 @@ impl GitFleetApp {
                         text(dir_display.to_string())
                             .size(type_scale::CAPTION)
                             .color(p.text_muted),
-                        Length::FillPortion(dir_portion),
+                        Length::Fill,
                     ),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
-            )
-            .width(Length::Fill)
-            .padding([3, 7])
-            .style(theme::repo_row_btn(p, selected))
-            .on_press(Message::SelectChangedFile(file.clone()));
+                Message::ClickChangedFile(file.clone()),
+            );
 
             let mut line = row![row_btn].spacing(3).align_y(Alignment::Center);
 
@@ -1364,7 +1444,9 @@ impl GitFleetApp {
         ]
         .spacing(2);
 
-        let mut max_dir_w: f32 = 130.0;
+        let all_dirs_label = format!("All dirs ({})", files.len());
+        let mut max_dir_w: f32 =
+            12.0 + 12.0 + 5.0 + theme::estimate_text_width(&all_dirs_label, type_scale::CAPTION, false) + 8.0;
         for (dir, cnt) in dir_counts {
             let is_sel = self.selected_dir_filter.as_deref() == Some(dir.as_str());
             let label = if dir.is_empty() {
@@ -1372,29 +1454,30 @@ impl GitFleetApp {
             } else {
                 dir.clone()
             };
-            let est_w = label.chars().count() as f32 * 6.8 + 56.0;
+            let cnt_str = format!("({cnt})");
+            let est_w = 12.0
+                + 12.0
+                + 5.0
+                + theme::estimate_text_width(&label, type_scale::CAPTION, false)
+                + 5.0
+                + theme::estimate_text_width(&cnt_str, type_scale::BADGE, false)
+                + 8.0;
             if est_w > max_dir_w {
                 max_dir_w = est_w;
             }
             dirs_col = dirs_col.push(
-                button(
+                button(theme::clipped_line(
                     row![
-                        theme::clipped_line(
-                            row![
-                                icons::folder(12.0, p.warning_fg),
-                                text(label).size(type_scale::CAPTION).color(p.text_primary),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                            Length::Fill,
-                        ),
-                        text(format!("{cnt}"))
+                        icons::folder(12.0, p.warning_fg),
+                        text(label).size(type_scale::CAPTION).color(p.text_primary),
+                        text(cnt_str)
                             .size(type_scale::BADGE)
                             .color(p.warning_fg),
                     ]
                     .spacing(5)
                     .align_y(Alignment::Center),
-                )
+                    Length::Fill,
+                ))
                 .width(Length::Fill)
                 .padding([4, 6])
                 .style(theme::repo_row_btn(p, is_sel))
@@ -1402,7 +1485,7 @@ impl GitFleetApp {
             );
         }
 
-        let left_dirs = container(slim_scroll_h(dirs_col, max_dir_w.clamp(130.0, 560.0), p))
+        let left_dirs = container(slim_scroll_h(dirs_col, max_dir_w.clamp(88.0, 480.0), p))
             .width(Length::FillPortion(38))
             .height(Length::Fill)
             .padding(4)
@@ -1450,7 +1533,7 @@ impl GitFleetApp {
             p,
         };
         let mut dir_rows: Vec<Element<'_, Message>> = Vec::new();
-        let mut max_tree_w: f32 = 140.0;
+        let mut max_tree_w: f32 = 90.0;
         render_folder_tree(
             &root_tree,
             &root_label,
@@ -1487,7 +1570,7 @@ impl GitFleetApp {
             };
 
         let mut files_col = column![].spacing(2);
-        let mut max_file_w: f32 = 150.0;
+        let mut max_file_w: f32 = 96.0;
         for f in visible_files {
             let active = self.active_file_path.as_deref() == Some(f.as_str());
             let name = if !q.is_empty() {
@@ -1497,54 +1580,57 @@ impl GitFleetApp {
             } else {
                 f.rsplit('/').next().unwrap_or(f).to_string()
             };
-            let est_w = name.chars().count() as f32 * 7.4 + 52.0;
-            if est_w > max_file_w {
-                max_file_w = est_w;
-            }
             let status_info = dirty_map.get(f.as_str()).copied().map(|(k, _staged)| {
                 let (fg, bg) = file_state_colors(k, p);
                 (k.short_code(), fg, bg)
             });
+            let badge_w = status_info
+                .map(|(code, _, _)| {
+                    6.0 + theme::estimate_text_width(code, type_scale::BADGE, false) + 12.0
+                })
+                .unwrap_or(0.0);
+            let est_w = 14.0
+                + 12.0
+                + 5.0
+                + theme::estimate_text_width(&name, type_scale::BODY, false)
+                + badge_w
+                + 8.0;
+            if est_w > max_file_w {
+                max_file_w = est_w;
+            }
 
-            let file_btn = button(
-                row![
-                    theme::clipped_line(
-                        row![
-                            icons::file_code(
-                                12.0,
-                                status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_muted),
-                            ),
-                            text(name).size(type_scale::BODY).color(
-                                status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_primary)
-                            ),
-                        ]
-                        .spacing(5)
-                        .align_y(Alignment::Center),
-                        Length::Fill,
-                    ),
-                    if let Some((code, fg, bg)) = status_info {
-                        let border = Color { a: 0.42, ..fg };
-                        Element::from(
-                            container(
-                                text(code)
-                                    .size(type_scale::BADGE)
-                                    .color(fg)
-                                    .wrapping(text::Wrapping::None),
-                            )
-                            .padding([1, 5])
-                            .style(theme::pill_box(bg, fg, border)),
-                        )
-                    } else {
-                        Space::with_width(Length::Shrink).into()
-                    }
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
-            )
-            .width(Length::Fill)
-            .padding([4, 7])
-            .style(theme::repo_row_btn(p, active))
-            .on_press(Message::SelectRepoFile(f.clone()));
+            let mut file_inner = row![
+                icons::file_code(
+                    12.0,
+                    status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_muted),
+                ),
+                text(name).size(type_scale::BODY).color(
+                    status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_primary)
+                ),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center);
+            if let Some((code, fg, bg)) = status_info {
+                let border = Color { a: 0.42, ..fg };
+                file_inner = file_inner.push(
+                    container(
+                        text(code)
+                            .size(type_scale::BADGE)
+                            .color(fg)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([1, 5])
+                    .style(theme::pill_box(bg, fg, border)),
+                );
+            }
+
+            let file_btn = theme::pressable_row(
+                p,
+                active,
+                iced::Padding::from([4, 7]),
+                theme::clipped_line(file_inner, Length::Fill),
+                Message::ClickRepoFile(f.clone()),
+            );
 
             files_col = files_col.push(
                 mouse_area(file_btn).on_right_press(Message::OpenContextMenu(
@@ -1555,7 +1641,7 @@ impl GitFleetApp {
 
         let left_dirs = container(slim_scroll_h(
             column(dir_rows).spacing(1),
-            max_tree_w.clamp(140.0, 680.0),
+            max_tree_w.clamp(90.0, 560.0),
             p,
         ))
             .width(Length::FillPortion(42))
@@ -1563,7 +1649,7 @@ impl GitFleetApp {
             .padding(4)
             .style(theme::section_panel_box(p));
 
-        let right_files = container(slim_scroll_h(files_col, max_file_w.clamp(150.0, 720.0), p))
+        let right_files = container(slim_scroll_h(files_col, max_file_w.clamp(96.0, 560.0), p))
             .width(Length::FillPortion(58))
             .height(Length::Fill);
 

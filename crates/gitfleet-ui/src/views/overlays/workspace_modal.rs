@@ -235,11 +235,7 @@ impl GitFleetApp {
             );
         }
         for g in &sorted_groups {
-            let repo_count = ws
-                .repos
-                .iter()
-                .filter(|r| r.group.as_deref() == Some(g.as_str()))
-                .count();
+            let repo_count = gitfleet_workspace::count_repos_in_group(&ws, g);
             let assigned_key_name = ws
                 .group_secret_keys
                 .get(g)
@@ -292,6 +288,7 @@ impl GitFleetApp {
                 .style(theme::subtle_btn(p))
                 .on_press(Message::RequestConfirm(PendingConfirm::delete_group(
                     g.clone(),
+                    repo_count,
                 ))),
             );
             group_rows = group_rows.push(

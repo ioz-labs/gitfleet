@@ -217,6 +217,7 @@ impl GitFleetApp {
             }
             Message::StartResize(target) => {
                 self.active_resize = Some(target);
+                crate::app::subscription::set_stream_cursor_events(true);
                 Task::none()
             }
             Message::EndResize => {
@@ -225,8 +226,10 @@ impl GitFleetApp {
                     sel.dragging = false;
                 }
                 for viewer in self.detached_viewers.values_mut() {
-                    if let Some(sel) = &mut viewer.diff_selection {
-                        sel.dragging = false;
+                    for tab in &mut viewer.tabs {
+                        if let Some(sel) = &mut tab.diff_selection {
+                            sel.dragging = false;
+                        }
                     }
                 }
                 if let Some((repo_id, _)) = self.dragging_repo.take() {

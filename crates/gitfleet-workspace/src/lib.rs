@@ -119,6 +119,63 @@ pub fn parent_group_path(group: &str) -> Option<String> {
         .filter(|p| !p.is_empty())
 }
 
+/// Returns `true` if `repo_group` is inside `group` (exact match or nested subgroup).
+pub fn group_contains_repo(group: &str, repo_group: Option<&str>) -> bool {
+    let norm_group = normalize_group_path(group);
+    if norm_group.is_empty() {
+        return false;
+    }
+    let Some(raw_repo_group) = repo_group else {
+        return false;
+    };
+    let norm_repo = normalize_group_path(raw_repo_group);
+    if norm_repo.is_empty() {
+        return false;
+    }
+    norm_repo == norm_group
+        || norm_repo
+            .strip_prefix(&norm_group)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Counts all repositories in `group` and all of its nested subgroups.
+pub fn count_repos_in_group(cfg: &WorkspaceConfig, group: &str) -> usize {
+    cfg.repos
+        .iter()
+        .filter(|r| group_contains_repo(group, r.group.as_deref()))
+        .count()
+}
+
+fn delete_group_in(cfg: &mut WorkspaceConfig, name: &str) -> Vec<RepoId> {
+    let norm = normalize_group_path(name);
+    if norm.is_empty() {
+        return Vec::new();
+    }
+    let matches_group = |g: &str| -> bool {
+        let ng = normalize_group_path(g);
+        ng == norm || ng.strip_prefix(&norm).is_some_and(|rest| rest.starts_with('/'))
+    };
+    cfg.groups.retain(|g| !matches_group(g));
+    cfg.group_secret_keys.retain(|g, _| !matches_group(g));
+    cfg.ui.collapsed_groups.retain(|g| !matches_group(g));
+
+    let mut removed_ids = Vec::new();
+    cfg.repos.retain(|repo| {
+        if group_contains_repo(&norm, repo.group.as_deref()) {
+            removed_ids.push(repo.id.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if let Some(sel) = &cfg.ui.selected_repo_id
+        && removed_ids.contains(sel)
+    {
+        cfg.ui.selected_repo_id = cfg.repos.first().map(|r| r.id.clone());
+    }
+    removed_ids
+}
+
 fn ensure_group_ancestors(groups: &mut Vec<String>, normalized: &str) {
     let mut acc = String::new();
     for seg in normalized.split('/').filter(|s| !s.is_empty()) {
@@ -1056,30 +1113,14 @@ impl WorkspaceService {
         Ok(())
     }
 
-    pub fn delete_group(&self, name: &str) -> AppResult<()> {
-        let prefix = format!("{name}/");
-        let fallback_parent = parent_group_path(name);
-        if let Ok(mut guard) = self.state.write() {
-            guard
-                .groups
-                .retain(|g| g != name && !g.starts_with(&prefix));
-            guard
-                .group_secret_keys
-                .retain(|g, _| g != name && !g.starts_with(&prefix));
-            guard
-                .ui
-                .collapsed_groups
-                .retain(|g| g != name && !g.starts_with(&prefix));
-            for repo in &mut guard.repos {
-                if let Some(cur) = repo.group.as_deref()
-                    && (cur == name || cur.starts_with(&prefix))
-                {
-                    repo.group = fallback_parent.clone();
-                }
-            }
-        }
+    pub fn delete_group(&self, name: &str) -> AppResult<Vec<RepoId>> {
+        let removed_ids = if let Ok(mut guard) = self.state.write() {
+            delete_group_in(&mut guard, name)
+        } else {
+            Vec::new()
+        };
         self.auto_save();
-        Ok(())
+        Ok(removed_ids)
     }
 
     pub fn toggle_group_collapsed(&self, group_name: &str) {
@@ -2010,5 +2051,86 @@ mod tests {
             secret_key_id: None,
         };
         assert_eq!(resolve_repo_secret_key_in(&cfg, &root_repo), None);
+    }
+
+    #[test]
+    fn delete_group_removes_subgroups_and_all_child_repos() {
+        let mut cfg = WorkspaceConfig {
+            groups: vec![
+                "work".into(),
+                "work/backend".into(),
+                "work/backend/api".into(),
+                "personal".into(),
+            ],
+            ..Default::default()
+        };
+        cfg.group_secret_keys
+            .insert("work/backend".into(), "key-1".into());
+        cfg.group_secret_keys
+            .insert("personal".into(), "key-2".into());
+        cfg.ui.collapsed_groups = vec!["work".into(), "work/backend".into(), "personal".into()];
+
+        let r_direct = RepoEntry {
+            id: RepoId::new(),
+            name: "work-root".into(),
+            path: PathBuf::from("work-root"),
+            group: Some("work".into()),
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        let r_nested = RepoEntry {
+            id: RepoId::new(),
+            name: "auth-service".into(),
+            path: PathBuf::from("auth-service"),
+            group: Some("work/backend/api".into()),
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        let r_sibling = RepoEntry {
+            id: RepoId::new(),
+            name: "notes".into(),
+            path: PathBuf::from("notes"),
+            group: Some("personal".into()),
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        let r_flat = RepoEntry {
+            id: RepoId::new(),
+            name: "gitfleet".into(),
+            path: PathBuf::from("gitfleet"),
+            group: None,
+            pinned: false,
+            available: true,
+            secret_key_id: None,
+        };
+        cfg.ui.selected_repo_id = Some(r_nested.id.clone());
+        cfg.repos = vec![
+            r_direct.clone(),
+            r_nested.clone(),
+            r_sibling.clone(),
+            r_flat.clone(),
+        ];
+
+        assert_eq!(count_repos_in_group(&cfg, "work"), 2);
+        assert_eq!(count_repos_in_group(&cfg, "work/backend"), 1);
+        assert_eq!(count_repos_in_group(&cfg, "personal"), 1);
+
+        let removed = delete_group_in(&mut cfg, "work");
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&r_direct.id));
+        assert!(removed.contains(&r_nested.id));
+
+        assert_eq!(cfg.groups, vec!["personal".to_string()]);
+        assert_eq!(cfg.ui.collapsed_groups, vec!["personal".to_string()]);
+        assert!(!cfg.group_secret_keys.contains_key("work/backend"));
+        assert!(cfg.group_secret_keys.contains_key("personal"));
+
+        // Child repos must be removed completely — NOT flattened to root!
+        let remaining_names: Vec<&str> = cfg.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(remaining_names, vec!["notes", "gitfleet"]);
+        assert_eq!(cfg.ui.selected_repo_id, Some(r_sibling.id));
     }
 }

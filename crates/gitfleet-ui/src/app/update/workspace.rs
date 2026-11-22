@@ -4,7 +4,6 @@ use crate::app::{
 };
 use crate::preview;
 use gitfleet_core::RepoId;
-use gitfleet_git::ParsedDiff;
 use gitfleet_workspace::DEFAULT_SCAN_DEPTH;
 use iced::Task;
 use iced::widget::{text_editor, text_input};
@@ -43,21 +42,30 @@ impl GitFleetApp {
         self.focus_pane = ActiveFocusPane::Other;
         self.active_file_path = None;
         self.diff_title = "Select a file to inspect diff / preview / edit".into();
-        self.diff_parsed = ParsedDiff::default();
+        self.clear_diff_parsed_and_cache();
         self.diff_image = None;
         self.diff_csv = None;
-        self.diff_expanded_gaps.clear();
-        self.diff_selection = None;
         self.diff_is_working_file = false;
         self.diff_is_staged = false;
+        self.open_doc_raw_text = None;
+        self.preview_hydrated = false;
+        self.editor_hydrated = false;
         self.preview_state = preview::PreviewState::Empty;
         self.sync_preview_editor();
         self.editor_content = text_editor::Content::new();
         self.open_doc_id = None;
         self.open_doc_version = None;
+        self.open_doc_path = None;
+        self.open_doc_line_ending = gitfleet_docs::LineEnding::Lf;
+        self.open_doc_encoding = gitfleet_docs::FileEncoding::Utf8;
         self.editor_dirty = false;
+        self.show_eol_modal = false;
+        self.show_encoding_modal = false;
+        self.show_syntax_modal = false;
         self.amend_commit = false;
         self.amend_target = None;
+        self.git_flow_state = gitfleet_git::GitFlowState::default();
+        self.git_flow_editing_config = false;
     }
 
     fn reset_workspace_view_state(&mut self) {
@@ -603,7 +611,10 @@ impl GitFleetApp {
                         self.commit_files.clear();
                         self.all_repo_files.clear();
                         self.diff_title = "No repository selected".into();
-                        self.diff_parsed = ParsedDiff::default();
+                        self.clear_diff_parsed_and_cache();
+                        self.open_doc_raw_text = None;
+                        self.preview_hydrated = false;
+                        self.editor_hydrated = false;
                         self.preview_state = preview::PreviewState::Empty;
                         self.editor_content = text_editor::Content::new();
                         self.persist_ui_prefs();
@@ -647,7 +658,7 @@ impl GitFleetApp {
                         self.commit_files.clear();
                         self.all_repo_files.clear();
                         self.diff_title = "No repository selected".into();
-                        self.diff_parsed = ParsedDiff::default();
+                        self.clear_diff_parsed_and_cache();
                         self.persist_ui_prefs();
                     }
                 }
@@ -702,10 +713,55 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::DeleteGroup(name) => {
-                let _ = self.service.workspace.delete_group(&name);
+                let removed_ids = self
+                    .service
+                    .workspace
+                    .delete_group(&name)
+                    .unwrap_or_default();
+                let removed_cnt = removed_ids.len();
+                for id in &removed_ids {
+                    self.statuses.remove(id);
+                    self.repo_submodules.remove(id);
+                    self.collapsed_repo_submodules.remove(id);
+                    self.bulk_selected.remove(id);
+                }
+                if self
+                    .active_submodule
+                    .as_ref()
+                    .is_some_and(|(pid, _)| removed_ids.contains(pid))
+                {
+                    self.active_submodule = None;
+                }
                 self.toast_is_error = false;
-                self.toast_message =
-                    format!("Deleted group '{name}' (repos moved to parent or root)");
+                self.toast_message = if removed_cnt > 0 {
+                    format!(
+                        "Deleted group '{name}' and removed {removed_cnt} repo(s) from workspace (files on disk untouched)"
+                    )
+                } else {
+                    format!("Deleted group '{name}'")
+                };
+                if self
+                    .selected_repo
+                    .as_ref()
+                    .is_some_and(|cur| removed_ids.contains(cur))
+                {
+                    let next_id = self
+                        .service
+                        .workspace
+                        .current()
+                        .repos
+                        .first()
+                        .map(|r| r.id.clone());
+                    if let Some(next) = next_id {
+                        return self.update(Message::SelectRepo(next));
+                    } else {
+                        self.selected_repo = None;
+                        self.active_submodule = None;
+                        self.clear_active_repo_view_state();
+                        self.diff_title = "No repository selected".into();
+                        self.persist_ui_prefs();
+                    }
+                }
                 Task::none()
             }
             Message::AssignRepoGroup(repo_id, group) => {
@@ -721,9 +777,12 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::RepoMouseDown(id, name) => {
-                self.repo_drag_candidate = Some((id, name, self.cursor_pos));
+                let pos = self.current_host_cursor_pos();
+                self.cursor_pos = pos;
+                self.repo_drag_candidate = Some((id, name, pos));
                 self.dragging_repo = None;
                 self.drag_hover_group = None;
+                crate::app::subscription::set_stream_cursor_events(true);
                 Task::none()
             }
             Message::DragHoverGroup(token, target) => {
@@ -748,6 +807,9 @@ impl GitFleetApp {
                 self.show_merge_modal = false;
                 self.show_git_flow_modal = false;
                 self.show_settings_modal = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 self.rename_workspace_modal = None;
                 self.scan_modal = None;
                 self.scan_request_id = self.scan_request_id.wrapping_add(1);

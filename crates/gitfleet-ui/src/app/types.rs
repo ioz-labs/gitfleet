@@ -154,6 +154,13 @@ pub(crate) enum SettingsTab {
     Diagnostics,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum EncodingModalMode {
+    #[default]
+    SaveWithEncoding,
+    ReopenWithEncoding,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ActionErrorState {
     pub(crate) title: String,
@@ -195,6 +202,12 @@ pub(crate) enum ConfirmAction {
     StashSelected,
     UndoLastAction,
     BulkOp { op: BulkOperation },
+    UninitGitFlow,
+    AbortGitFlowBranch {
+        branch: String,
+        base_branch: String,
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -406,13 +419,29 @@ impl PendingConfirm {
         }
     }
 
-    pub(crate) fn delete_group(name: String) -> Self {
+    pub(crate) fn delete_group(name: String, repo_count: usize) -> Self {
+        let (title, message, detail, confirm_label) = if repo_count > 0 {
+            (
+                "Delete Group & Child Repositories?".into(),
+                format!(
+                    "Deletes this group (and any subgroups) and removes all {repo_count} child repository(ies) from your GitFleet workspace list. Local folders on disk will NOT be deleted."
+                ),
+                Some(format!("{name}  ({repo_count} repo(s))")),
+                format!("Delete Group & {repo_count} Repo(s)"),
+            )
+        } else {
+            (
+                "Delete Repository Group?".into(),
+                "Deletes this empty group (and any empty subgroups inside it).".into(),
+                Some(name.clone()),
+                "Delete Group".into(),
+            )
+        };
         Self {
-            title: "Delete Repository Group?".into(),
-            message: "Deletes this group (and any subgroups inside it). Affected repositories will move to the parent group or root."
-                .into(),
-            detail: Some(name.clone()),
-            confirm_label: "Delete Group".into(),
+            title,
+            message,
+            detail,
+            confirm_label,
             is_danger: true,
             action: ConfirmAction::DeleteGroup { name },
         }
@@ -657,6 +686,53 @@ impl PendingConfirm {
             confirm_label: format!("Run {op:?} ({count})"),
             is_danger: matches!(op, BulkOperation::Push),
             action: ConfirmAction::BulkOp { op },
+        }
+    }
+
+    pub(crate) fn disable_git_flow() -> Self {
+        Self {
+            title: "Remove Git Flow Configuration?".into(),
+            message: "Removes gitflow.branch and gitflow.prefix settings from this repository's local .git/config. Your existing Git branches and commits will NOT be deleted."
+                .into(),
+            detail: Some("git config --local --remove-section gitflow.branch & gitflow.prefix".into()),
+            confirm_label: "Disable Git Flow".into(),
+            is_danger: true,
+            action: ConfirmAction::UninitGitFlow,
+        }
+    }
+
+    pub(crate) fn abort_git_flow_branch(
+        branch: String,
+        base_branch: String,
+        unmerged: bool,
+    ) -> Self {
+        Self {
+            title: if unmerged {
+                format!("Force Cancel Unmerged Branch '{branch}'?")
+            } else {
+                format!("Cancel Git Flow Branch '{branch}'?")
+            },
+            message: if unmerged {
+                format!(
+                    "Branch '{branch}' has commits not merged into '{base_branch}'. Cancelling switches to '{base_branch}' (if checked out) and force-deletes '{branch}' (`git branch -D`) without merging."
+                )
+            } else {
+                format!(
+                    "Switches to '{base_branch}' (if currently checked out) and deletes branch '{branch}' without merging (`git branch -d`)."
+                )
+            },
+            detail: Some(format!("{branch}  →  return to {base_branch}")),
+            confirm_label: if unmerged {
+                "Force Cancel (-D)".into()
+            } else {
+                "Cancel Branch".into()
+            },
+            is_danger: true,
+            action: ConfirmAction::AbortGitFlowBranch {
+                branch,
+                base_branch,
+                force: unmerged,
+            },
         }
     }
 }

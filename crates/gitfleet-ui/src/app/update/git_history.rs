@@ -4,7 +4,7 @@ use crate::app::{
 };
 use chrono::Utc;
 use gitfleet_core::UndoEntry;
-use gitfleet_git::{MergeMode, ResetMode};
+use gitfleet_git::{GitFlowKind, GitFlowPrefixes, GitFlowState, MergeMode, ResetMode};
 use iced::Task;
 use iced::widget::{scrollable, text_editor, text_input};
 use std::time::{Duration, Instant};
@@ -60,18 +60,28 @@ impl GitFleetApp {
                     self.bottom_mode = self.last_text_diff_mode;
                 }
                 if let Some(repo) = self.current_repo() {
+                    self.diff_request_id = self.diff_request_id.wrapping_add(1);
+                    let req_id = self.diff_request_id;
+                    let compact = self.diff_compact;
+                    let lang = crate::syntax::CodeLanguage::PlainText;
+                    let theme_mode = self.theme_mode;
                     let svc = self.service.clone();
                     let title = format!("stash@{{{index}}}");
                     return Task::perform(
                         async move {
-                            let res = svc
-                                .git
-                                .stash_show(&repo.path, index)
+                            let res = match svc.git.stash_show(&repo.path, index).await {
+                                Ok(raw) => tokio::task::spawn_blocking(move || {
+                                    crate::views::diff_viewer::parse_and_cache_diff(
+                                        &raw, compact, lang, theme_mode,
+                                    )
+                                })
                                 .await
-                                .map_err(|e| e.to_string());
-                            (title, res)
+                                .map_err(|e| format!("Diff parse task failed: {e}")),
+                                Err(e) => Err(e.to_string()),
+                            };
+                            (req_id, title, res)
                         },
-                        |(t, r)| Message::DiffLoaded(t, r),
+                        |(id, t, r)| Message::DiffLoaded(id, t, r),
                     );
                 }
                 Task::none()
@@ -251,6 +261,9 @@ impl GitFleetApp {
                 self.show_palette = false;
                 self.show_branch_popover = false;
                 self.show_git_flow_modal = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 self.show_merge_modal = !self.show_merge_modal;
                 self.merge_target_branch = None;
                 self.merge_forecast = None;
@@ -573,7 +586,11 @@ impl GitFleetApp {
                 self.show_palette = false;
                 self.show_branch_popover = false;
                 self.show_merge_modal = false;
+                self.show_eol_modal = false;
+                self.show_encoding_modal = false;
+                self.show_syntax_modal = false;
                 self.show_git_flow_modal = !self.show_git_flow_modal;
+                self.git_flow_editing_config = false;
                 if self.show_git_flow_modal
                     && let Some(repo) = self.current_repo()
                 {
@@ -590,13 +607,46 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            Message::ToggleGitFlowEditConfig => {
+                self.git_flow_editing_config = !self.git_flow_editing_config;
+                if self.git_flow_editing_config {
+                    self.git_flow_main_input = self.git_flow_state.main_or_default().to_string();
+                    self.git_flow_develop_input =
+                        self.git_flow_state.develop_or_default().to_string();
+                    self.git_flow_feature_prefix = self
+                        .git_flow_state
+                        .prefix_for(GitFlowKind::Feature)
+                        .to_string();
+                    self.git_flow_release_prefix = self
+                        .git_flow_state
+                        .prefix_for(GitFlowKind::Release)
+                        .to_string();
+                    self.git_flow_hotfix_prefix = self
+                        .git_flow_state
+                        .prefix_for(GitFlowKind::Hotfix)
+                        .to_string();
+                    self.git_flow_bugfix_prefix = self
+                        .git_flow_state
+                        .prefix_for(GitFlowKind::Bugfix)
+                        .to_string();
+                }
+                Task::none()
+            }
             Message::GitFlowStateLoaded(res) => {
                 if let Ok(st) = res {
-                    if let Some(m) = &st.main_branch {
-                        self.git_flow_main_input = m.clone();
-                    }
-                    if let Some(d) = &st.develop_branch {
-                        self.git_flow_develop_input = d.clone();
+                    if !self.git_flow_editing_config {
+                        self.git_flow_main_input = st
+                            .main_branch
+                            .clone()
+                            .unwrap_or_else(|| "main".to_string());
+                        self.git_flow_develop_input = st
+                            .develop_branch
+                            .clone()
+                            .unwrap_or_else(|| "develop".to_string());
+                        self.git_flow_feature_prefix = st.prefixes.feature.clone();
+                        self.git_flow_release_prefix = st.prefixes.release.clone();
+                        self.git_flow_hotfix_prefix = st.prefixes.hotfix.clone();
+                        self.git_flow_bugfix_prefix = st.prefixes.bugfix.clone();
                     }
                     self.git_flow_state = st;
                 }
@@ -608,6 +658,15 @@ impl GitFleetApp {
             }
             Message::GitFlowDevelopChanged(v) => {
                 self.git_flow_develop_input = v;
+                Task::none()
+            }
+            Message::GitFlowPrefixChanged(kind, v) => {
+                match kind {
+                    GitFlowKind::Feature => self.git_flow_feature_prefix = v,
+                    GitFlowKind::Release => self.git_flow_release_prefix = v,
+                    GitFlowKind::Hotfix => self.git_flow_hotfix_prefix = v,
+                    GitFlowKind::Bugfix => self.git_flow_bugfix_prefix = v,
+                }
                 Task::none()
             }
             Message::GitFlowNameChanged(v) => {
@@ -624,9 +683,29 @@ impl GitFleetApp {
                 if m.is_empty() || d.is_empty() {
                     return Task::none();
                 }
-                self.show_git_flow_modal = false;
-                self.run_git_op("Init Git Flow", move |svc, repo| async move {
-                    svc.git.init_git_flow(&repo.path, &m, &d).await
+                let prefixes = GitFlowPrefixes {
+                    feature: self.git_flow_feature_prefix.clone(),
+                    release: self.git_flow_release_prefix.clone(),
+                    hotfix: self.git_flow_hotfix_prefix.clone(),
+                    bugfix: self.git_flow_bugfix_prefix.clone(),
+                };
+                let label = if self.git_flow_state.initialized {
+                    "Update Git Flow Config"
+                } else {
+                    "Init Git Flow"
+                };
+                self.git_flow_editing_config = false;
+                self.run_git_op(label, move |svc, repo| async move {
+                    svc.git
+                        .init_git_flow_with_prefixes(&repo.path, &m, &d, &prefixes)
+                        .await
+                })
+            }
+            Message::UninitGitFlow => {
+                self.git_flow_editing_config = false;
+                self.git_flow_state = GitFlowState::default();
+                self.run_git_op("Disable Git Flow", move |svc, repo| async move {
+                    svc.git.uninit_git_flow(&repo.path).await
                 })
             }
             Message::StartGitFlow => {
@@ -651,6 +730,61 @@ impl GitFleetApp {
                 self.show_git_flow_modal = false;
                 self.run_git_op("Finish Git Flow", move |svc, repo| async move {
                     svc.git.finish_git_flow(&repo.path, kind, &name).await
+                })
+            }
+            Message::FinishGitFlowBranch(kind, branch) => {
+                self.run_git_op("Finish Git Flow", move |svc, repo| async move {
+                    svc.git.finish_git_flow(&repo.path, kind, &branch).await
+                })
+            }
+            Message::RequestAbortGitFlowBranch {
+                branch,
+                base_branch,
+            } => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let unmerged = svc
+                            .git
+                            .is_branch_unmerged_into(&repo.path, &branch, &base_branch)
+                            .await;
+                        (branch, base_branch, unmerged)
+                    },
+                    |(branch, base_branch, unmerged)| Message::AbortGitFlowBranchChecked {
+                        branch,
+                        base_branch,
+                        unmerged,
+                    },
+                )
+            }
+            Message::AbortGitFlowBranchChecked {
+                branch,
+                base_branch,
+                unmerged,
+            } => {
+                self.pending_confirm = Some(PendingConfirm::abort_git_flow_branch(
+                    branch,
+                    base_branch,
+                    unmerged,
+                ));
+                Task::none()
+            }
+            Message::AbortGitFlowBranch {
+                branch,
+                base_branch,
+                force,
+            } => {
+                self.graph_checked_branches.remove(&branch);
+                if self.selected_branch.as_deref() == Some(branch.as_str()) {
+                    self.selected_branch = None;
+                }
+                self.run_git_op("Cancel Git Flow Branch", move |svc, repo| async move {
+                    svc.git
+                        .abort_git_flow(&repo.path, &branch, &base_branch, force)
+                        .await
                 })
             }
             Message::BranchClicked(branch) => {
@@ -1045,18 +1179,29 @@ impl GitFleetApp {
                     self.bottom_mode = self.last_text_diff_mode;
                 }
                 if let Some(repo) = self.current_repo() {
+                    self.diff_request_id = self.diff_request_id.wrapping_add(1);
+                    let req_id = self.diff_request_id;
+                    let compact = self.diff_compact;
+                    let lang = crate::syntax::CodeLanguage::PlainText;
+                    let theme_mode = self.theme_mode;
                     let svc = self.service.clone();
                     let title = format!("Compare {base_ref} ↔ {target_ref}");
                     return Task::perform(
                         async move {
-                            let res = svc
-                                .git
-                                .diff_refs(&repo.path, &base_ref, &target_ref)
+                            let res = match svc.git.diff_refs(&repo.path, &base_ref, &target_ref).await
+                            {
+                                Ok(raw) => tokio::task::spawn_blocking(move || {
+                                    crate::views::diff_viewer::parse_and_cache_diff(
+                                        &raw, compact, lang, theme_mode,
+                                    )
+                                })
                                 .await
-                                .map_err(|e| e.to_string());
-                            (title, res)
+                                .map_err(|e| format!("Diff parse task failed: {e}")),
+                                Err(e) => Err(e.to_string()),
+                            };
+                            (req_id, title, res)
                         },
-                        |(t, r)| Message::DiffLoaded(t, r),
+                        |(id, t, r)| Message::DiffLoaded(id, t, r),
                     );
                 }
                 Task::none()

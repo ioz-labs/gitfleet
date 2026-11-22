@@ -189,14 +189,20 @@ impl GitFleetApp {
                 .text_size(type_scale::CAPTION)
                 .on_toggle(Message::CommitModalAmendToggled),
             Space::with_width(Length::Fill),
-            button(text("Cancel").size(type_scale::BODY))
-                .padding(pad::BTN_MD)
-                .style(theme::subtle_btn(p))
-                .on_press(Message::CloseOverlays),
+            button(
+                text("Cancel")
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding(pad::BTN_MD)
+            .style(theme::subtle_btn(p))
+            .on_press(Message::CloseOverlays),
             button(
                 row![
                     icons::check(icon_size::XS, p.text_primary),
-                    text("Commit").size(type_scale::BODY),
+                    text("Commit")
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),
@@ -209,7 +215,9 @@ impl GitFleetApp {
             button(
                 row![
                     icons::push(icon_size::XS, Color::WHITE),
-                    text("Commit & Push").size(type_scale::BODY),
+                    text("Commit & Push")
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),

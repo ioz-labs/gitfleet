@@ -92,11 +92,7 @@ pub fn vscode_status_bar(p: Palette) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(Background::Color(p.surface_titlebar)),
         text_color: Some(p.text_secondary),
-        border: Border {
-            color: p.border_subtle,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
+        border: Border::default(),
         ..Default::default()
     }
 }

@@ -352,27 +352,42 @@ impl GitFleetApp {
         let id_check = repo.id.clone();
 
         let left_x = tree::chevron_x(depth);
-        let branch_chars = if repo.available {
-            branch.chars().count() + 2
+        let branch_str = if repo.available {
+            format!("({branch})")
         } else {
-            9
+            "[missing]".to_string()
         };
         let sync_badge_w = if behind > 0 {
-            16.0 + behind.to_string().len() as f32 * 7.2
+            theme::estimate_text_width(&format!("↓{behind}"), type_scale::BADGE, true) + 5.0
         } else {
             0.0
         } + if ahead > 0 {
-            16.0 + ahead.to_string().len() as f32 * 7.2
+            theme::estimate_text_width(&format!("↑{ahead}"), type_scale::BADGE, true) + 5.0
+        } else {
+            0.0
+        };
+        let changed_badge_w = if changed > 0 {
+            theme::estimate_text_width(&format!("{changed}"), type_scale::BADGE, true) + 14.0
+        } else {
+            0.0
+        };
+        let badges_gap = if behind > 0 || ahead > 0 || changed > 0 {
+            5.0
         } else {
             0.0
         };
         let repo_est_w = tree::content_x(depth)
-            + 38.0
-            + repo.name.chars().count() as f32 * 7.5
-            + branch_chars as f32 * 6.9
+            + 16.0 // repo_sync_icon
+            + 6.0  // gap after icon
+            + theme::estimate_text_width(&repo.name, type_scale::BODY, false)
+            + 5.0  // gap before branch
+            + theme::estimate_text_width(&branch_str, type_scale::CAPTION, false)
+            + badges_gap
             + sync_badge_w
-            + if changed > 0 { 28.0 } else { 0.0 }
-            + if !repo.available { 54.0 } else { 0.0 };
+            + changed_badge_w
+            + tree::ROW_PAD_H
+            + if !repo.available { 52.0 } else { 0.0 }
+            + 6.0;
         if repo_est_w > *max_row_w {
             *max_row_w = repo_est_w;
         }
@@ -528,6 +543,28 @@ impl GitFleetApp {
             );
         }
 
+        let mut label_and_badges = row![
+            text(repo.name.clone())
+                .size(type_scale::BODY)
+                .color(if is_being_dragged {
+                    p.text_muted
+                } else {
+                    p.text_primary
+                }),
+            text(branch_str)
+                .size(type_scale::CAPTION)
+                .color(if repo.available {
+                    p.text_muted
+                } else {
+                    p.danger_fg
+                }),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+        if behind > 0 || ahead > 0 || changed > 0 {
+            label_and_badges = label_and_badges.push(right_badges);
+        }
+
         let mut repo_row = row![
             sub_toggle,
             Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
@@ -539,32 +576,7 @@ impl GitFleetApp {
                 Padding::from([tree::ROW_PAD_V, tree::ROW_PAD_H]),
                 row![
                     icon_with_tip,
-                    theme::clipped_line(
-                        row![
-                            text(repo.name.clone())
-                                .size(type_scale::BODY)
-                                .color(if is_being_dragged {
-                                    p.text_muted
-                                } else {
-                                    p.text_primary
-                                }),
-                            text(if repo.available {
-                                format!("({branch})")
-                            } else {
-                                "[missing]".to_string()
-                            })
-                            .size(type_scale::CAPTION)
-                            .color(if repo.available {
-                                p.text_muted
-                            } else {
-                                p.danger_fg
-                            }),
-                        ]
-                        .spacing(5)
-                        .align_y(Alignment::Center),
-                        Length::Fill,
-                    ),
-                    right_badges,
+                    theme::clipped_line(label_and_badges, Length::Fill),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -630,14 +642,41 @@ impl GitFleetApp {
                     .or(sub.branch.as_deref())
                     .or(sub.head_oid.as_deref())
                     .unwrap_or(if sub.initialized { "detached" } else { "uninit" });
-                let sub_sync_w = if sub_behind > 0 { 22.0 } else { 0.0 }
-                    + if sub_ahead > 0 { 22.0 } else { 0.0 };
+                let sub_ref_str = format!("({sub_ref})");
+                let sub_sync_w = if sub_behind > 0 {
+                    theme::estimate_text_width(&format!("↓{sub_behind}"), type_scale::BADGE, true)
+                        + 5.0
+                } else {
+                    0.0
+                } + if sub_ahead > 0 {
+                    theme::estimate_text_width(&format!("↑{sub_ahead}"), type_scale::BADGE, true)
+                        + 5.0
+                } else {
+                    0.0
+                };
+                let sub_changed_w = if sub_changed > 0 {
+                    theme::estimate_text_width(&format!("{sub_changed}"), type_scale::BADGE, true)
+                        + 14.0
+                } else if sub_dirty {
+                    12.0
+                } else {
+                    0.0
+                };
+                let sub_badges_gap = if sub_behind > 0 || sub_ahead > 0 || sub_changed > 0 || sub_dirty
+                {
+                    5.0
+                } else {
+                    0.0
+                };
                 let sub_est_w = tree::content_x(sub_depth)
-                    + 26.0
-                    + sub.path.chars().count() as f32 * 7.5
-                    + (sub_ref.chars().count() + 2) as f32 * 6.9
+                    + theme::estimate_text_width(&sub.path, type_scale::BODY, false)
+                    + 5.0
+                    + theme::estimate_text_width(&sub_ref_str, type_scale::CAPTION, false)
+                    + sub_badges_gap
                     + sub_sync_w
-                    + if sub_changed > 0 || sub_dirty { 26.0 } else { 0.0 };
+                    + sub_changed_w
+                    + tree::ROW_PAD_H
+                    + 6.0;
                 if sub_est_w > *max_row_w {
                     *max_row_w = sub_est_w;
                 }
@@ -697,6 +736,28 @@ impl GitFleetApp {
                     );
                 }
 
+                let mut sub_label_row = row![
+                    text(sub.path.clone())
+                        .size(type_scale::BODY)
+                        .color(if sub.initialized {
+                            p.text_primary
+                        } else {
+                            p.text_muted
+                        }),
+                    text(sub_ref_str)
+                        .size(type_scale::CAPTION)
+                        .color(if !sub.initialized {
+                            p.danger_fg
+                        } else {
+                            p.text_muted
+                        }),
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center);
+                if sub_behind > 0 || sub_ahead > 0 || sub_changed > 0 || sub_dirty {
+                    sub_label_row = sub_label_row.push(sub_badges);
+                }
+
                 let sub_btn = button(
                     row![
                         container(repo_sync_icon(
@@ -705,29 +766,7 @@ impl GitFleetApp {
                         .width(Length::Fixed(tree::LEAD_W))
                         .center_x(Length::Fixed(tree::LEAD_W)),
                         Space::with_width(Length::Fixed(tree::LABEL_GAP)),
-                        theme::clipped_line(
-                            row![
-                                text(sub.path.clone())
-                                    .size(type_scale::BODY)
-                                    .color(if sub.initialized {
-                                        p.text_primary
-                                    } else {
-                                        p.text_muted
-                                    }),
-                                text(format!("({sub_ref})"))
-                                    .size(type_scale::CAPTION)
-                                    .color(if !sub.initialized {
-                                        p.danger_fg
-                                    } else {
-                                        p.text_muted
-                                    }),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                            Length::Fill,
-                        ),
-                        Space::with_width(Length::Fixed(4.0)),
-                        sub_badges,
+                        theme::clipped_line(sub_label_row, Length::Fill),
                     ]
                     .spacing(0)
                     .align_y(Alignment::Center),
@@ -849,9 +888,10 @@ impl GitFleetApp {
             let left_x = tree::chevron_x(depth);
             let count_str = format!("({total})");
             let grp_est_w = tree::content_x(depth)
-                + 20.0
-                + seg_name.chars().count() as f32 * 7.5
-                + (count_str.chars().count() + 1) as f32 * 6.9;
+                + theme::estimate_text_width(seg_name, type_scale::BODY, false)
+                + 5.0
+                + theme::estimate_text_width(&count_str, type_scale::CAPTION, false)
+                + 12.0;
             if grp_est_w > *max_row_w {
                 *max_row_w = grp_est_w;
             }
@@ -1145,7 +1185,7 @@ impl GitFleetApp {
         }
 
         // Render nested groups tree followed directly by ungrouped repos at root level (SmartGit-style)
-        let mut max_row_w: f32 = 180.0;
+        let mut max_row_w: f32 = 120.0;
         self.render_group_subtree(
             &group_tree,
             "",
@@ -1212,7 +1252,7 @@ impl GitFleetApp {
         }
 
         let rows_col = column(rows).spacing(tree::ROW_SPACING);
-        let min_content_w = max_row_w.clamp(180.0, 960.0);
+        let min_content_w = max_row_w.clamp(120.0, 960.0);
 
         let scroll_area = mouse_area(
             container(slim_scroll_h(rows_col, min_content_w, p))

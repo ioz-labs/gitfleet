@@ -1,0 +1,981 @@
+//! Studio window state, per-tab state, action messages, and host snapshot constructors.
+
+use crate::app::{
+    BottomViewMode, DiffGapExpandMode, DiffGapExpansion, DiffSelectionSide, DiffTextSelection,
+    EncodingModalMode, GitFleetApp, GraphSelection, Message,
+};
+use crate::preview::PreviewState;
+use crate::syntax::CodeLanguage;
+use crate::theme::ThemeMode;
+use crate::views::csv_diff::{CsvDiffData, CsvDiffMsg, is_csv_diff_path};
+use crate::views::diff_viewer::{DiffLayoutCache, build_diff_layout_cache};
+use crate::views::image_diff::{
+    ImageDiffData, ImageDiffMode, ImageDiffMsg, ImageDiffViewState, ImageDiffZoom,
+    is_image_diff_path,
+};
+use super::io::{editor_buffer_text, file_display_name, jump_editor_to_span};
+use gitfleet_core::DocumentId;
+use gitfleet_docs::{FileEncoding, LineEnding};
+use gitfleet_git::{FileChange, ParsedDiff};
+use gitfleet_search::{
+    InFileMatch, ReplaceReport, ScopedSearchResult, SearchOptions, find_in_text,
+};
+use iced::widget::{scrollable, text_editor, text_input};
+use iced::{Point, Task};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetachedViewMode {
+    Edit,
+    Preview,
+    SideBySideDiff,
+    UnifiedDiff,
+    ImageDiff,
+    CsvDiff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StudioSidebarPanel {
+    Explorer,
+    Search,
+    Compare,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StudioStatusMenu {
+    Eol,
+    Encoding,
+    Syntax,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DetachedGitDiffTarget {
+    WorkingFile {
+        repo_path: PathBuf,
+        file: FileChange,
+    },
+    CommitFile {
+        repo_path: PathBuf,
+        oid: String,
+        rel_path: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DetachedComparePayload {
+    pub(crate) title: String,
+    pub(crate) left_path: Option<PathBuf>,
+    pub(crate) right_path: Option<PathBuf>,
+    pub(crate) single_file_path: Option<PathBuf>,
+    pub(crate) parsed_diff: ParsedDiff,
+    pub(crate) image_diff: Option<ImageDiffData>,
+    pub(crate) csv_diff: Option<CsvDiffData>,
+    pub(crate) preview_source: Option<(PathBuf, Option<String>)>,
+    pub(crate) editable_source: Option<(PathBuf, String, FileEncoding, LineEnding)>,
+    pub(crate) preferred_mode: DetachedViewMode,
+    pub(crate) status_note: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DetachedAction {
+    // Tabs & Navigation
+    SelectTab(usize),
+    CloseTab(usize),
+    CloseActiveTab,
+    ConfirmCloseTab {
+        tab_id: u64,
+        save_first: bool,
+    },
+    CancelCloseTab,
+    SetSidebarPanel(StudioSidebarPanel),
+    ToggleSidebar,
+    OpenAndFocusExplorer,
+    OpenAndFocusSearchSidebar,
+
+    // Explorer Tree
+    ExplorerFilterChanged(String),
+    ToggleExplorerDir(String),
+    RefreshExplorer,
+    ExplorerFilesLoaded(u64, Vec<String>),
+    OpenExplorerFile(String),
+
+    // View Modes & Diff Controls
+    SetMode(DetachedViewMode),
+    ToggleCompact,
+    ExpandGap {
+        gap_id: usize,
+        mode: DiffGapExpandMode,
+    },
+    LeftScrolled(scrollable::Viewport),
+    RightScrolled(scrollable::Viewport),
+    UnifiedScrolled(scrollable::Viewport),
+    JumpChange(i32),
+    SelStart {
+        side: DiffSelectionSide,
+        row: usize,
+        col: usize,
+    },
+    SelDrag {
+        side: DiffSelectionSide,
+        row: usize,
+        col: usize,
+    },
+    CopySelection,
+    SelectAll,
+    ImageMsg(ImageDiffMsg),
+    CsvMsg(CsvDiffMsg),
+    PreviewEditorAction(text_editor::Action),
+    PreviewLinkClicked(String),
+    TogglePreviewRaw,
+    CopyPreviewText,
+
+    // File / Compare I/O
+    PickSingleFile,
+    PickLeftFile,
+    PickRightFile,
+    SwapCompareFiles,
+    ReloadFiles,
+    SingleFilePicked(Option<PathBuf>),
+    LeftFilePicked(Option<PathBuf>),
+    RightFilePicked(Option<PathBuf>),
+    PayloadLoaded(u64, Box<DetachedComparePayload>),
+    LoadFailed(u64, String),
+    GitDiffLoaded(u64, u64, Result<(ParsedDiff, Arc<DiffLayoutCache>), String>),
+    GitImageDiffLoaded(u64, u64, ImageDiffData),
+    GitCsvDiffLoaded(u64, u64, CsvDiffData),
+
+    // Direct Code Editor
+    EditorAction(text_editor::Action),
+    InsertIndent,
+    SaveEditor,
+    RevertEditor,
+    OpenStatusMenu(StudioStatusMenu),
+    CloseStatusMenu,
+    SetEncodingMenuMode(EncodingModalMode),
+    SetEditorEol(LineEnding),
+    SaveEditorWithEncoding(FileEncoding),
+    ReopenEditorWithEncoding(FileEncoding),
+    SyntaxFilterChanged(String),
+    SetTabLanguage(CodeLanguage),
+    ToggleWordWrap,
+    AdjustFontSize(f32),
+
+    // In-File Find & Replace
+    OpenInFileFind {
+        show_replace: bool,
+    },
+    CloseInFileFind,
+    ToggleInFileReplace,
+    InFileQueryChanged(String),
+    InFileReplaceChanged(String),
+    ToggleInFileCase,
+    ToggleInFileWholeWord,
+    ToggleInFileRegex,
+    InFileJump(isize),
+    InFileJumpIndex(usize),
+    InFileReplaceCurrent,
+    InFileReplaceAll,
+
+    // VS Code-style Folder / Repo Search & Replace Sidebar
+    PickSearchRoot,
+    SearchRootPicked(Option<PathBuf>),
+    SearchQueryChanged(String),
+    SearchReplaceChanged(String),
+    SearchIncludeChanged(String),
+    SearchExcludeChanged(String),
+    ToggleSearchReplaceRow,
+    ToggleSearchFilters,
+    ToggleSearchCase,
+    ToggleSearchWholeWord,
+    ToggleSearchRegex,
+    ToggleSearchGitignore,
+    RunSearch,
+    SearchCompleted(u64, ScopedSearchResult),
+    ToggleSearchGroup(String),
+    ToggleSearchFilesSection,
+    CollapseExpandAllSearchGroups,
+    OpenSearchFile(PathBuf),
+    OpenSearchMatch {
+        path: PathBuf,
+        line_number: usize,
+        col_start: usize,
+        col_end: usize,
+    },
+    ReplaceInSearchFile(PathBuf),
+    ReplaceSingleSearchMatch {
+        path: PathBuf,
+        line_number: usize,
+    },
+    RequestReplaceAllInSearch,
+    CancelReplaceAllInSearch,
+    ConfirmReplaceAllInSearch,
+    SearchReplaceCompleted(u64, ReplaceReport, Vec<PathBuf>),
+    EscapePressed,
+}
+
+// ── Per-Tab Document / Diff State ────────────────────────────────────────────
+
+pub(crate) struct StudioTab {
+    pub(crate) id: u64,
+    pub(crate) title: String,
+    pub(crate) rel_path: Option<String>,
+    pub(crate) mode: DetachedViewMode,
+    pub(crate) last_text_diff_mode: DetachedViewMode,
+
+    // Editable local document
+    pub(crate) file_path: Option<PathBuf>,
+    pub(crate) doc_id: Option<DocumentId>,
+    pub(crate) doc_version: Option<String>,
+    pub(crate) language: CodeLanguage,
+    pub(crate) encoding: FileEncoding,
+    pub(crate) line_ending: LineEnding,
+    pub(crate) trailing_newline: bool,
+    pub(crate) editor_content: text_editor::Content,
+    pub(crate) dirty: bool,
+
+    // Standalone compare / Git diff
+    pub(crate) left_path: Option<PathBuf>,
+    pub(crate) right_path: Option<PathBuf>,
+    pub(crate) git_diff_target: Option<DetachedGitDiffTarget>,
+    pub(crate) diff_parsed: ParsedDiff,
+    pub(crate) diff_cache: Arc<DiffLayoutCache>,
+    pub(crate) diff_compact: bool,
+    pub(crate) diff_expanded_gaps: HashMap<usize, DiffGapExpansion>,
+    pub(crate) diff_left_scroll_id: scrollable::Id,
+    pub(crate) diff_right_scroll_id: scrollable::Id,
+    pub(crate) diff_unified_scroll_id: scrollable::Id,
+    pub(crate) diff_left_scroll_y: f32,
+    pub(crate) diff_right_scroll_y: f32,
+    pub(crate) diff_unified_scroll_y: f32,
+    pub(crate) diff_left_scroll_x: f32,
+    pub(crate) diff_right_scroll_x: f32,
+    pub(crate) diff_left_viewport_h: f32,
+    pub(crate) diff_right_viewport_h: f32,
+    pub(crate) diff_unified_viewport_h: f32,
+    pub(crate) diff_active_change: usize,
+    pub(crate) diff_selection: Option<DiffTextSelection>,
+    pub(crate) diff_last_click: Option<(Instant, DiffSelectionSide, usize, usize, u8)>,
+    pub(crate) diff_image: Option<ImageDiffData>,
+    pub(crate) image_state: ImageDiffViewState,
+    pub(crate) diff_csv: Option<CsvDiffData>,
+    pub(crate) csv_changes_only: bool,
+    pub(crate) csv_ignore_format: bool,
+    pub(crate) csv_filter: String,
+
+    // Preview
+    pub(crate) preview_state: PreviewState,
+    pub(crate) preview_editor: text_editor::Content,
+    pub(crate) preview_raw_mode: bool,
+}
+
+impl StudioTab {
+    pub(crate) fn new_empty(id: u64, title: String) -> Self {
+        Self {
+            id,
+            title,
+            rel_path: None,
+            mode: DetachedViewMode::Edit,
+            last_text_diff_mode: DetachedViewMode::SideBySideDiff,
+            file_path: None,
+            doc_id: None,
+            doc_version: None,
+            language: CodeLanguage::PlainText,
+            encoding: FileEncoding::Utf8,
+            line_ending: LineEnding::Lf,
+            trailing_newline: true,
+            editor_content: text_editor::Content::new(),
+            dirty: false,
+            left_path: None,
+            right_path: None,
+            git_diff_target: None,
+            diff_parsed: ParsedDiff::default(),
+            diff_cache: Arc::new(DiffLayoutCache::default()),
+            diff_compact: true,
+            diff_expanded_gaps: HashMap::new(),
+            diff_left_scroll_id: scrollable::Id::unique(),
+            diff_right_scroll_id: scrollable::Id::unique(),
+            diff_unified_scroll_id: scrollable::Id::unique(),
+            diff_left_scroll_y: 0.0,
+            diff_right_scroll_y: 0.0,
+            diff_unified_scroll_y: 0.0,
+            diff_left_scroll_x: 0.0,
+            diff_right_scroll_x: 0.0,
+            diff_left_viewport_h: 900.0,
+            diff_right_viewport_h: 900.0,
+            diff_unified_viewport_h: 900.0,
+            diff_active_change: 0,
+            diff_selection: None,
+            diff_last_click: None,
+            diff_image: None,
+            image_state: ImageDiffViewState {
+                mode: ImageDiffMode::Swipe,
+                zoom: ImageDiffZoom::Fit,
+                swapped: false,
+                swipe: 0.5,
+                onion: 0.5,
+                blink_after: false,
+                blink_paused: false,
+            },
+            diff_csv: None,
+            csv_changes_only: false,
+            csv_ignore_format: false,
+            csv_filter: String::new(),
+            preview_state: PreviewState::Empty,
+            preview_editor: text_editor::Content::new(),
+            preview_raw_mode: false,
+        }
+    }
+
+    pub(crate) fn is_editable(&self) -> bool {
+        self.file_path.is_some() && self.doc_id.is_some()
+    }
+
+    pub(crate) fn rebuild_diff_cache(&mut self, theme_mode: ThemeMode) {
+        self.diff_cache = build_diff_layout_cache(
+            &self.diff_parsed,
+            self.diff_compact,
+            &self.diff_expanded_gaps,
+            self.language,
+            theme_mode,
+        );
+    }
+
+    pub(crate) fn sync_preview_editor(&mut self) {
+        self.preview_editor = match self.preview_state.copyable_text() {
+            Some(raw) => text_editor::Content::with_text(raw),
+            None => text_editor::Content::new(),
+        };
+    }
+
+    pub(crate) fn current_searchable_text(&self) -> Option<String> {
+        if self.is_editable() {
+            Some(editor_buffer_text(&self.editor_content))
+        } else {
+            self.preview_state.copyable_text().map(str::to_string)
+        }
+    }
+
+    pub(crate) fn load_local_file(
+        &mut self,
+        docs: &gitfleet_docs::DocsService,
+        path: &Path,
+        root: Option<&Path>,
+    ) -> bool {
+        if !path.is_file() {
+            return false;
+        }
+        self.title = file_display_name(path);
+        self.rel_path = root
+            .and_then(|r| path.strip_prefix(r).ok())
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        self.language = CodeLanguage::from_path(path);
+        self.file_path = Some(path.to_path_buf());
+
+        match docs.open_document(path) {
+            Ok(cap) => {
+                self.doc_id = Some(cap.document_id);
+                self.doc_version = Some(cap.version);
+                self.encoding = cap.encoding;
+                self.line_ending = cap.line_ending;
+                self.trailing_newline = cap.content.ends_with('\n');
+                self.editor_content = text_editor::Content::with_text(&cap.content);
+                self.dirty = false;
+                self.preview_state = PreviewState::from_file(path, Some(&cap.content));
+                self.sync_preview_editor();
+                true
+            }
+            Err(_) => {
+                self.doc_id = None;
+                self.doc_version = None;
+                self.editor_content = text_editor::Content::new();
+                self.dirty = false;
+                self.preview_state = PreviewState::from_file(path, None);
+                self.sync_preview_editor();
+                false
+            }
+        }
+    }
+
+    pub(crate) fn reset_scroll_state(&mut self) {
+        self.diff_expanded_gaps.clear();
+        self.diff_selection = None;
+        self.diff_left_scroll_y = 0.0;
+        self.diff_right_scroll_y = 0.0;
+        self.diff_unified_scroll_y = 0.0;
+        self.diff_left_scroll_x = 0.0;
+        self.diff_right_scroll_x = 0.0;
+        self.diff_active_change = 0;
+    }
+
+    pub(crate) fn reset_scroll_task(&self) -> Task<Message> {
+        Task::batch([
+            scrollable::scroll_to(
+                self.diff_left_scroll_id.clone(),
+                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+            scrollable::scroll_to(
+                self.diff_right_scroll_id.clone(),
+                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+            scrollable::scroll_to(
+                self.diff_unified_scroll_id.clone(),
+                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+        ])
+    }
+}
+
+// ── GitFleet Studio Window State ─────────────────────────────────────────────
+
+pub(crate) struct DetachedViewerState {
+    pub(crate) tabs: Vec<StudioTab>,
+    pub(crate) active_tab: Option<usize>,
+    pub(crate) next_tab_id: u64,
+    pub(crate) pending_close_tab: Option<u64>,
+
+    pub(crate) request_id: u64,
+    pub(crate) loading: bool,
+    pub(crate) status_note: String,
+    pub(crate) status_is_error: bool,
+
+    // Deferred open tasks
+    pub(crate) initial_diff: Option<(u64, DetachedGitDiffTarget)>,
+    pub(crate) focus_search_on_open: bool,
+
+    // Editor Preferences (shared across all tabs in this window)
+    pub(crate) editor_word_wrap: bool,
+    pub(crate) editor_font_size: f32,
+
+    // Left Activity Bar + Sidebar
+    pub(crate) sidebar_open: bool,
+    pub(crate) sidebar_panel: StudioSidebarPanel,
+    pub(crate) search_root: Option<PathBuf>,
+    pub(crate) search_root_name: Option<String>,
+
+    // Explorer Panel
+    pub(crate) explorer_files: Vec<String>,
+    pub(crate) explorer_loading: bool,
+    pub(crate) explorer_request_id: u64,
+    pub(crate) explorer_filter: String,
+    pub(crate) explorer_filter_id: text_input::Id,
+    pub(crate) explorer_expanded_dirs: HashSet<String>,
+
+    // Compare Panel (persisted left/right handles)
+    pub(crate) compare_left: Option<PathBuf>,
+    pub(crate) compare_right: Option<PathBuf>,
+
+    // In-File Find & Replace (operates on active tab)
+    pub(crate) in_file_find_open: bool,
+    pub(crate) in_file_show_replace: bool,
+    pub(crate) in_file_query: String,
+    pub(crate) in_file_replace: String,
+    pub(crate) in_file_options: SearchOptions,
+    pub(crate) in_file_matches: Vec<InFileMatch>,
+    pub(crate) in_file_active_idx: Option<usize>,
+    pub(crate) in_file_error: Option<String>,
+    pub(crate) in_file_input_id: text_input::Id,
+    pub(crate) in_file_replace_input_id: text_input::Id,
+
+    // VS Code-style Search & Replace Sidebar
+    pub(crate) search_query: String,
+    pub(crate) search_replace_text: String,
+    pub(crate) search_include: String,
+    pub(crate) search_exclude: String,
+    pub(crate) search_options: SearchOptions,
+    pub(crate) search_use_gitignore: bool,
+    pub(crate) search_show_replace: bool,
+    pub(crate) search_show_filters: bool,
+    pub(crate) search_running: bool,
+    pub(crate) search_request_id: u64,
+    pub(crate) search_has_run: bool,
+    pub(crate) search_result: ScopedSearchResult,
+    pub(crate) search_collapsed_groups: HashSet<String>,
+    pub(crate) search_files_collapsed: bool,
+    pub(crate) search_confirm_replace_all: bool,
+    pub(crate) search_input_id: text_input::Id,
+
+    // Anchored Status Bar Menus (EOL, Encoding, Syntax Highlight)
+    pub(crate) cursor_pos: Point,
+    pub(crate) status_menu: Option<(StudioStatusMenu, Point)>,
+    pub(crate) encoding_menu_mode: EncodingModalMode,
+    pub(crate) syntax_filter: String,
+    pub(crate) syntax_filter_id: text_input::Id,
+}
+
+impl DetachedViewerState {
+    pub(crate) fn empty() -> Self {
+        Self {
+            tabs: Vec::new(),
+            active_tab: None,
+            next_tab_id: 1,
+            pending_close_tab: None,
+            request_id: 0,
+            loading: false,
+            status_note: "Ready".into(),
+            status_is_error: false,
+            initial_diff: None,
+            focus_search_on_open: false,
+            editor_word_wrap: false,
+            editor_font_size: 13.5,
+            sidebar_open: true,
+            sidebar_panel: StudioSidebarPanel::Explorer,
+            search_root: None,
+            search_root_name: None,
+            explorer_files: Vec::new(),
+            explorer_loading: false,
+            explorer_request_id: 0,
+            explorer_filter: String::new(),
+            explorer_filter_id: text_input::Id::unique(),
+            explorer_expanded_dirs: HashSet::new(),
+            compare_left: None,
+            compare_right: None,
+            in_file_find_open: false,
+            in_file_show_replace: false,
+            in_file_query: String::new(),
+            in_file_replace: String::new(),
+            in_file_options: SearchOptions::default(),
+            in_file_matches: Vec::new(),
+            in_file_active_idx: None,
+            in_file_error: None,
+            in_file_input_id: text_input::Id::unique(),
+            in_file_replace_input_id: text_input::Id::unique(),
+            search_query: String::new(),
+            search_replace_text: String::new(),
+            search_include: String::new(),
+            search_exclude: String::new(),
+            search_options: SearchOptions::default(),
+            search_use_gitignore: true,
+            search_show_replace: true,
+            search_show_filters: true,
+            search_running: false,
+            search_request_id: 0,
+            search_has_run: false,
+            search_result: ScopedSearchResult::default(),
+            search_collapsed_groups: HashSet::new(),
+            search_files_collapsed: false,
+            search_confirm_replace_all: false,
+            search_input_id: text_input::Id::unique(),
+            cursor_pos: Point::ORIGIN,
+            status_menu: None,
+            encoding_menu_mode: EncodingModalMode::SaveWithEncoding,
+            syntax_filter: String::new(),
+            syntax_filter_id: text_input::Id::unique(),
+        }
+    }
+
+    pub(crate) fn active_tab(&self) -> Option<&StudioTab> {
+        self.active_tab.and_then(|i| self.tabs.get(i))
+    }
+
+    pub(crate) fn active_tab_mut(&mut self) -> Option<&mut StudioTab> {
+        self.active_tab.and_then(|i| self.tabs.get_mut(i))
+    }
+
+    pub(crate) fn window_title_info(&self) -> (String, bool) {
+        if let Some(tab) = self.active_tab() {
+            let suffix = self
+                .search_root_name
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default();
+            (format!("{}{suffix}", tab.title), tab.dirty)
+        } else if let Some(name) = &self.search_root_name {
+            (name.clone(), false)
+        } else {
+            ("Independent Studio".into(), false)
+        }
+    }
+
+    pub(crate) fn alloc_tab_id(&mut self) -> u64 {
+        let id = self.next_tab_id;
+        self.next_tab_id = self.next_tab_id.wrapping_add(1).max(1);
+        id
+    }
+
+    pub(crate) fn expand_ancestors_for_rel(&mut self, rel: &str) {
+        let mut prefix = String::new();
+        let parts: Vec<&str> = rel.split('/').collect();
+        if parts.len() <= 1 {
+            return;
+        }
+        for seg in &parts[..parts.len() - 1] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(seg);
+            self.explorer_expanded_dirs.insert(prefix.clone());
+        }
+    }
+
+    pub(crate) fn from_host(app: &GitFleetApp) -> Self {
+        let mut state = Self::empty();
+        if let Some(repo) = app.current_repo() {
+            state.search_root = Some(repo.path.clone());
+            state.search_root_name = Some(repo.name.clone());
+        }
+
+        let has_content = !app.diff_parsed.raw.is_empty()
+            || app.diff_image.is_some()
+            || app.diff_csv.is_some()
+            || !matches!(app.preview_state, PreviewState::Empty)
+            || app.open_doc_path.is_some();
+
+        if !has_content {
+            state.sidebar_open = true;
+            state.sidebar_panel = StudioSidebarPanel::Explorer;
+            return state;
+        }
+
+        let tab_id = state.alloc_tab_id();
+        let mut tab = StudioTab::new_empty(tab_id, "Untitled".into());
+        tab.last_text_diff_mode = match app.last_text_diff_mode {
+            BottomViewMode::UnifiedDiff => DetachedViewMode::UnifiedDiff,
+            _ => DetachedViewMode::SideBySideDiff,
+        };
+        tab.diff_parsed = app.diff_parsed.clone();
+        tab.diff_cache = Arc::clone(&app.diff_cache);
+        tab.diff_compact = app.diff_compact;
+        tab.diff_expanded_gaps = app.diff_expanded_gaps.clone();
+        tab.diff_image = app.diff_image.clone();
+        tab.image_state = ImageDiffViewState {
+            mode: app.image_diff_mode,
+            zoom: app.image_diff_zoom,
+            swapped: app.image_diff_swapped,
+            swipe: app.image_diff_swipe,
+            onion: app.image_diff_onion,
+            blink_after: false,
+            blink_paused: app.image_diff_blink_paused,
+        };
+        tab.diff_csv = app.diff_csv.clone();
+        tab.csv_changes_only = app.csv_diff_changes_only;
+        tab.csv_ignore_format = app.csv_diff_ignore_format;
+        tab.csv_filter = app.csv_diff_filter.clone();
+        tab.preview_state = app.preview_state.clone_snapshot();
+        tab.sync_preview_editor();
+        tab.preview_raw_mode = app.preview_raw_mode;
+
+        let local_path = app.open_doc_path.clone().or_else(|| {
+            app.current_repo().and_then(|repo| {
+                app.active_file_path
+                    .as_deref()
+                    .map(|rel| repo.path.join(rel))
+                    .filter(|p| p.is_file())
+            })
+        });
+        let can_edit = local_path
+            .as_deref()
+            .is_some_and(|p| tab.load_local_file(&app.service.docs, p, state.search_root.as_deref()));
+
+        if tab.title == "Untitled" {
+            tab.title = if app.diff_title.is_empty()
+                || app.diff_title == "No file selected"
+                || app.diff_title == "Select a file to view changes"
+            {
+                app.active_file_path
+                    .as_deref()
+                    .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+                    .unwrap_or_else(|| "Untitled".into())
+            } else {
+                app.diff_title.clone()
+            };
+        }
+        if tab.rel_path.is_none() {
+            tab.rel_path = app.active_file_path.clone();
+        }
+        if let Some(rel) = tab.rel_path.clone() {
+            state.expand_ancestors_for_rel(&rel);
+        }
+        if app.active_file_path.is_some() || app.open_doc_id.is_some() {
+            tab.language = app.open_doc_language;
+        }
+
+        tab.mode = match app.bottom_mode {
+            BottomViewMode::Edit if can_edit => DetachedViewMode::Edit,
+            BottomViewMode::Preview => DetachedViewMode::Preview,
+            BottomViewMode::UnifiedDiff if !tab.diff_parsed.raw.is_empty() => {
+                DetachedViewMode::UnifiedDiff
+            }
+            BottomViewMode::SideBySideDiff if !tab.diff_parsed.raw.is_empty() => {
+                DetachedViewMode::SideBySideDiff
+            }
+            BottomViewMode::ImageDiff if tab.diff_image.is_some() => DetachedViewMode::ImageDiff,
+            BottomViewMode::CsvDiff if tab.diff_csv.is_some() => DetachedViewMode::CsvDiff,
+            _ => {
+                if tab.diff_image.is_some() {
+                    DetachedViewMode::ImageDiff
+                } else if tab.diff_csv.is_some() {
+                    DetachedViewMode::CsvDiff
+                } else if !tab.diff_parsed.raw.is_empty() {
+                    tab.last_text_diff_mode
+                } else if can_edit {
+                    DetachedViewMode::Edit
+                } else {
+                    DetachedViewMode::Preview
+                }
+            }
+        };
+
+        if let (Some(repo), Some(file)) = (app.current_repo(), app.selected_changed_file.clone())
+            && app.active_file_path.as_deref() == Some(file.path.as_str())
+        {
+            tab.git_diff_target = match &app.graph_selection {
+                GraphSelection::WorkingTree => Some(DetachedGitDiffTarget::WorkingFile {
+                    repo_path: repo.path,
+                    file,
+                }),
+                GraphSelection::Commit(oid) => Some(DetachedGitDiffTarget::CommitFile {
+                    repo_path: repo.path,
+                    oid: oid.clone(),
+                    rel_path: file.path,
+                }),
+            };
+        }
+
+        state.tabs.push(tab);
+        state.active_tab = Some(0);
+        state.sidebar_open = false;
+        state.status_note = "Ready".into();
+        state
+    }
+
+    pub(crate) fn for_repo_file(
+        app: &GitFleetApp,
+        rel_path: &str,
+        changed_file: Option<FileChange>,
+        prefer_edit: bool,
+    ) -> Self {
+        let mut state = Self::empty();
+        state.sidebar_open = false;
+        state.sidebar_panel = StudioSidebarPanel::Explorer;
+
+        let Some(repo) = app.current_repo() else {
+            return state;
+        };
+        state.search_root = Some(repo.path.clone());
+        state.search_root_name = Some(repo.name.clone());
+        state.expand_ancestors_for_rel(rel_path);
+
+        let tab_id = state.alloc_tab_id();
+        let mut tab = StudioTab::new_empty(
+            tab_id,
+            rel_path.rsplit('/').next().unwrap_or(rel_path).to_string(),
+        );
+        tab.rel_path = Some(rel_path.to_string());
+        tab.last_text_diff_mode = match app.last_text_diff_mode {
+            BottomViewMode::UnifiedDiff => DetachedViewMode::UnifiedDiff,
+            _ => DetachedViewMode::SideBySideDiff,
+        };
+
+        let full_path = repo.path.join(rel_path);
+        let can_edit = tab.load_local_file(&app.service.docs, &full_path, Some(&repo.path));
+
+        if app.active_file_path.as_deref() == Some(rel_path) {
+            tab.language = app.open_doc_language;
+            if app.diff_parsed_path.as_deref() == Some(rel_path) {
+                tab.diff_parsed = app.diff_parsed.clone();
+                tab.diff_cache = Arc::clone(&app.diff_cache);
+                tab.diff_compact = app.diff_compact;
+                tab.diff_expanded_gaps = app.diff_expanded_gaps.clone();
+            }
+            tab.diff_image = app.diff_image.clone();
+            tab.diff_csv = app.diff_csv.clone();
+            tab.image_state = ImageDiffViewState {
+                mode: app.image_diff_mode,
+                zoom: app.image_diff_zoom,
+                swapped: app.image_diff_swapped,
+                swipe: app.image_diff_swipe,
+                onion: app.image_diff_onion,
+                blink_after: false,
+                blink_paused: app.image_diff_blink_paused,
+            };
+        }
+
+        let effective_change = changed_file.or_else(|| {
+            app.active_status().and_then(|st| {
+                st.unstaged_files
+                    .iter()
+                    .chain(st.staged_files.iter())
+                    .find(|f| f.path == rel_path)
+                    .cloned()
+            })
+        });
+
+        let diff_target = match (&app.graph_selection, &effective_change) {
+            (GraphSelection::Commit(oid), Some(f)) => Some(DetachedGitDiffTarget::CommitFile {
+                repo_path: repo.path.clone(),
+                oid: oid.clone(),
+                rel_path: f.path.clone(),
+            }),
+            (_, Some(f)) => Some(DetachedGitDiffTarget::WorkingFile {
+                repo_path: repo.path.clone(),
+                file: f.clone(),
+            }),
+            _ => None,
+        };
+
+        tab.git_diff_target = diff_target.clone();
+        let needs_diff_fetch = diff_target.is_some()
+            && tab.diff_parsed.raw.is_empty()
+            && tab.diff_image.is_none()
+            && tab.diff_csv.is_none();
+        if needs_diff_fetch && let Some(target) = diff_target {
+            state.initial_diff = Some((tab_id, target));
+        }
+
+        let is_img = is_image_diff_path(rel_path);
+        let is_csv = is_csv_diff_path(rel_path);
+        let has_diff = !tab.diff_parsed.raw.is_empty() || state.initial_diff.is_some();
+
+        tab.mode = if prefer_edit {
+            if can_edit {
+                DetachedViewMode::Edit
+            } else {
+                DetachedViewMode::Preview
+            }
+        } else {
+            match app.bottom_mode {
+                BottomViewMode::Edit if can_edit => DetachedViewMode::Edit,
+                BottomViewMode::Preview => DetachedViewMode::Preview,
+                BottomViewMode::ImageDiff
+                    if is_img && (tab.diff_image.is_some() || state.initial_diff.is_some()) =>
+                {
+                    DetachedViewMode::ImageDiff
+                }
+                BottomViewMode::CsvDiff
+                    if is_csv && (tab.diff_csv.is_some() || state.initial_diff.is_some()) =>
+                {
+                    DetachedViewMode::CsvDiff
+                }
+                BottomViewMode::UnifiedDiff if has_diff => DetachedViewMode::UnifiedDiff,
+                BottomViewMode::SideBySideDiff if has_diff => DetachedViewMode::SideBySideDiff,
+                _ => {
+                    if can_edit {
+                        DetachedViewMode::Edit
+                    } else if has_diff {
+                        tab.last_text_diff_mode
+                    } else {
+                        DetachedViewMode::Preview
+                    }
+                }
+            }
+        };
+
+        state.tabs.push(tab);
+        state.active_tab = Some(0);
+        state.status_note = format!("Opened {rel_path}");
+        state
+    }
+
+    pub(crate) fn for_search(app: &GitFleetApp, initial_query: Option<String>) -> Self {
+        let mut state = Self::from_host(app);
+        state.sidebar_open = true;
+        state.sidebar_panel = StudioSidebarPanel::Search;
+        state.search_show_replace = true;
+        state.search_show_filters = true;
+        state.focus_search_on_open = true;
+        if let Some(q) = initial_query {
+            state.search_query = q;
+        }
+        state.status_note = match &state.search_root_name {
+            Some(name) => format!("Search in {name}"),
+            None => "Select a folder to search".into(),
+        };
+        state
+    }
+
+    pub(crate) fn needs_blink_timer(&self) -> bool {
+        self.active_tab().is_some_and(|t| {
+            t.mode == DetachedViewMode::ImageDiff
+                && t.image_state.mode == ImageDiffMode::Blink
+                && !t.image_state.blink_paused
+                && t.diff_image.is_some()
+        })
+    }
+
+    pub(crate) fn recompute_in_file_matches(&mut self, preserve_active: bool) {
+        if self.in_file_query.is_empty() {
+            self.in_file_matches.clear();
+            self.in_file_active_idx = None;
+            self.in_file_error = None;
+            return;
+        }
+        let Some(buf) = self.active_tab().and_then(StudioTab::current_searchable_text) else {
+            self.in_file_matches.clear();
+            self.in_file_active_idx = None;
+            self.in_file_error = None;
+            return;
+        };
+
+        let prev_idx = self.in_file_active_idx;
+        match find_in_text(&buf, &self.in_file_query, self.in_file_options) {
+            Ok(list) => {
+                self.in_file_error = None;
+                self.in_file_active_idx = if list.is_empty() {
+                    None
+                } else if preserve_active {
+                    Some(prev_idx.unwrap_or(0).min(list.len() - 1))
+                } else {
+                    Some(0)
+                };
+                self.in_file_matches = list;
+            }
+            Err(err) => {
+                self.in_file_matches.clear();
+                self.in_file_active_idx = None;
+                self.in_file_error = Some(err);
+            }
+        }
+    }
+
+    pub(crate) fn jump_active_editor_to_match(&mut self) {
+        let Some(m) = self
+            .in_file_active_idx
+            .and_then(|i| self.in_file_matches.get(i))
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.mode == DetachedViewMode::Edit && tab.is_editable() {
+                jump_editor_to_span(
+                    &mut tab.editor_content,
+                    m.line_index,
+                    m.col_start,
+                    m.col_end,
+                );
+            } else if tab.mode == DetachedViewMode::Preview && tab.preview_raw_mode {
+                jump_editor_to_span(
+                    &mut tab.preview_editor,
+                    m.line_index,
+                    m.col_start,
+                    m.col_end,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn remove_tab_at(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        let removed_id = self.tabs[idx].id;
+        self.tabs.remove(idx);
+        if self.pending_close_tab == Some(removed_id) {
+            self.pending_close_tab = None;
+        }
+        self.active_tab = if self.tabs.is_empty() {
+            None
+        } else {
+            let cur = self.active_tab.unwrap_or(0);
+            if idx < cur {
+                Some(cur.saturating_sub(1))
+            } else {
+                Some(cur.min(self.tabs.len() - 1))
+            }
+        };
+        self.recompute_in_file_matches(false);
+    }
+}

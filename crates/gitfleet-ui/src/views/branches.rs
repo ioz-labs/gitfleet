@@ -266,9 +266,10 @@ fn render_branch_subtree<'a>(
         let indent = branch_folder_indent(depth);
         let count_str = format!("({})", child.count());
         let folder_est_w = tree::content_x(depth)
-            + 20.0
-            + folder.chars().count() as f32 * 7.5
-            + (count_str.chars().count() + 1) as f32 * 6.9;
+            + theme::estimate_text_width(folder, type_scale::BODY, false)
+            + 5.0
+            + theme::estimate_text_width(&count_str, type_scale::CAPTION, false)
+            + 12.0;
         if folder_est_w > *max_row_w {
             *max_row_w = folder_est_w;
         }
@@ -410,23 +411,34 @@ fn render_branch_subtree<'a>(
         } else {
             classify_upstream_hint(b)
         };
-        let hint_chars = upstream_info
+        let hint_w = upstream_info
             .as_ref()
-            .map(|(_, h)| h.chars().count() + 1)
-            .unwrap_or(0);
-        let wt_extra = if linked_wt.is_some() { 76.0 } else { 0.0 };
+            .map(|(_, h)| 5.0 + theme::estimate_text_width(h, type_scale::CAPTION, false))
+            .unwrap_or(0.0);
+        let wt_extra = if linked_wt.is_some() { 68.0 } else { 0.0 };
         let badges_w = if ctx.is_remote {
             0.0
         } else {
-            (if b.ahead > 0 { 36.0 } else { 0.0 }) + (if b.behind > 0 { 38.0 } else { 0.0 })
+            (if b.ahead > 0 {
+                5.0 + theme::estimate_text_width(&format!("+{}", b.ahead), type_scale::BADGE, true)
+                    + 18.0
+            } else {
+                0.0
+            }) + (if b.behind > 0 {
+                5.0 + theme::estimate_text_width(&format!("-{}", b.behind), type_scale::BADGE, true)
+                    + 18.0
+            } else {
+                0.0
+            })
         };
         let leaf_est_w = tree::content_x(depth)
-            + 22.0
-            + if b.is_head { 15.0 } else { 0.0 }
-            + leaf_name.chars().count() as f32 * 7.5
-            + hint_chars as f32 * 6.9
+            + if b.is_head { 14.0 } else { 0.0 }
+            + theme::estimate_text_width(leaf_name, type_scale::BODY, false)
+            + hint_w
             + wt_extra
-            + badges_w;
+            + badges_w
+            + tree::ROW_PAD_H
+            + 6.0;
         if leaf_est_w > *max_row_w {
             *max_row_w = leaf_est_w;
         }
@@ -445,13 +457,9 @@ fn render_branch_subtree<'a>(
             );
         }
 
-        let mut leaf_content = row![theme::clipped_line(name_and_up, Length::Fill)]
-            .spacing(5)
-            .align_y(Alignment::Center);
-
         if !ctx.is_remote {
             if b.ahead > 0 {
-                leaf_content = leaf_content.push(theme::badge(
+                name_and_up = name_and_up.push(theme::badge(
                     format!("+{}", b.ahead),
                     p.fill_selected,
                     p.accent_fg,
@@ -460,7 +468,7 @@ fn render_branch_subtree<'a>(
                 ));
             }
             if b.behind > 0 {
-                leaf_content = leaf_content.push(theme::badge(
+                name_and_up = name_and_up.push(theme::badge(
                     format!("-{}", b.behind),
                     p.surface_card,
                     p.text_primary,
@@ -469,6 +477,10 @@ fn render_branch_subtree<'a>(
                 ));
             }
         }
+
+        let leaf_content = row![theme::clipped_line(name_and_up, Length::Fill)]
+            .spacing(5)
+            .align_y(Alignment::Center);
 
         let b_name_cb = b.name.clone();
         let cb = container(
@@ -749,7 +761,7 @@ impl GitFleetApp {
                         .into(),
                 );
 
-                let mut max_branch_w: f32 = 180.0;
+                let mut max_branch_w: f32 = 120.0;
                 if local_expanded {
                     let local_ctx = BranchRenderCtx {
                         is_remote: false,
@@ -1006,7 +1018,7 @@ impl GitFleetApp {
                     action_bar_slot,
                     slim_scroll_h(
                         column(rows).spacing(tree::ROW_SPACING),
-                        max_branch_w.clamp(180.0, 960.0),
+                        max_branch_w.clamp(120.0, 960.0),
                         p,
                     ),
                 ]

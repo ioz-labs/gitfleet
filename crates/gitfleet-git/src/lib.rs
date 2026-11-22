@@ -26,7 +26,7 @@ pub use diff::{
     DiffBlock, DiffChangeBlock, DiffChangeKind, DiffContextLine, DiffHunk, DiffStats,
     FileVersionPair, ParsedDiff, diff_two_texts, parse_unified_diff,
 };
-pub use git_flow::{GitFlowKind, GitFlowState};
+pub use git_flow::{GitFlowKind, GitFlowPrefixes, GitFlowState, normalize_flow_prefix};
 pub use models::*;
 pub use remotes::RemoteInfo;
 pub use submodules::SubmoduleInfo;

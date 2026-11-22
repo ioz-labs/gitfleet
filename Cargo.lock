@@ -1896,6 +1896,7 @@ name = "gitfleet-search"
 version = "0.4.1"
 dependencies = [
  "gitfleet-core",
+ "gitfleet-docs",
  "ignore",
  "regex",
  "serde",

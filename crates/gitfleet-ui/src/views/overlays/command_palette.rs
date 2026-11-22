@@ -67,10 +67,15 @@ impl GitFleetApp {
             ("Files: Flat Changed Mode", "", Message::SetFilesViewMode(FilesViewMode::Flat)),
             ("Files: Dir-Filtered Changes Mode", "", Message::SetFilesViewMode(FilesViewMode::Dir)),
             ("Files: All Files Explorer (VS Code)", "", Message::SetFilesViewMode(FilesViewMode::AllFiles)),
+            ("Files: Search & Replace in Files (Independent Popup)", "", Message::OpenDetachedSearch(None)),
+            ("Window: Open Independent File & Diff Studio", "", Message::OpenDetachedViewer),
             ("View: Side by Side Diff", "", Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),
             ("View: Unified Diff", "", Message::SetBottomViewMode(BottomViewMode::UnifiedDiff)),
             ("View: Rich Preview (.md / img / svg / json / csv)", "", Message::SetBottomViewMode(BottomViewMode::Preview)),
             ("View: Live File Editor", "", Message::SetBottomViewMode(BottomViewMode::Edit)),
+            ("File: Change End of Line Sequence (LF / CRLF)", "", Message::ToggleEolModal),
+            ("File: Change File Encoding (Save / Reopen)", "", Message::ToggleEncodingModal),
+            ("File: Select Syntax Highlighting Language", "", Message::ToggleSyntaxModal),
             ("View: Toggle Dark / Light Theme", "", Message::ToggleTheme),
         ];
 

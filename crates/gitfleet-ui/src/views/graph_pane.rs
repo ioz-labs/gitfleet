@@ -38,8 +38,9 @@ impl GraphRefPillKind {
                 branch,
                 is_head,
             } => {
-                (remote_label.chars().count() + branch.chars().count()) as f32 * 7.2
-                    + if *is_head { 50.0 } else { 40.0 }
+                theme::estimate_text_width(&format!("{remote_label} ="), type_scale::BADGE, false)
+                    + theme::estimate_text_width(branch, type_scale::BADGE, false)
+                    + if *is_head { 40.0 } else { 28.0 }
             }
             Self::Local {
                 branch,
@@ -49,23 +50,37 @@ impl GraphRefPillKind {
                 upstream_gone,
                 upstream_remote,
             } => {
-                let mut extra = if *is_head { 30.0 } else { 16.0 };
+                let mut extra = if *is_head { 26.0 } else { 14.0 };
                 if *upstream_gone {
                     let rem = upstream_remote.as_deref().unwrap_or("origin");
-                    extra += (rem.chars().count() + 3) as f32 * 7.2;
+                    extra += theme::estimate_text_width(
+                        &format!("? {rem}"),
+                        type_scale::BADGE,
+                        true,
+                    ) + 4.0;
                 } else {
                     if *ahead > 0 {
-                        extra += (ahead.to_string().len() + 2) as f32 * 7.2;
+                        extra += theme::estimate_text_width(
+                            &format!("+{ahead}"),
+                            type_scale::BADGE,
+                            true,
+                        ) + 4.0;
                     }
                     if *behind > 0 {
-                        extra += (behind.to_string().len() + 2) as f32 * 7.2;
+                        extra += theme::estimate_text_width(
+                            &format!("-{behind}"),
+                            type_scale::BADGE,
+                            true,
+                        ) + 4.0;
                     }
                 }
-                branch.chars().count() as f32 * 7.2 + extra
+                theme::estimate_text_width(branch, type_scale::BADGE, false) + extra
             }
-            Self::Remote(name) => name.chars().count() as f32 * 7.2 + 18.0,
-            Self::DetachedHead => 64.0,
-            Self::Tag(name) => name.chars().count() as f32 * 7.2 + 28.0,
+            Self::Remote(name) => theme::estimate_text_width(name, type_scale::BADGE, false) + 16.0,
+            Self::DetachedHead => 56.0,
+            Self::Tag(name) => {
+                theme::estimate_text_width(&format!("tag: {name}"), type_scale::BADGE, false) + 16.0
+            }
         }
     }
 }
@@ -489,14 +504,21 @@ impl GitFleetApp {
                             .size(type_scale::CAPTION)
                             .font(theme::CODE_FONT)
                             .color(p.text_muted),
-                        text(format!("{}: {}", entry.action, entry.message))
-                            .size(type_scale::BODY)
-                            .color(p.text_primary),
-                        Space::with_width(Length::Fill),
+                        theme::clipped_line(
+                            text(format!("{}: {}", entry.action, entry.message))
+                                .size(type_scale::BODY)
+                                .color(p.text_primary),
+                            Length::Fill,
+                        ),
                         text(entry.date_relative.clone())
                             .size(type_scale::CAPTION)
-                            .color(p.text_muted),
-                        button(text("Reset").size(type_scale::CAPTION))
+                            .color(p.text_muted)
+                            .wrapping(text::Wrapping::None),
+                        button(
+                            text("Reset")
+                                .size(type_scale::CAPTION)
+                                .wrapping(text::Wrapping::None),
+                        )
                             .padding([3, 7])
                             .style(theme::subtle_btn(p))
                             .on_press(Message::RequestConfirm(PendingConfirm::reset_commit(
@@ -516,20 +538,7 @@ impl GitFleetApp {
                         .color(p.text_muted),
                 );
             }
-            let min_reflog_w = self
-                .reflog
-                .iter()
-                .map(|e| {
-                    (e.short_oid.chars().count()
-                        + e.selector.chars().count()
-                        + e.action.chars().count()
-                        + e.message.chars().count()
-                        + e.date_relative.chars().count()) as f32
-                        * 7.8
-                        + 136.0
-                })
-                .fold(480.0_f32, f32::max)
-                .clamp(480.0, 1400.0);
+            let min_reflog_w = 340.0_f32;
             return column![
                 header,
                 horizontal_rule(1).style(theme::subtle_rule(p)),
@@ -776,7 +785,7 @@ impl GitFleetApp {
                                 .color(p.text_muted),
                             Length::Shrink,
                         ))
-                        .width(Length::Fixed(130.0))
+                        .width(Length::Fixed(122.0))
                         .align_x(iced::alignment::Horizontal::Left),
                     ]
                     .spacing(6)
@@ -800,7 +809,9 @@ impl GitFleetApp {
         }
 
         let lanes_w = graph::graph_canvas_width(canvas_lanes);
-        let min_graph_w = (lanes_w + 68.0 + max_ref_w + 260.0 + 156.0).clamp(520.0, 1600.0);
+        // Reserve a compact minimum for commit summary (~80px) since clicking any commit
+        // opens the full summary & body in the Commit Details pane.
+        let min_graph_w = (lanes_w + 56.0 + max_ref_w + 80.0 + 162.0).clamp(320.0, 1400.0);
 
         column![
             header,

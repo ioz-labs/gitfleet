@@ -1,11 +1,38 @@
 use crate::app::{BottomViewMode, DrawerTab, GitFleetApp, Message};
 use crate::views::image_diff::ImageDiffMode;
 use iced::keyboard::{self, Key, Modifiers};
-use iced::{Subscription, event, mouse, time, window};
+use iced::{Point, Subscription, event, mouse, time, window};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+static STREAM_CURSOR_EVENTS: AtomicBool = AtomicBool::new(false);
+static LAST_CURSOR_POS: OnceLock<Mutex<HashMap<window::Id, Point>>> = OnceLock::new();
+
+fn record_cursor_pos(id: window::Id, pos: Point) {
+    let map = LAST_CURSOR_POS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = map.lock() {
+        guard.insert(id, pos);
+    }
+}
+
+pub(crate) fn latest_cursor_pos(id: window::Id) -> Option<Point> {
+    let map = LAST_CURSOR_POS.get()?;
+    map.lock().ok().and_then(|guard| guard.get(&id).copied())
+}
+
+pub(crate) fn set_stream_cursor_events(enabled: bool) {
+    STREAM_CURSOR_EVENTS.store(enabled, Ordering::Relaxed);
+}
 
 impl GitFleetApp {
     pub(crate) fn subscription(&self) -> Subscription<Message> {
+        let needs_cursor_stream = self.active_resize.is_some()
+            || self.repo_drag_candidate.is_some()
+            || self.dragging_repo.is_some();
+        set_stream_cursor_events(needs_cursor_stream);
+
         let close_sub = window::close_events().map(Message::WindowClosed);
         let tick_sub = time::every(Duration::from_millis(250)).map(|_| Message::BackgroundTick);
         let terminal_capture_keys = self.drawer_tab == Some(DrawerTab::Terminal)
@@ -35,10 +62,6 @@ impl GitFleetApp {
                 Key::Character("k") | Key::Character("p") if modifiers.command() => {
                     Some(Message::ToggleCommandPalette)
                 }
-                Key::Character("b") if modifiers.command() => Some(Message::ToggleBranchPopover),
-                Key::Character("f") if modifiers.command() && modifiers.shift() => {
-                    Some(Message::ToggleDrawer(DrawerTab::Search))
-                }
                 Key::Character("`") | Key::Character("~")
                     if modifiers.command() && modifiers.shift() =>
                 {
@@ -52,7 +75,6 @@ impl GitFleetApp {
                 Key::Character("`") if modifiers.command() => {
                     Some(Message::ToggleDrawer(DrawerTab::Terminal))
                 }
-                Key::Character("s") if modifiers.command() => Some(Message::SaveDocument),
                 Key::Character("r") if modifiers.command() && modifiers.shift() => {
                     Some(Message::RefreshAll)
                 }
@@ -72,7 +94,6 @@ impl GitFleetApp {
                 {
                     Some(Message::ShortcutRebaseSelectedBranch)
                 }
-                Key::Named(keyboard::key::Named::Escape) => Some(Message::CloseOverlays),
                 Key::Named(keyboard::key::Named::ArrowUp) if modifiers == Modifiers::ALT => {
                     Some(Message::SelectPrevRepo)
                 }
@@ -95,7 +116,12 @@ fn handle_window_event(
 ) -> Option<Message> {
     match ev {
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            Some(Message::CursorMoved(id, position))
+            record_cursor_pos(id, position);
+            if STREAM_CURSOR_EVENTS.load(Ordering::Relaxed) {
+                Some(Message::CursorMoved(id, position))
+            } else {
+                None
+            }
         }
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
             Some(Message::EndResize)
@@ -105,32 +131,77 @@ fn handle_window_event(
         iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
             Some(Message::ModifiersChanged(modifiers))
         }
-        iced::Event::Keyboard(keyboard::Event::KeyPressed {
-            key, modifiers, ..
-        }) if status == event::Status::Ignored => {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            // Window-scoped shortcuts that work even while text inputs / code editors are focused
             if modifiers.command() && modifiers.shift() && !modifiers.alt() {
                 match key.as_ref() {
-                    Key::Character("t") | Key::Character("T") => {
+                    Key::Character("f") | Key::Character("F") => {
+                        return Some(Message::ShortcutSearchFiles(id));
+                    }
+                    Key::Character("e") | Key::Character("E") => {
+                        return Some(Message::ShortcutExplorer(id));
+                    }
+                    Key::Character("t") | Key::Character("T")
+                        if status == event::Status::Ignored =>
+                    {
                         return Some(Message::UnstageSelectedFiles);
                     }
                     _ => {}
                 }
             } else if modifiers.command() && !modifiers.shift() && !modifiers.alt() {
                 match key.as_ref() {
-                    Key::Character("t") | Key::Character("T") => {
+                    Key::Character("s") | Key::Character("S") => {
+                        return Some(Message::ShortcutSave(id));
+                    }
+                    Key::Character("f") | Key::Character("F") => {
+                        return Some(Message::ShortcutFind(id));
+                    }
+                    Key::Character("h") | Key::Character("H") => {
+                        return Some(Message::ShortcutReplace(id));
+                    }
+                    Key::Character("b") | Key::Character("B") => {
+                        return Some(Message::ShortcutToggleSidebar(id));
+                    }
+                    Key::Character("w") | Key::Character("W") => {
+                        return Some(Message::ShortcutCloseTab(id));
+                    }
+                    Key::Character("o") | Key::Character("O") => {
+                        return Some(Message::ShortcutOpenFile(id));
+                    }
+                    Key::Character("=") | Key::Character("+") => {
+                        return Some(Message::ShortcutZoomFont(id, 1.0));
+                    }
+                    Key::Character("-") => {
+                        return Some(Message::ShortcutZoomFont(id, -1.0));
+                    }
+                    Key::Character("t") | Key::Character("T")
+                        if status == event::Status::Ignored =>
+                    {
                         return Some(Message::StageSelectedFiles);
                     }
-                    Key::Character("z") | Key::Character("Z") => {
+                    Key::Character("z") | Key::Character("Z")
+                        if status == event::Status::Ignored =>
+                    {
                         return Some(Message::DiscardSelectedFiles);
                     }
-                    Key::Character("c") | Key::Character("C") => {
+                    Key::Character("c") | Key::Character("C")
+                        if status == event::Status::Ignored =>
+                    {
                         return Some(Message::CopyDiffSelection(id));
                     }
-                    Key::Character("a") | Key::Character("A") => {
+                    Key::Character("a") | Key::Character("A")
+                        if status == event::Status::Ignored =>
+                    {
                         return Some(Message::SelectAllFocused(id));
                     }
                     _ => {}
                 }
+            } else if modifiers.alt() && !modifiers.command() && !modifiers.shift() {
+                if matches!(key.as_ref(), Key::Character("z") | Key::Character("Z")) {
+                    return Some(Message::ShortcutToggleWrap(id));
+                }
+            } else if matches!(key.as_ref(), Key::Named(keyboard::key::Named::Escape)) {
+                return Some(Message::ShortcutEscape(id));
             }
             None
         }
@@ -145,12 +216,21 @@ fn handle_window_and_terminal_event(
 ) -> Option<Message> {
     match ev {
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            Some(Message::CursorMoved(id, position))
+            record_cursor_pos(id, position);
+            if STREAM_CURSOR_EVENTS.load(Ordering::Relaxed) {
+                Some(Message::CursorMoved(id, position))
+            } else {
+                None
+            }
         }
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
             Some(Message::EndResize)
         }
         iced::Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(id, size)),
+        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowUnfocused),
+        iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::ModifiersChanged(modifiers))
+        }
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
             modifiers,

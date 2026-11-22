@@ -303,11 +303,22 @@ impl GitFleetApp {
                     ));
                 }
 
+                let child_repo_count = gitfleet_workspace::count_repos_in_group(&ws, name);
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
-                    format!("Delete Group '{}'…", truncate_chars(name, 18)),
-                    Message::RequestConfirm(PendingConfirm::delete_group(name.clone())),
+                    if child_repo_count > 0 {
+                        format!(
+                            "Delete Group '{}' ({child_repo_count})…",
+                            truncate_chars(name, 16)
+                        )
+                    } else {
+                        format!("Delete Group '{}'…", truncate_chars(name, 18))
+                    },
+                    Message::RequestConfirm(PendingConfirm::delete_group(
+                        name.clone(),
+                        child_repo_count,
+                    )),
                     true,
                 )));
             }
@@ -1030,6 +1041,12 @@ impl GitFleetApp {
                     items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 }
                 items = items.push(ctx_btn(
+                    icons::external_window(12.0, p.accent_fg).into(),
+                    "Open in Independent Popup".into(),
+                    Message::OpenDetachedForChangedFile(file.clone()),
+                    false,
+                ));
+                items = items.push(ctx_btn(
                     icons::file_code(12.0, p.text_secondary).into(),
                     "View Side-by-Side Diff".into(),
                     Message::OpenFileInMode(file.clone(), BottomViewMode::SideBySideDiff),
@@ -1092,6 +1109,12 @@ impl GitFleetApp {
                     )
                     .padding([2, 10]),
                 );
+                items = items.push(ctx_btn(
+                    icons::external_window(12.0, p.accent_fg).into(),
+                    "Open in Independent Popup".into(),
+                    Message::OpenDetachedForRepoFile(path.clone()),
+                    false,
+                ));
                 items = items.push(ctx_btn(
                     icons::file_code(12.0, p.accent_fg).into(),
                     "Open Preview".into(),

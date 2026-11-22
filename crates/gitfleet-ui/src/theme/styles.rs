@@ -686,6 +686,153 @@ pub fn dark_editor(p: Palette) -> impl Fn(&Theme, text_editor::Status) -> text_e
     }
 }
 
+/// Borderless edge-to-edge code canvas for GitFleet Studio (feels like a real native code editor,
+/// not a boxed form textarea).
+pub fn studio_editor(p: Palette) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style {
+    move |_, _| text_editor::Style {
+        background: Background::Color(p.surface_input),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 0.0.into(),
+        },
+        icon: p.text_muted,
+        placeholder: p.text_muted,
+        value: p.text_primary,
+        selection: Color {
+            a: 0.40,
+            ..p.accent_primary
+        },
+    }
+}
+
+pub fn studio_activity_rail(p: Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(p.surface_titlebar)),
+        text_color: Some(p.text_secondary),
+        border: Border::default(),
+        ..Default::default()
+    }
+}
+
+pub fn studio_activity_btn(
+    p: Palette,
+    active: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = match status {
+            button::Status::Active => {
+                if active {
+                    p.fill_selected
+                } else {
+                    Color::TRANSPARENT
+                }
+            }
+            button::Status::Hovered => p.fill_hover,
+            button::Status::Pressed => p.fill_active,
+            button::Status::Disabled => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: if active {
+                p.accent_fg
+            } else {
+                p.text_secondary
+            },
+            border: Border {
+                color: if active {
+                    p.accent_primary
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: if active { 1.0 } else { 0.0 },
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+pub fn studio_tab_bar(p: Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(p.surface_titlebar)),
+        text_color: Some(p.text_secondary),
+        border: Border::default(),
+        ..Default::default()
+    }
+}
+
+pub fn studio_tab_btn(
+    p: Palette,
+    active: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = match status {
+            button::Status::Active => {
+                if active {
+                    p.surface_panel
+                } else {
+                    Color::TRANSPARENT
+                }
+            }
+            button::Status::Hovered => {
+                if active {
+                    p.surface_panel
+                } else {
+                    p.fill_hover
+                }
+            }
+            button::Status::Pressed => p.fill_active,
+            button::Status::Disabled => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: if active {
+                p.text_primary
+            } else {
+                p.text_muted
+            },
+            border: Border {
+                color: if active {
+                    p.border_default
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: if active { 1.0 } else { 0.0 },
+                radius: iced::border::Radius {
+                    top_left: 5.0,
+                    top_right: 5.0,
+                    bottom_right: 0.0,
+                    bottom_left: 0.0,
+                },
+            },
+            ..Default::default()
+        }
+    }
+}
+
+pub fn studio_breadcrumb_bar(p: Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(p.surface_panel)),
+        text_color: Some(p.text_secondary),
+        border: Border::default(),
+        ..Default::default()
+    }
+}
+
+pub fn studio_find_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(p.surface_card)),
+        text_color: Some(p.text_primary),
+        border: Border {
+            color: p.border_default,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 pub fn slim_vertical_direction() -> scrollable::Direction {
     scrollable::Direction::Vertical(
         scrollable::Scrollbar::new()

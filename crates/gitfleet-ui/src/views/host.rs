@@ -97,7 +97,7 @@ impl GitFleetApp {
                         .padding([4, 7])
                         .style(theme::subtle_btn(p))
                         .on_press(Message::OpenDetachedViewer),
-                    "Open Detached Diff / Preview Window (independent popup)",
+                    "Open Independent Studio Popup (Edit, Search & Replace, Preview, Diff)",
                     tooltip::Position::Bottom,
                     p,
                 ),
@@ -567,6 +567,12 @@ impl GitFleetApp {
             modal_layers.push(self.view_workspace_modal(p));
         } else if self.show_settings_modal {
             modal_layers.push(self.view_settings_modal(p));
+        } else if self.show_eol_modal {
+            modal_layers.push(self.view_eol_modal(p));
+        } else if self.show_encoding_modal {
+            modal_layers.push(self.view_encoding_modal(p));
+        } else if self.show_syntax_modal {
+            modal_layers.push(self.view_syntax_modal(p));
         }
 
         if self.show_terminal_menu {

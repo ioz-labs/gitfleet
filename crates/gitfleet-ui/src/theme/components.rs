@@ -1317,12 +1317,12 @@ where
                 iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                     state.is_hovered = cursor.is_over(layout.bounds());
                 }
-                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    if cursor.is_over(layout.bounds()) {
-                        state.is_pressed = true;
-                        shell.publish(self.on_left_down.clone());
-                        return event::Status::Captured;
-                    }
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                    if cursor.is_over(layout.bounds()) =>
+                {
+                    state.is_pressed = true;
+                    shell.publish(self.on_left_down.clone());
+                    return event::Status::Captured;
                 }
                 iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                     state.is_pressed = false;
@@ -1420,18 +1420,6 @@ where
     M: 'a,
 {
     responsive_hscroll_impl(content, min_content_width, p, None, None)
-}
-
-pub fn responsive_hscroll_with_id<'a, M>(
-    content: impl Into<Element<'a, M>>,
-    min_content_width: f32,
-    id: scrollable::Id,
-    p: Palette,
-) -> Element<'a, M>
-where
-    M: 'a,
-{
-    responsive_hscroll_impl(content, min_content_width, p, Some(id), None)
 }
 
 /// Same as `responsive_hscroll` but attaches a persistent `scrollable::Id` and `on_scroll`
@@ -1782,6 +1770,249 @@ where
     })
 }
 
+/// Estimates rendered pixel width of a single-line string using glyph-class proportions calibrated
+/// against Iced's default proportional UI font and `CODE_FONT` monospace, so `responsive_hscroll`
+/// minimum widths closely hug real content instead of leaving large trailing voids.
+pub fn estimate_text_width(s: &str, font_size: f32, monospace: bool) -> f32 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    if monospace {
+        let units: f32 = s
+            .chars()
+            .map(|c| if c > '\u{2E7F}' { 1.1 } else { 0.61 })
+            .sum();
+        return (units * font_size * 1.03).ceil();
+    }
+    let units: f32 = s
+        .chars()
+        .map(|c| match c {
+            'i' | 'l' | 'I' | 'j' | 't' | 'f' | 'r' | '.' | ',' | ':' | ';' | '\'' | '!' | '|'
+            | ' ' => 0.28,
+            '(' | ')' | '[' | ']' | '{' | '}' | '/' | '\\' | '-' | '_' => 0.35,
+            'm' | 'w' | 'M' | 'W' | '@' | '%' => 0.78,
+            'A'..='Z' => 0.62,
+            c if c > '\u{2E7F}' => 0.95,
+            _ => 0.51,
+        })
+        .sum();
+    (units * font_size * 1.04).ceil()
+}
+
+/// Lays out a `(left, right)` pair on a single horizontal row (left-aligned + right-aligned) when
+/// both fit inside the available width, and cleanly wraps `right` onto a second right-aligned row
+/// below `left` when the pane becomes narrow — preventing button labels like "Commit & Push" from
+/// ever squishing or wrapping vertically.
+pub fn responsive_pair<'a, M>(
+    left: impl Into<Element<'a, M>>,
+    right: impl Into<Element<'a, M>>,
+    col_spacing: f32,
+    row_spacing: f32,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    struct ResponsivePair<'a, M> {
+        children: [Element<'a, M>; 2],
+        col_spacing: f32,
+        row_spacing: f32,
+    }
+
+    impl<'a, M> Widget<M, Theme, Renderer> for ResponsivePair<'a, M> {
+        fn tag(&self) -> tree::Tag {
+            tree::Tag::stateless()
+        }
+
+        fn state(&self) -> tree::State {
+            tree::State::None
+        }
+
+        fn children(&self) -> Vec<Tree> {
+            vec![Tree::new(&self.children[0]), Tree::new(&self.children[1])]
+        }
+
+        fn diff(&self, tree: &mut Tree) {
+            tree.diff_children(&self.children);
+        }
+
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Fill, Length::Shrink)
+        }
+
+        fn layout(
+            &self,
+            tree: &mut Tree,
+            renderer: &Renderer,
+            limits: &adv_layout::Limits,
+        ) -> adv_layout::Node {
+            let max_w = limits.max().width;
+            let max_h = limits.max().height;
+            let child_limits = adv_layout::Limits::new(Size::ZERO, Size::new(max_w, max_h));
+
+            let left_node =
+                self.children[0]
+                    .as_widget()
+                    .layout(&mut tree.children[0], renderer, &child_limits);
+            let right_node =
+                self.children[1]
+                    .as_widget()
+                    .layout(&mut tree.children[1], renderer, &child_limits);
+
+            let left_sz = left_node.size();
+            let right_sz = right_node.size();
+
+            let eff_w = if max_w.is_finite() {
+                max_w
+            } else {
+                left_sz.width + self.col_spacing + right_sz.width
+            };
+
+            if left_sz.width + self.col_spacing + right_sz.width <= eff_w + 0.5 {
+                let total_h = left_sz.height.max(right_sz.height);
+                let left_y = ((total_h - left_sz.height) * 0.5).max(0.0);
+                let right_y = ((total_h - right_sz.height) * 0.5).max(0.0);
+                let right_x = (eff_w - right_sz.width).max(left_sz.width + self.col_spacing);
+                let resolved = limits.resolve(Length::Fill, Length::Shrink, Size::new(eff_w, total_h));
+                adv_layout::Node::with_children(
+                    resolved,
+                    vec![
+                        left_node.move_to(Point::new(0.0, left_y)),
+                        right_node.move_to(Point::new(right_x, right_y)),
+                    ],
+                )
+            } else {
+                let total_h = left_sz.height + self.row_spacing + right_sz.height;
+                let right_x = (eff_w - right_sz.width).max(0.0);
+                let right_y = left_sz.height + self.row_spacing;
+                let resolved = limits.resolve(Length::Fill, Length::Shrink, Size::new(eff_w, total_h));
+                adv_layout::Node::with_children(
+                    resolved,
+                    vec![
+                        left_node.move_to(Point::ORIGIN),
+                        right_node.move_to(Point::new(right_x, right_y)),
+                    ],
+                )
+            }
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut Renderer,
+            theme: &Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter()
+                .zip(&tree.children)
+                .zip(layout.children())
+            {
+                child
+                    .as_widget()
+                    .draw(child_tree, renderer, theme, style, child_layout, cursor, viewport);
+            }
+        }
+
+        fn on_event(
+            &mut self,
+            tree: &mut Tree,
+            event: iced::Event,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            renderer: &Renderer,
+            clipboard: &mut dyn Clipboard,
+            shell: &mut Shell<'_, M>,
+            viewport: &Rectangle,
+        ) -> event::Status {
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter_mut()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+            {
+                if child.as_widget_mut().on_event(
+                    child_tree,
+                    event.clone(),
+                    child_layout,
+                    cursor,
+                    renderer,
+                    clipboard,
+                    shell,
+                    viewport,
+                ) == event::Status::Captured
+                {
+                    return event::Status::Captured;
+                }
+            }
+            event::Status::Ignored
+        }
+
+        fn mouse_interaction(
+            &self,
+            tree: &Tree,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+            renderer: &Renderer,
+        ) -> mouse::Interaction {
+            self.children
+                .iter()
+                .zip(&tree.children)
+                .zip(layout.children())
+                .map(|((child, child_tree), child_layout)| {
+                    child.as_widget().mouse_interaction(
+                        child_tree,
+                        child_layout,
+                        cursor,
+                        viewport,
+                        renderer,
+                    )
+                })
+                .max()
+                .unwrap_or_default()
+        }
+
+        fn operate(
+            &self,
+            tree: &mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            operation: &mut dyn iced::advanced::widget::Operation,
+        ) {
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+            {
+                child
+                    .as_widget()
+                    .operate(child_tree, child_layout, renderer, operation);
+            }
+        }
+
+        fn overlay<'b>(
+            &'b mut self,
+            tree: &'b mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            translation: Vector,
+        ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+            overlay::from_children(&mut self.children, tree, layout, renderer, translation)
+        }
+    }
+
+    Element::new(ResponsivePair {
+        children: [left.into(), right.into()],
+        col_spacing,
+        row_spacing,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1825,5 +2056,24 @@ mod tests {
         assert_eq!(content_w, 420.0);
         assert_eq!(total_w, 428.0);
         assert_eq!(bottom_pad, 10.0);
+    }
+
+    #[test]
+    fn text_width_estimator_tracks_proportional_glyph_widths_tightly() {
+        let w_gitfleet = estimate_text_width("gitfleet", 13.0, false);
+        assert!(
+            (37.0..=45.0).contains(&w_gitfleet),
+            "expected ~40px for 'gitfleet', got {w_gitfleet}"
+        );
+        let w_xiaozhi = estimate_text_width("xiaozhi-esp32", 13.0, false);
+        assert!(
+            (76.0..=86.0).contains(&w_xiaozhi),
+            "expected ~81px for 'xiaozhi-esp32', got {w_xiaozhi}"
+        );
+        let w_branch = estimate_text_width("(test/asr-only)", 12.0, false);
+        assert!(
+            (70.0..=82.0).contains(&w_branch),
+            "expected ~76px for '(test/asr-only)', got {w_branch}"
+        );
     }
 }

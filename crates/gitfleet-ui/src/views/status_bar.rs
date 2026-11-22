@@ -2,7 +2,7 @@ use crate::app::{DrawerTab, GitFleetApp, Message, STATUS_BAR_HEIGHT};
 use crate::icons;
 use crate::theme::{self, Palette, icon_size, type_scale};
 use crate::views::{tip, truncate_chars};
-use iced::widget::{Space, button, container, row, text, tooltip};
+use iced::widget::{Space, button, column, container, horizontal_rule, row, text, tooltip};
 use iced::{Alignment, Color, Element, Length};
 
 impl GitFleetApp {
@@ -29,23 +29,31 @@ impl GitFleetApp {
             .map(|st| st.unstaged_count + st.untracked_count + st.conflict_count)
             .unwrap_or(0);
 
-        let mut left = row![].spacing(4).align_y(Alignment::Center);
+        let mut left = row![]
+            .spacing(4)
+            .height(Length::Fill)
+            .align_y(Alignment::Center);
 
         if let Some(repo) = &active_repo {
             // Accent left badge: active branch (single quick-switch entry Ctrl+B)
             left = left
                 .push(tip(
                     button(
-                        row![
-                            icons::branch(icon_size::XS, Color::WHITE),
-                            text(truncate_chars(&branch_label, 24))
-                                .size(type_scale::CAPTION)
-                                .color(Color::WHITE),
-                        ]
-                        .spacing(5)
-                        .align_y(Alignment::Center),
+                        container(
+                            row![
+                                icons::branch(icon_size::XS, Color::WHITE),
+                                text(truncate_chars(&branch_label, 24))
+                                    .size(type_scale::CAPTION)
+                                    .color(Color::WHITE)
+                                    .wrapping(text::Wrapping::None),
+                            ]
+                            .spacing(5)
+                            .align_y(Alignment::Center),
+                        )
+                        .height(Length::Fill)
+                        .align_y(iced::alignment::Vertical::Center),
                     )
-                    .padding([2, 10])
+                    .padding([0, 10])
                     .height(Length::Fill)
                     .style(theme::vscode_status_badge(p))
                     .on_press(Message::ToggleBranchPopover),
@@ -57,7 +65,8 @@ impl GitFleetApp {
                     container(
                         text(truncate_chars(&repo.name, 22))
                             .size(type_scale::CAPTION)
-                            .color(p.text_primary),
+                            .color(p.text_primary)
+                            .wrapping(text::Wrapping::None),
                     )
                     .padding([0, 6]),
                 )
@@ -67,14 +76,16 @@ impl GitFleetApp {
                         row![
                             text(behind.to_string())
                                 .size(type_scale::CAPTION)
-                                .color(if behind > 0 { p.accent_fg } else { p.text_muted }),
+                                .color(if behind > 0 { p.accent_fg } else { p.text_muted })
+                                .wrapping(text::Wrapping::None),
                             icons::pull(
                                 11.0,
                                 if behind > 0 { p.accent_fg } else { p.text_muted }
                             ),
                             text(ahead.to_string())
                                 .size(type_scale::CAPTION)
-                                .color(if ahead > 0 { p.success_fg } else { p.text_muted }),
+                                .color(if ahead > 0 { p.success_fg } else { p.text_muted })
+                                .wrapping(text::Wrapping::None),
                             icons::push(
                                 11.0,
                                 if ahead > 0 { p.success_fg } else { p.text_muted }
@@ -93,7 +104,8 @@ impl GitFleetApp {
                             icons::x_circle(12.0, p.danger_fg),
                             text(format!("{conflicts} conflict"))
                                 .size(type_scale::CAPTION)
-                                .color(p.danger_fg),
+                                .color(p.danger_fg)
+                                .wrapping(text::Wrapping::None),
                         ]
                         .spacing(4)
                         .align_y(Alignment::Center),
@@ -154,18 +166,106 @@ impl GitFleetApp {
         }
 
         // Right side: context telemetry + Bottom Dock panel toggles (Search, Secrets, Terminal, Output)
-        let mut right = row![].spacing(2).align_y(Alignment::Center);
+        let mut right = row![]
+            .spacing(2)
+            .height(Length::Fill)
+            .align_y(Alignment::Center);
 
         if let Some(file) = &self.active_file_path {
-            let base = file.rsplit('/').next().unwrap_or(file);
+            let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
             right = right.push(
                 container(
-                    text(format!("{}  ·  UTF-8  ·  LF", truncate_chars(base, 26)))
+                    text(truncate_chars(base, 26))
                         .size(type_scale::BADGE)
-                        .color(p.text_muted),
+                        .color(p.text_muted)
+                        .wrapping(text::Wrapping::None),
                 )
-                .padding([0, 6]),
+                .padding([0, 4]),
             );
+            if self.open_doc_id.is_some() {
+                let enc_color = if self.show_encoding_modal {
+                    p.accent_fg
+                } else {
+                    p.text_secondary
+                };
+                let eol_color = if self.show_eol_modal {
+                    p.accent_fg
+                } else {
+                    p.text_secondary
+                };
+                right = right
+                    .push(tip(
+                        button(
+                            row![
+                                text(self.open_doc_encoding.label())
+                                    .size(type_scale::BADGE)
+                                    .color(enc_color)
+                                    .wrapping(text::Wrapping::None),
+                                icons::chevron_down(10.0, p.text_muted),
+                            ]
+                            .spacing(3)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([2, 6])
+                        .style(theme::vscode_status_item(p))
+                        .on_press(Message::ToggleEncodingModal),
+                        format!(
+                            "Encoding: {} — click to open Encoding menu",
+                            self.open_doc_encoding.description()
+                        ),
+                        tooltip::Position::Top,
+                        p,
+                    ))
+                    .push(tip(
+                        button(
+                            row![
+                                text(self.open_doc_line_ending.label())
+                                    .size(type_scale::BADGE)
+                                    .color(eol_color)
+                                    .wrapping(text::Wrapping::None),
+                                icons::chevron_down(10.0, p.text_muted),
+                            ]
+                            .spacing(3)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([2, 6])
+                        .style(theme::vscode_status_item(p))
+                        .on_press(Message::ToggleEolModal),
+                        format!(
+                            "End of Line Sequence: {} — click to open EOL menu",
+                            self.open_doc_line_ending.description()
+                        ),
+                        tooltip::Position::Top,
+                        p,
+                    ));
+            }
+            let lang_col = self.open_doc_language.badge_color(self.theme_mode);
+            let syntax_fg = if self.show_syntax_modal {
+                p.accent_fg
+            } else {
+                p.text_secondary
+            };
+            right = right.push(tip(
+                button(
+                    row![
+                        container(Space::new(Length::Fixed(6.0), Length::Fixed(6.0)))
+                            .style(theme::dot_box(lang_col)),
+                        text(self.open_doc_language.label())
+                            .size(type_scale::BADGE)
+                            .color(syntax_fg)
+                            .wrapping(text::Wrapping::None),
+                        icons::chevron_down(10.0, p.text_muted),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([2, 6])
+                .style(theme::vscode_status_item(p))
+                .on_press(Message::ToggleSyntaxModal),
+                "Syntax Highlighting — click to select language",
+                tooltip::Position::Top,
+                p,
+            ));
         }
 
         if active_repo.is_some() {
@@ -175,7 +275,8 @@ impl GitFleetApp {
                         "Unstaged {unstaged_n} · Staged {staged_n} · {repo_count} repo(s)"
                     ))
                     .size(type_scale::BADGE)
-                    .color(p.text_muted),
+                    .color(p.text_muted)
+                    .wrapping(text::Wrapping::None),
                 )
                 .padding([0, 6]),
             );
@@ -412,14 +513,19 @@ impl GitFleetApp {
                 p,
             ));
 
-        container(
-            row![left, Space::with_width(Length::Fill), right]
-                .height(Length::Fill)
-                .align_y(Alignment::Center),
-        )
+        column![
+            horizontal_rule(1).style(theme::subtle_rule(p)),
+            container(
+                row![left, Space::with_width(Length::Fill), right]
+                    .height(Length::Fill)
+                    .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(STATUS_BAR_HEIGHT - 1.0))
+            .style(theme::vscode_status_bar(p)),
+        ]
         .width(Length::Fill)
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
-        .style(theme::vscode_status_bar(p))
         .into()
     }
 }

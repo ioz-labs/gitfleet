@@ -8,11 +8,14 @@ pub(crate) use message::Message;
 pub(crate) use types::*;
 
 use crate::{graph, preview};
+use crate::syntax::CodeLanguage;
 use crate::terminal::TerminalFontCatalog;
 use crate::theme::ThemeMode;
 use crate::views::detached_viewer::DetachedViewerState;
+use crate::views::diff_viewer::{DiffLayoutCache, build_diff_layout_cache};
 use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
+use gitfleet_docs::{FileEncoding, LineEnding};
 use gitfleet_git::{
     AmendTarget, BranchInfo, CommitSummary, FileChange, ForecastResult, GitFlowKind, GitFlowState,
     OrphanGitlink, ParsedConflictFile, ParsedDiff, ReflogEntry, ReleaseTrigger, RepoStatusSummary,
@@ -52,6 +55,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) branches: Vec<BranchInfo>,
     pub(crate) selected_branch: Option<String>,
     pub(crate) last_branch_click: Option<(String, Instant)>,
+    pub(crate) last_file_click: Option<(String, Instant)>,
     pub(crate) graph_checked_branches: HashSet<String>,
     pub(crate) toggled_branch_nodes: HashSet<String>,
     pub(crate) stashes: Vec<StashEntry>,
@@ -113,7 +117,9 @@ pub(crate) struct GitFleetApp {
     pub(crate) focus_pane: ActiveFocusPane,
     pub(crate) keyboard_modifiers: iced::keyboard::Modifiers,
     pub(crate) diff_title: String,
+    pub(crate) diff_parsed_path: Option<String>,
     pub(crate) diff_parsed: ParsedDiff,
+    pub(crate) diff_cache: Arc<DiffLayoutCache>,
     pub(crate) diff_is_working_file: bool,
     pub(crate) diff_is_staged: bool,
     pub(crate) diff_compact: bool,
@@ -123,21 +129,38 @@ pub(crate) struct GitFleetApp {
     pub(crate) diff_unified_scroll_id: scrollable::Id,
     pub(crate) diff_left_scroll_y: f32,
     pub(crate) diff_right_scroll_y: f32,
+    pub(crate) diff_unified_scroll_y: f32,
     pub(crate) diff_left_scroll_x: f32,
     pub(crate) diff_right_scroll_x: f32,
     pub(crate) diff_left_viewport_h: f32,
     pub(crate) diff_right_viewport_h: f32,
+    pub(crate) diff_unified_viewport_h: f32,
     pub(crate) diff_active_change: usize,
     pub(crate) diff_selection: Option<DiffTextSelection>,
     pub(crate) diff_last_click: Option<(Instant, DiffSelectionSide, usize, usize, u8)>,
 
+    pub(crate) doc_request_id: u64,
+    pub(crate) open_doc_raw_text: Option<String>,
+    pub(crate) preview_hydrated: bool,
+    pub(crate) editor_hydrated: bool,
     pub(crate) preview_state: preview::PreviewState,
     pub(crate) preview_editor: text_editor::Content,
     pub(crate) preview_raw_mode: bool,
     pub(crate) open_doc_id: Option<DocumentId>,
     pub(crate) open_doc_version: Option<String>,
+    pub(crate) open_doc_path: Option<PathBuf>,
+    pub(crate) open_doc_line_ending: LineEnding,
+    pub(crate) open_doc_encoding: FileEncoding,
+    pub(crate) open_doc_language: CodeLanguage,
     pub(crate) editor_content: text_editor::Content,
     pub(crate) editor_dirty: bool,
+    pub(crate) show_eol_modal: bool,
+    pub(crate) show_encoding_modal: bool,
+    pub(crate) show_syntax_modal: bool,
+    pub(crate) syntax_filter: String,
+    pub(crate) syntax_filter_id: text_input::Id,
+    pub(crate) doc_format_menu_pos: Point,
+    pub(crate) encoding_modal_mode: EncodingModalMode,
 
     // Overlays
     pub(crate) show_palette: bool,
@@ -181,9 +204,14 @@ pub(crate) struct GitFleetApp {
 
     // Git Flow Modal
     pub(crate) show_git_flow_modal: bool,
+    pub(crate) git_flow_editing_config: bool,
     pub(crate) git_flow_state: GitFlowState,
     pub(crate) git_flow_main_input: String,
     pub(crate) git_flow_develop_input: String,
+    pub(crate) git_flow_feature_prefix: String,
+    pub(crate) git_flow_release_prefix: String,
+    pub(crate) git_flow_hotfix_prefix: String,
+    pub(crate) git_flow_bugfix_prefix: String,
     pub(crate) git_flow_name_input: String,
     pub(crate) git_flow_kind: GitFlowKind,
 
@@ -321,6 +349,7 @@ impl GitFleetApp {
             branches: Vec::new(),
             selected_branch: None,
             last_branch_click: None,
+            last_file_click: None,
             graph_checked_branches: HashSet::new(),
             toggled_branch_nodes: HashSet::new(),
             stashes: Vec::new(),
@@ -375,7 +404,9 @@ impl GitFleetApp {
             focus_pane: ActiveFocusPane::Other,
             keyboard_modifiers: iced::keyboard::Modifiers::empty(),
             diff_title: "No file selected".into(),
+            diff_parsed_path: None,
             diff_parsed: ParsedDiff::default(),
+            diff_cache: Arc::new(DiffLayoutCache::default()),
             diff_is_working_file: false,
             diff_is_staged: false,
             diff_compact: true,
@@ -385,20 +416,37 @@ impl GitFleetApp {
             diff_unified_scroll_id: scrollable::Id::unique(),
             diff_left_scroll_y: 0.0,
             diff_right_scroll_y: 0.0,
+            diff_unified_scroll_y: 0.0,
             diff_left_scroll_x: 0.0,
             diff_right_scroll_x: 0.0,
-            diff_left_viewport_h: 320.0,
-            diff_right_viewport_h: 320.0,
+            diff_left_viewport_h: 900.0,
+            diff_right_viewport_h: 900.0,
+            diff_unified_viewport_h: 900.0,
             diff_active_change: 0,
             diff_selection: None,
             diff_last_click: None,
+            doc_request_id: 0,
+            open_doc_raw_text: None,
+            preview_hydrated: false,
+            editor_hydrated: false,
             preview_state: preview::PreviewState::Empty,
             preview_editor: text_editor::Content::new(),
             preview_raw_mode: false,
             open_doc_id: None,
             open_doc_version: None,
+            open_doc_path: None,
+            open_doc_line_ending: LineEnding::Lf,
+            open_doc_encoding: FileEncoding::Utf8,
+            open_doc_language: CodeLanguage::PlainText,
             editor_content: text_editor::Content::new(),
             editor_dirty: false,
+            show_eol_modal: false,
+            show_encoding_modal: false,
+            show_syntax_modal: false,
+            syntax_filter: String::new(),
+            syntax_filter_id: text_input::Id::unique(),
+            doc_format_menu_pos: Point::ORIGIN,
+            encoding_modal_mode: EncodingModalMode::SaveWithEncoding,
             show_palette: false,
             palette_input_id: text_input::Id::unique(),
             palette_query: String::new(),
@@ -426,9 +474,14 @@ impl GitFleetApp {
             conflict_expanded_segments: HashSet::new(),
             conflict_scroll_id: scrollable::Id::unique(),
             show_git_flow_modal: false,
+            git_flow_editing_config: false,
             git_flow_state: GitFlowState::default(),
             git_flow_main_input: "main".into(),
             git_flow_develop_input: "develop".into(),
+            git_flow_feature_prefix: "feature/".into(),
+            git_flow_release_prefix: "release/".into(),
+            git_flow_hotfix_prefix: "hotfix/".into(),
+            git_flow_bugfix_prefix: "bugfix/".into(),
             git_flow_name_input: String::new(),
             git_flow_kind: GitFlowKind::Feature,
             drawer_tab: None,
@@ -656,6 +709,9 @@ impl GitFleetApp {
             || self.show_git_flow_modal
             || self.show_workspace_modal
             || self.show_settings_modal
+            || self.show_eol_modal
+            || self.show_encoding_modal
+            || self.show_syntax_modal
             || self.show_terminal_menu
             || self.context_menu.is_some()
             || self.pending_confirm.is_some()
@@ -849,37 +905,138 @@ impl GitFleetApp {
         self.preview_raw_mode = false;
     }
 
-    pub(crate) fn open_file_for_preview_and_edit(&mut self, rel_path: &str) {
-        self.active_file_path = Some(rel_path.to_string());
-        let Some(repo) = self.current_repo() else {
-            return;
-        };
-        let full_path = repo.path.join(rel_path);
-        match self.service.docs.open_document(&full_path) {
-            Ok(cap) => {
-                self.preview_state =
-                    preview::PreviewState::from_file(&full_path, Some(&cap.content));
-                self.sync_preview_editor();
-                self.editor_content = text_editor::Content::with_text(&cap.content);
-                self.open_doc_id = Some(cap.document_id);
-                self.open_doc_version = Some(cap.version);
-                self.editor_dirty = false;
-            }
-            Err(_) => {
-                // Binary files (images, etc.) still preview natively!
-                self.preview_state = preview::PreviewState::from_file(&full_path, None);
-                self.sync_preview_editor();
-                self.editor_content = text_editor::Content::new();
-                self.open_doc_id = None;
-                self.open_doc_version = None;
-                self.editor_dirty = false;
-            }
-        }
-        self.load_conflict_state_for_file(rel_path);
+    pub(crate) fn current_host_cursor_pos(&self) -> Point {
+        self.windows
+            .iter()
+            .find_map(|(id, kind)| (*kind == WindowKind::Host).then_some(*id))
+            .and_then(crate::app::subscription::latest_cursor_pos)
+            .unwrap_or(self.cursor_pos)
     }
 
-    /// Reloads Preview & Editor from disk if the file changed externally (or switched), while
-    /// preserving unsaved user typing (`editor_dirty == true`) and cursor position when unchanged.
+    pub(crate) fn rebuild_diff_cache(&mut self) {
+        self.diff_cache = build_diff_layout_cache(
+            &self.diff_parsed,
+            self.diff_compact,
+            &self.diff_expanded_gaps,
+            self.open_doc_language,
+            self.theme_mode,
+        );
+    }
+
+    pub(crate) fn clear_diff_parsed_and_cache(&mut self) {
+        self.diff_parsed_path = None;
+        self.diff_parsed = ParsedDiff::default();
+        self.diff_cache = Arc::new(DiffLayoutCache::default());
+        self.diff_expanded_gaps.clear();
+        self.diff_selection = None;
+        self.diff_left_scroll_y = 0.0;
+        self.diff_right_scroll_y = 0.0;
+        self.diff_unified_scroll_y = 0.0;
+        self.diff_left_scroll_x = 0.0;
+        self.diff_right_scroll_x = 0.0;
+        self.diff_active_change = 0;
+    }
+
+    pub(crate) fn ensure_preview_hydrated(&mut self) {
+        if self.preview_hydrated {
+            return;
+        }
+        if let Some(full_path) = self.open_doc_path.clone().or_else(|| {
+            self.current_repo().and_then(|r| {
+                self.active_file_path
+                    .as_deref()
+                    .map(|rel| r.path.join(rel))
+            })
+        }) {
+            self.preview_state =
+                preview::PreviewState::from_file(&full_path, self.open_doc_raw_text.as_deref());
+            self.sync_preview_editor();
+        } else {
+            self.preview_state = preview::PreviewState::Empty;
+            self.preview_editor = text_editor::Content::new();
+        }
+        self.preview_hydrated = true;
+    }
+
+    pub(crate) fn ensure_editor_hydrated(&mut self) {
+        if self.editor_hydrated {
+            return;
+        }
+        if let Some(raw) = &self.open_doc_raw_text {
+            self.editor_content = text_editor::Content::with_text(raw);
+        } else {
+            self.editor_content = text_editor::Content::new();
+        }
+        self.editor_hydrated = true;
+    }
+
+    /// Asynchronously loads file metadata/content & scans for conflict markers off the UI thread,
+    /// avoiding synchronous disk reads and `cosmic_text` editor/preview shaping when clicking
+    /// between files in Diff view.
+    pub(crate) fn open_file_for_preview_and_edit_async(&mut self, rel_path: &str) -> Task<Message> {
+        self.active_file_path = Some(rel_path.to_string());
+        self.open_doc_language = CodeLanguage::from_path(std::path::Path::new(rel_path));
+        self.editor_dirty = false;
+        self.open_doc_raw_text = None;
+        self.preview_hydrated = false;
+        self.editor_hydrated = false;
+        self.clear_conflict_state();
+
+        let Some(repo) = self.current_repo() else {
+            self.open_doc_id = None;
+            self.open_doc_version = None;
+            self.open_doc_path = None;
+            return Task::none();
+        };
+
+        self.doc_request_id = self.doc_request_id.wrapping_add(1);
+        let req_id = self.doc_request_id;
+        let full_path = repo.path.join(rel_path);
+        let rel = rel_path.to_string();
+        let is_git_conflicted = self
+            .active_status()
+            .is_some_and(|st| st.conflict_files.iter().any(|f| f.path == rel_path));
+        let svc = self.service.clone();
+
+        Task::perform(
+            async move {
+                let payload = tokio::task::spawn_blocking(move || {
+                    let doc = svc.docs.open_document(&full_path).ok();
+                    let conflict_parsed = if let Some(cap) = &doc {
+                        if is_git_conflicted || has_conflict_markers(&cap.content) {
+                            Some(ParsedConflictFile::parse(&cap.content))
+                        } else {
+                            None
+                        }
+                    } else if is_git_conflicted {
+                        std::fs::read_to_string(&full_path)
+                            .ok()
+                            .map(|raw| ParsedConflictFile::parse(&raw))
+                    } else {
+                        None
+                    };
+                    crate::app::message::DocContextPayload {
+                        req_id,
+                        rel_path: rel,
+                        full_path,
+                        doc,
+                        conflict_parsed,
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| crate::app::message::DocContextPayload {
+                    req_id,
+                    rel_path: String::new(),
+                    full_path: PathBuf::new(),
+                    doc: None,
+                    conflict_parsed: None,
+                });
+                Box::new(payload)
+            },
+            Message::DocContextLoaded,
+        )
+    }
+
     pub(crate) fn reload_file_for_preview_and_edit_if_changed(&mut self, rel_path: &str) {
         if self.editor_dirty {
             return;
@@ -891,26 +1048,47 @@ impl GitFleetApp {
         let same_path = self.active_file_path.as_deref() == Some(rel_path);
         match self.service.docs.open_document(&full_path) {
             Ok(cap) => {
-                if same_path && self.open_doc_version.as_deref() == Some(cap.version.as_str()) {
+                if same_path
+                    && self.open_doc_version.as_deref() == Some(cap.version.as_str())
+                    && self.open_doc_raw_text.is_some()
+                {
+                    if self.bottom_mode == BottomViewMode::Preview {
+                        self.ensure_preview_hydrated();
+                    } else if self.bottom_mode == BottomViewMode::Edit {
+                        self.ensure_editor_hydrated();
+                    }
                     return;
                 }
                 self.active_file_path = Some(rel_path.to_string());
-                self.preview_state =
-                    preview::PreviewState::from_file(&full_path, Some(&cap.content));
-                self.sync_preview_editor();
-                self.editor_content = text_editor::Content::with_text(&cap.content);
                 self.open_doc_id = Some(cap.document_id);
                 self.open_doc_version = Some(cap.version);
+                self.open_doc_path = Some(full_path);
+                self.open_doc_line_ending = cap.line_ending;
+                self.open_doc_encoding = cap.encoding;
+                self.open_doc_raw_text = Some(cap.content);
                 self.editor_dirty = false;
+                self.preview_hydrated = false;
+                self.editor_hydrated = false;
+                if self.bottom_mode == BottomViewMode::Preview {
+                    self.ensure_preview_hydrated();
+                } else if self.bottom_mode == BottomViewMode::Edit {
+                    self.ensure_editor_hydrated();
+                }
             }
             Err(_) => {
                 self.active_file_path = Some(rel_path.to_string());
-                self.preview_state = preview::PreviewState::from_file(&full_path, None);
-                self.sync_preview_editor();
-                self.editor_content = text_editor::Content::new();
                 self.open_doc_id = None;
                 self.open_doc_version = None;
+                self.open_doc_path = None;
+                self.open_doc_raw_text = None;
+                self.open_doc_line_ending = LineEnding::Lf;
+                self.open_doc_encoding = FileEncoding::Utf8;
                 self.editor_dirty = false;
+                self.preview_hydrated = false;
+                self.editor_hydrated = false;
+                if self.bottom_mode == BottomViewMode::Preview {
+                    self.ensure_preview_hydrated();
+                }
             }
         }
         self.load_conflict_state_for_file(rel_path);
@@ -920,23 +1098,31 @@ impl GitFleetApp {
     /// longer changed (e.g. after Discard, Commit, or external revert).
     pub(crate) fn clear_active_diff_viewer(&mut self) {
         self.diff_request_id = self.diff_request_id.wrapping_add(1);
+        self.doc_request_id = self.doc_request_id.wrapping_add(1);
         self.selected_changed_file = None;
         self.diff_is_working_file = false;
         self.diff_is_staged = false;
-        self.diff_parsed = ParsedDiff::default();
+        self.clear_diff_parsed_and_cache();
         self.diff_image = None;
         self.diff_csv = None;
-        self.diff_selection = None;
-        self.diff_expanded_gaps.clear();
         self.clear_conflict_state();
         if !self.editor_dirty {
             self.active_file_path = None;
             self.diff_title = "No file selected".into();
+            self.open_doc_raw_text = None;
+            self.preview_hydrated = false;
+            self.editor_hydrated = false;
             self.preview_state = preview::PreviewState::Empty;
             self.preview_editor = text_editor::Content::new();
             self.editor_content = text_editor::Content::new();
             self.open_doc_id = None;
             self.open_doc_version = None;
+            self.open_doc_path = None;
+            self.open_doc_line_ending = LineEnding::Lf;
+            self.open_doc_encoding = FileEncoding::Utf8;
+            self.show_eol_modal = false;
+            self.show_encoding_modal = false;
+            self.show_syntax_modal = false;
         }
         if matches!(
             self.bottom_mode,
@@ -1145,12 +1331,16 @@ impl GitFleetApp {
     pub(crate) fn title(&self, window_id: window::Id) -> String {
         match self.windows.get(&window_id) {
             Some(WindowKind::DetachedViewer) => {
-                let label = self
+                let (label, dirty) = self
                     .detached_viewers
                     .get(&window_id)
-                    .map(|v| v.title.as_str())
-                    .unwrap_or("Standalone Diff & Preview");
-                format!("GitFleet Viewer — {label}")
+                    .map(|v| v.window_title_info())
+                    .unwrap_or_else(|| ("Independent Studio".into(), false));
+                if dirty {
+                    format!("● {label} — GitFleet Studio")
+                } else {
+                    format!("{label} — GitFleet Studio")
+                }
             }
             _ => {
                 if let Some(repo) = self.current_repo() {

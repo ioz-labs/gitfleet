@@ -4,6 +4,7 @@ mod app;
 mod graph;
 mod icons;
 mod preview;
+mod syntax;
 mod terminal;
 mod theme;
 mod views;

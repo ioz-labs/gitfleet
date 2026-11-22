@@ -1,19 +1,23 @@
 use crate::app::types::{
     BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuSubmenu, ContextMenuTarget,
-    DiffGapExpandMode, DiffSelectionSide, DrawerTab, FilesViewMode, GraphTab, PendingConfirm,
-    RepoFilter, ScanLevelPreset, SettingsTab, TerminalMenuSubmenu,
+    DiffGapExpandMode, DiffSelectionSide, DrawerTab, EncodingModalMode, FilesViewMode, GraphTab,
+    PendingConfirm, RepoFilter, ScanLevelPreset, SettingsTab, TerminalMenuSubmenu,
 };
 use crate::terminal::TerminalCanvasAction;
+use crate::syntax::CodeLanguage;
 use crate::theme::ThemeMode;
 use crate::views::csv_diff::CsvDiffData;
 use crate::views::detached_viewer::DetachedAction;
+use crate::views::diff_viewer::DiffLayoutCache;
 use crate::views::image_diff::{ImageDiffData, ImageDiffMode, ImageDiffZoom};
 use gitfleet_core::RepoId;
+use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{
     AmendTarget, BranchInfo, CommitSummary, ConflictStrategy, DiscardTarget, FileChange,
-    ForecastResult, GitFlowKind, GitFlowState, HunkChoice, MergeMode, OrphanGitlink, ReflogEntry,
-    RepoStatusSummary, ResetMode, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
+    ForecastResult, GitFlowKind, GitFlowState, HunkChoice, MergeMode, OrphanGitlink,
+    ParsedConflictFile, ParsedDiff, ReflogEntry, RepoStatusSummary, ResetMode, StashEntry,
+    SubmoduleInfo, TagInfo, WorktreeInfo,
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{IgnoreLayer, OversizedFile, SecretFinding};
@@ -22,6 +26,16 @@ use iced::keyboard::{Key, Modifiers};
 use iced::widget::{scrollable, text_editor};
 use iced::{Point, Size, window};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+pub(crate) struct DocContextPayload {
+    pub(crate) req_id: u64,
+    pub(crate) rel_path: String,
+    pub(crate) full_path: PathBuf,
+    pub(crate) doc: Option<OpenDocumentCapability>,
+    pub(crate) conflict_parsed: Option<ParsedConflictFile>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
@@ -169,14 +183,32 @@ pub(crate) enum Message {
 
     // Git Flow
     ToggleGitFlowModal,
+    ToggleGitFlowEditConfig,
     GitFlowStateLoaded(Result<GitFlowState, String>),
     GitFlowMainChanged(String),
     GitFlowDevelopChanged(String),
+    GitFlowPrefixChanged(GitFlowKind, String),
     GitFlowNameChanged(String),
     GitFlowKindChanged(GitFlowKind),
     InitGitFlow,
+    UninitGitFlow,
     StartGitFlow,
     FinishGitFlow,
+    FinishGitFlowBranch(GitFlowKind, String),
+    RequestAbortGitFlowBranch {
+        branch: String,
+        base_branch: String,
+    },
+    AbortGitFlowBranchChecked {
+        branch: String,
+        base_branch: String,
+        unmerged: bool,
+    },
+    AbortGitFlowBranch {
+        branch: String,
+        base_branch: String,
+        force: bool,
+    },
 
     // Files Panel (Right-Top: Flat | Dir | All Files)
     SetFilesViewMode(FilesViewMode),
@@ -185,6 +217,8 @@ pub(crate) enum Message {
     SelectAllFilesDir(String),
     ToggleAllFilesDirNode(String),
     AllFilesLoaded(RepoId, Result<Vec<String>, String>),
+    ClickChangedFile(FileChange),
+    ClickRepoFile(String),
     SelectChangedFile(FileChange),
     SelectRepoFile(String),
 
@@ -217,12 +251,14 @@ pub(crate) enum Message {
     ExpandDiffGap { gap_id: usize, mode: DiffGapExpandMode },
     DiffLeftScrolled(scrollable::Viewport),
     DiffRightScrolled(scrollable::Viewport),
+    DiffUnifiedScrolled(scrollable::Viewport),
     DiffJumpChange(isize),
     DiffSelStart { side: DiffSelectionSide, row: usize, col: usize },
     DiffSelDrag { side: DiffSelectionSide, row: usize, col: usize },
     CopyDiffSelection(window::Id),
     SelectAllFocused(window::Id),
-    DiffLoaded(String, Result<String, String>),
+    DiffLoaded(u64, String, Result<(ParsedDiff, Arc<DiffLayoutCache>), String>),
+    DocContextLoaded(Box<DocContextPayload>),
     ImageDiffLoaded(u64, String, ImageDiffData),
     CsvDiffLoaded(u64, String, CsvDiffData),
     SetImageDiffMode(ImageDiffMode),
@@ -242,15 +278,38 @@ pub(crate) enum Message {
     CopyPreviewText,
     EditorAction(text_editor::Action),
     SaveDocument,
+    ToggleEolModal,
+    ToggleEncodingModal,
+    ToggleSyntaxModal,
+    SyntaxFilterChanged(String),
+    SetDocLanguage(CodeLanguage),
+    SetEncodingModalMode(EncodingModalMode),
+    ChangeDocLineEnding(LineEnding),
+    SaveDocWithEncoding(FileEncoding),
+    ReopenDocWithEncoding(FileEncoding),
 
     // Command Log & Detached Viewer
     ToggleDrawer(DrawerTab),
     CloseDrawer,
     ClearCommandLog,
     OpenDetachedViewer,
+    OpenDetachedForChangedFile(FileChange),
+    OpenDetachedForRepoFile(String),
+    OpenDetachedSearch(Option<String>),
     ViewerOpened(window::Id),
     Detached(window::Id, DetachedAction),
     WindowClosed(window::Id),
+    ShortcutSave(window::Id),
+    ShortcutFind(window::Id),
+    ShortcutReplace(window::Id),
+    ShortcutSearchFiles(window::Id),
+    ShortcutExplorer(window::Id),
+    ShortcutToggleSidebar(window::Id),
+    ShortcutCloseTab(window::Id),
+    ShortcutOpenFile(window::Id),
+    ShortcutZoomFont(window::Id, f32),
+    ShortcutToggleWrap(window::Id),
+    ShortcutEscape(window::Id),
 
     // Milestone 3: Groups, Multi-Workspace, Clone/Create/Locate, Submodules, Worktrees
     ToggleGroupCollapse(String),

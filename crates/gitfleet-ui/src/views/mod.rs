@@ -8,7 +8,7 @@ mod dock;
 mod graph_pane;
 mod host;
 pub(crate) mod image_diff;
-mod overlays;
+pub(crate) mod overlays;
 mod repositories;
 mod status_bar;
 
