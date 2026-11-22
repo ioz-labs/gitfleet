@@ -28,6 +28,7 @@ pub struct SchedulerService {
     watcher: Mutex<Option<RecommendedWatcher>>,
     watched_path: Mutex<Option<PathBuf>>,
     fs_dirty: Arc<AtomicBool>,
+    git_refs_dirty: Arc<AtomicBool>,
     events: EventBus,
 }
 
@@ -39,6 +40,7 @@ impl SchedulerService {
             watcher: Mutex::new(None),
             watched_path: Mutex::new(None),
             fs_dirty: Arc::new(AtomicBool::new(false)),
+            git_refs_dirty: Arc::new(AtomicBool::new(false)),
             events,
         }
     }
@@ -66,6 +68,7 @@ impl SchedulerService {
         }
 
         let dirty = self.fs_dirty.clone();
+        let refs_dirty = self.git_refs_dirty.clone();
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(ev) = res {
                 let is_lock_noise = ev.paths.iter().all(|p| {
@@ -74,6 +77,9 @@ impl SchedulerService {
                         .is_some_and(|s| s.ends_with(".lock"))
                 });
                 if !is_lock_noise && !ev.kind.is_access() {
+                    if ev.paths.iter().any(|p| is_git_ref_or_meta_path(p)) {
+                        refs_dirty.store(true, Ordering::Relaxed);
+                    }
                     dirty.store(true, Ordering::Relaxed);
                 }
             }
@@ -101,6 +107,11 @@ impl SchedulerService {
         self.fs_dirty.swap(false, Ordering::Relaxed)
     }
 
+    /// Returns true once if any `.git` ref/HEAD/log/stash metadata changed since the last check.
+    pub fn take_git_refs_dirty(&self) -> bool {
+        self.git_refs_dirty.swap(false, Ordering::Relaxed)
+    }
+
     /// Returns true when scheduled background fetch is enabled and interval has elapsed.
     pub fn take_scheduled_fetch_due(&self) -> bool {
         let cfg = self.config();
@@ -124,5 +135,58 @@ impl SchedulerService {
             running: true,
             updated_repos: 0,
         });
+    }
+}
+
+/// Returns `true` when `path` touches Git ref/history metadata inside `.git/` (such as `HEAD`,
+/// `refs/*`, `packed-refs`, `logs/*`, `FETCH_HEAD`, `ORIG_HEAD`, `MERGE_HEAD`, `REBASE_HEAD`,
+/// `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `COMMIT_EDITMSG`, or `worktrees/*`).
+pub fn is_git_ref_or_meta_path(path: &Path) -> bool {
+    let mut after_git = false;
+    for comp in path.components() {
+        let Some(name) = comp.as_os_str().to_str() else {
+            continue;
+        };
+        if after_git {
+            return matches!(
+                name,
+                "HEAD"
+                    | "refs"
+                    | "packed-refs"
+                    | "logs"
+                    | "FETCH_HEAD"
+                    | "ORIG_HEAD"
+                    | "MERGE_HEAD"
+                    | "REBASE_HEAD"
+                    | "CHERRY_PICK_HEAD"
+                    | "REVERT_HEAD"
+                    | "COMMIT_EDITMSG"
+                    | "worktrees"
+            );
+        }
+        if name == ".git" {
+            after_git = true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_git_ref_and_meta_paths_cleanly() {
+        assert!(is_git_ref_or_meta_path(Path::new("repo/.git/HEAD")));
+        assert!(is_git_ref_or_meta_path(Path::new("repo/.git/refs/heads/main")));
+        assert!(is_git_ref_or_meta_path(Path::new("repo/.git/refs/tags/v1.0.0")));
+        assert!(is_git_ref_or_meta_path(Path::new("repo/.git/packed-refs")));
+        assert!(is_git_ref_or_meta_path(Path::new("repo/.git/logs/HEAD")));
+        assert!(is_git_ref_or_meta_path(Path::new("repo/.git/FETCH_HEAD")));
+
+        // Index edits & regular working-tree files should NOT trigger full ref/graph reloads on every keystroke
+        assert!(!is_git_ref_or_meta_path(Path::new("repo/.git/index")));
+        assert!(!is_git_ref_or_meta_path(Path::new("repo/src/main.rs")));
+        assert!(!is_git_ref_or_meta_path(Path::new("repo/refs/heads/main")));
     }
 }

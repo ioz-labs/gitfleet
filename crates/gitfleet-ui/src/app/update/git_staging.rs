@@ -76,13 +76,39 @@ impl GitFleetApp {
                     Ok(summary) => {
                         let has_staged = summary.staged_count > 0;
                         let is_selected = self.active_repo_key().as_ref() == Some(&id);
+                        let refs_or_tracking_changed = self.statuses.get(&id).is_some_and(|old| {
+                            old.head_oid != summary.head_oid
+                                || old.branch != summary.branch
+                                || old.upstream != summary.upstream
+                                || old.detached != summary.detached
+                                || old.ahead != summary.ahead
+                                || old.behind != summary.behind
+                                || old.in_merge != summary.in_merge
+                                || old.in_rebase != summary.in_rebase
+                        });
                         self.statuses.insert(id, summary);
                         if is_selected {
                             self.prune_file_selection();
                             let mut follow_up = Vec::new();
                             follow_up.push(self.sync_active_working_file_after_status());
-                            if has_staged && let Some(repo) = self.current_repo() {
-                                follow_up.push(self.scan_hygiene_task(repo));
+                            if let Some(repo) = self.current_repo() {
+                                if refs_or_tracking_changed {
+                                    follow_up.push(self.load_log_task(repo.clone()));
+                                    follow_up.push(self.load_branches_task(repo.clone()));
+                                    follow_up.push(self.load_tags_task(repo.clone()));
+                                    follow_up.push(self.load_stashes_task(repo.clone()));
+                                    follow_up.push(self.load_worktrees_task(repo.clone()));
+                                    follow_up.push(self.load_all_files_task(repo.clone()));
+                                    if self.graph_tab == GraphTab::Reflog {
+                                        follow_up.push(self.load_reflog_task(repo.clone()));
+                                    }
+                                }
+                                if has_staged {
+                                    follow_up.push(self.scan_hygiene_task(repo));
+                                } else {
+                                    self.staged_secrets.clear();
+                                    self.oversized_files.clear();
+                                }
                             } else {
                                 self.staged_secrets.clear();
                                 self.oversized_files.clear();

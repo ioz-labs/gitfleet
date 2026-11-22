@@ -471,24 +471,36 @@ impl GitFleetApp {
                 if self.drawer_tab == Some(DrawerTab::Terminal) {
                     self.sync_terminal_snapshots();
                 }
-                if self.service.settings().watch_filesystem
-                    && self.service.scheduler.take_fs_dirty()
-                    && let Some(repo) = self.current_repo()
-                {
-                    self.refresh_vault_summary();
-                    if self.files_mode == crate::app::FilesViewMode::AllFiles {
-                        let mut tasks = vec![
-                            self.load_status_task(repo.clone()),
-                            self.load_all_files_task(repo.clone()),
-                        ];
-                        if self.show_ignored_files {
-                            self.ignored_entries_stale = false;
-                            tasks.push(self.load_ignored_entries_task(repo));
+                if self.service.settings().watch_filesystem {
+                    let refs_dirty = self.service.scheduler.take_git_refs_dirty();
+                    let fs_dirty = self.service.scheduler.take_fs_dirty();
+                    if (refs_dirty || fs_dirty)
+                        && let Some(repo) = self.current_repo()
+                    {
+                        self.refresh_vault_summary();
+                        let mut tasks = vec![self.load_status_task(repo.clone())];
+                        if refs_dirty {
+                            tasks.push(self.load_log_task(repo.clone()));
+                            tasks.push(self.load_branches_task(repo.clone()));
+                            tasks.push(self.load_tags_task(repo.clone()));
+                            tasks.push(self.load_stashes_task(repo.clone()));
+                            tasks.push(self.load_worktrees_task(repo.clone()));
+                            tasks.push(self.load_submodules_task(repo.clone()));
+                            if self.graph_tab == crate::app::GraphTab::Reflog {
+                                tasks.push(self.load_reflog_task(repo.clone()));
+                            }
+                        }
+                        if self.files_mode == crate::app::FilesViewMode::AllFiles {
+                            tasks.push(self.load_all_files_task(repo.clone()));
+                            if self.show_ignored_files {
+                                self.ignored_entries_stale = false;
+                                tasks.push(self.load_ignored_entries_task(repo));
+                            }
+                        } else {
+                            self.ignored_entries_stale = true;
                         }
                         return Task::batch(tasks);
                     }
-                    self.ignored_entries_stale = true;
-                    return self.load_status_task(repo);
                 }
                 if self.service.scheduler.take_scheduled_fetch_due() {
                     let ws_repos = self.service.workspace.current().repos;

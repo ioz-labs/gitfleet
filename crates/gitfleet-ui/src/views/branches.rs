@@ -420,13 +420,17 @@ fn render_branch_subtree<'a>(
             0.0
         } else {
             (if b.ahead > 0 {
-                5.0 + theme::estimate_text_width(&format!("+{}", b.ahead), type_scale::BADGE, true)
-                    + 18.0
+                5.0 + 10.0
+                    + 2.0
+                    + theme::estimate_text_width(&format!("{}", b.ahead), type_scale::BADGE, true)
+                    + 4.0
             } else {
                 0.0
             }) + (if b.behind > 0 {
-                5.0 + theme::estimate_text_width(&format!("-{}", b.behind), type_scale::BADGE, true)
-                    + 18.0
+                5.0 + 10.0
+                    + 2.0
+                    + theme::estimate_text_width(&format!("{}", b.behind), type_scale::BADGE, true)
+                    + 4.0
             } else {
                 0.0
             })
@@ -458,23 +462,43 @@ fn render_branch_subtree<'a>(
         }
 
         if !ctx.is_remote {
-            if b.ahead > 0 {
-                name_and_up = name_and_up.push(theme::badge(
-                    format!("+{}", b.ahead),
-                    p.fill_selected,
-                    p.accent_fg,
-                    p.accent_primary,
-                    true,
-                ));
-            }
             if b.behind > 0 {
-                name_and_up = name_and_up.push(theme::badge(
-                    format!("-{}", b.behind),
-                    p.surface_card,
-                    p.text_primary,
-                    p.border_strong,
-                    true,
-                ));
+                name_and_up = name_and_up.push(
+                    container(
+                        row![
+                            icons::pull(10.0, p.warning_fg),
+                            text(format!("{}", b.behind))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .line_height(text::LineHeight::Relative(1.0))
+                                .color(p.warning_fg)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .align_y(Alignment::Center),
+                    )
+                    .height(Length::Fixed(16.0))
+                    .align_y(iced::alignment::Vertical::Center),
+                );
+            }
+            if b.ahead > 0 {
+                name_and_up = name_and_up.push(
+                    container(
+                        row![
+                            icons::push(10.0, p.accent_fg),
+                            text(format!("{}", b.ahead))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .line_height(text::LineHeight::Relative(1.0))
+                                .color(p.accent_fg)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .align_y(Alignment::Center),
+                    )
+                    .height(Length::Fixed(16.0))
+                    .align_y(iced::alignment::Vertical::Center),
+                );
             }
         }
 
