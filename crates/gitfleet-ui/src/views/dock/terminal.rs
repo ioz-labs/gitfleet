@@ -425,8 +425,8 @@ impl GitFleetApp {
         ));
 
         let menu_card = opaque(
-            container(slim_scroll(items, p).height(Length::Shrink))
-                .padding(8)
+            container(crate::views::slim_scroll_overlay(items, p).height(Length::Shrink))
+                .padding(6)
                 .width(Length::Fixed(layout::TERMINAL_MENU_WIDTH))
                 .max_height(480.0)
                 .style(theme::context_menu_box(p)),

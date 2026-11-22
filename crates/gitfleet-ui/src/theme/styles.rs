@@ -843,6 +843,17 @@ pub fn slim_vertical_direction() -> scrollable::Direction {
     )
 }
 
+/// Vertical scrollbar that overlays cleanly without unconditionally reserving right gutter space
+/// when content fits inside its container (ideal for context menus & dropdown cards).
+pub fn slim_overlay_vertical_direction() -> scrollable::Direction {
+    scrollable::Direction::Vertical(
+        scrollable::Scrollbar::new()
+            .width(5)
+            .scroller_width(5)
+            .margin(1),
+    )
+}
+
 pub fn slim_horizontal_direction() -> scrollable::Direction {
     scrollable::Direction::Horizontal(
         scrollable::Scrollbar::new()

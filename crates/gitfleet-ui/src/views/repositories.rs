@@ -45,6 +45,51 @@ fn dirty_dot_color(dark_mode: bool) -> Color {
     }
 }
 
+/// Renders an ahead (`↑N`) or behind (`↓N`) sync counter using a crisp vector SVG arrow
+/// paired with pure ASCII `CODE_FONT` digits inside a fixed `18px` vertically-centered box so
+/// it aligns on the exact same horizontal line as the adjacent uncommitted-changes pill.
+fn sync_count_badge<'a>(is_push: bool, count: usize, color: Color) -> Element<'a, Message> {
+    let arrow = if is_push {
+        icons::push(10.0, color)
+    } else {
+        icons::pull(10.0, color)
+    };
+    container(
+        row![
+            arrow,
+            text(format!("{count}"))
+                .size(type_scale::BADGE)
+                .font(theme::CODE_FONT)
+                .line_height(text::LineHeight::Relative(1.0))
+                .color(color)
+                .wrapping(text::Wrapping::None),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fixed(18.0))
+    .align_y(iced::alignment::Vertical::Center)
+    .into()
+}
+
+/// Renders the uncommitted/conflicted changes counter pill using the exact same `18px` height,
+/// `CODE_FONT` metrics, and vertical centering as `sync_count_badge`.
+fn changed_count_badge<'a>(count: usize, fg: Color, bg: Color) -> Element<'a, Message> {
+    container(
+        text(format!("{count}"))
+            .size(type_scale::BADGE)
+            .font(theme::CODE_FONT)
+            .line_height(text::LineHeight::Relative(1.0))
+            .color(fg)
+            .wrapping(text::Wrapping::None),
+    )
+    .height(Length::Fixed(18.0))
+    .padding([0, 5])
+    .align_y(iced::alignment::Vertical::Center)
+    .style(theme::pill_box(bg, fg, Color { a: 0.42, ..fg }))
+    .into()
+}
+
 /// SmartGit-style 3-layer cool-slate repository disk stack with high-contrast overlaid
 /// Push (`^` orange) / Pull (`v` green) chevrons and a distinct bottom-right amber dirty badge.
 struct RepoSyncIcon {
@@ -358,11 +403,11 @@ impl GitFleetApp {
             "[missing]".to_string()
         };
         let sync_badge_w = if behind > 0 {
-            theme::estimate_text_width(&format!("↓{behind}"), type_scale::BADGE, true) + 5.0
+            10.0 + 2.0 + theme::estimate_text_width(&format!("{behind}"), type_scale::BADGE, true) + 4.0
         } else {
             0.0
         } + if ahead > 0 {
-            theme::estimate_text_width(&format!("↑{ahead}"), type_scale::BADGE, true) + 5.0
+            10.0 + 2.0 + theme::estimate_text_width(&format!("{ahead}"), type_scale::BADGE, true) + 4.0
         } else {
             0.0
         };
@@ -500,24 +545,12 @@ impl GitFleetApp {
             .into()
         };
 
-        let mut right_badges = row![].spacing(4).align_y(Alignment::Center);
+        let mut right_badges = row![].spacing(5).align_y(Alignment::Center);
         if behind > 0 {
-            right_badges = right_badges.push(
-                text(format!("↓{behind}"))
-                    .size(type_scale::BADGE)
-                    .font(theme::CODE_FONT)
-                    .color(pull_c)
-                    .wrapping(text::Wrapping::None),
-            );
+            right_badges = right_badges.push(sync_count_badge(false, behind, pull_c));
         }
         if ahead > 0 {
-            right_badges = right_badges.push(
-                text(format!("↑{ahead}"))
-                    .size(type_scale::BADGE)
-                    .font(theme::CODE_FONT)
-                    .color(push_c)
-                    .wrapping(text::Wrapping::None),
-            );
+            right_badges = right_badges.push(sync_count_badge(true, ahead, push_c));
         }
         if changed > 0 {
             let fg = if conflicts > 0 {
@@ -530,17 +563,7 @@ impl GitFleetApp {
             } else {
                 p.warning_bg
             };
-            right_badges = right_badges.push(
-                container(
-                    text(format!("{changed}"))
-                        .size(type_scale::BADGE)
-                        .font(theme::CODE_FONT)
-                        .color(fg)
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([0, 4])
-                .style(theme::pill_box(bg, fg, Color { a: 0.42, ..fg })),
-            );
+            right_badges = right_badges.push(changed_count_badge(changed, fg, bg));
         }
 
         let mut label_and_badges = row![
@@ -644,13 +667,15 @@ impl GitFleetApp {
                     .unwrap_or(if sub.initialized { "detached" } else { "uninit" });
                 let sub_ref_str = format!("({sub_ref})");
                 let sub_sync_w = if sub_behind > 0 {
-                    theme::estimate_text_width(&format!("↓{sub_behind}"), type_scale::BADGE, true)
-                        + 5.0
+                    10.0 + 2.0
+                        + theme::estimate_text_width(&format!("{sub_behind}"), type_scale::BADGE, true)
+                        + 4.0
                 } else {
                     0.0
                 } + if sub_ahead > 0 {
-                    theme::estimate_text_width(&format!("↑{sub_ahead}"), type_scale::BADGE, true)
-                        + 5.0
+                    10.0 + 2.0
+                        + theme::estimate_text_width(&format!("{sub_ahead}"), type_scale::BADGE, true)
+                        + 4.0
                 } else {
                     0.0
                 };
@@ -692,44 +717,25 @@ impl GitFleetApp {
                     RepoDiskTone::CleanIdle
                 };
 
-                let mut sub_badges = row![].spacing(4).align_y(Alignment::Center);
+                let mut sub_badges = row![].spacing(5).align_y(Alignment::Center);
                 if sub_behind > 0 {
-                    sub_badges = sub_badges.push(
-                        text(format!("↓{sub_behind}"))
-                            .size(type_scale::BADGE)
-                            .font(theme::CODE_FONT)
-                            .color(pull_c)
-                            .wrapping(text::Wrapping::None),
-                    );
+                    sub_badges = sub_badges.push(sync_count_badge(false, sub_behind, pull_c));
                 }
                 if sub_ahead > 0 {
-                    sub_badges = sub_badges.push(
-                        text(format!("↑{sub_ahead}"))
-                            .size(type_scale::BADGE)
-                            .font(theme::CODE_FONT)
-                            .color(push_c)
-                            .wrapping(text::Wrapping::None),
-                    );
+                    sub_badges = sub_badges.push(sync_count_badge(true, sub_ahead, push_c));
                 }
                 if sub_changed > 0 {
-                    sub_badges = sub_badges.push(
-                        container(
-                            text(format!("{sub_changed}"))
-                                .size(type_scale::BADGE)
-                                .font(theme::CODE_FONT)
-                                .color(p.warning_fg)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .padding([0, 4])
-                        .style(theme::pill_box(
-                            p.warning_bg,
-                            p.warning_fg,
-                            Color {
-                                a: 0.42,
-                                ..p.warning_fg
-                            },
-                        )),
-                    );
+                    let fg = if sub_conflicts > 0 {
+                        p.danger_fg
+                    } else {
+                        p.warning_fg
+                    };
+                    let bg = if sub_conflicts > 0 {
+                        p.danger_bg
+                    } else {
+                        p.warning_bg
+                    };
+                    sub_badges = sub_badges.push(changed_count_badge(sub_changed, fg, bg));
                 } else if sub_dirty {
                     sub_badges = sub_badges.push(
                         container(Space::new(7, 7)).style(theme::dot_box(p.warning_fg)),

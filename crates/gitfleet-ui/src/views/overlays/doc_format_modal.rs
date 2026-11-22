@@ -2,7 +2,7 @@ use crate::app::{EncodingModalMode, GitFleetApp, Message};
 use crate::icons;
 use crate::syntax::CodeLanguage;
 use crate::theme::{self, Palette, ThemeMode, icon_size, space, type_scale};
-use crate::views::slim_scroll;
+use crate::views::slim_scroll_overlay;
 use gitfleet_docs::{FileEncoding, LineEnding};
 use iced::widget::{
     Space, button, column, container, horizontal_rule, opaque, row, text, text_input,
@@ -200,7 +200,7 @@ pub(crate) fn build_encoding_menu_card<'a>(
     items = items
         .push(horizontal_rule(1).style(theme::subtle_rule(p)))
         .push(
-            container(slim_scroll(list, p).height(Length::Shrink))
+            container(slim_scroll_overlay(list, p).height(Length::Shrink))
                 .max_height(280.0)
                 .width(Length::Fill),
         );
@@ -333,7 +333,7 @@ pub(crate) fn build_syntax_menu_card<'a>(
         container(header_row).padding([2, 6]),
         filter_input,
         horizontal_rule(1).style(theme::subtle_rule(p)),
-        container(slim_scroll(list, p).height(Length::Shrink))
+        container(slim_scroll_overlay(list, p).height(Length::Shrink))
             .max_height(310.0)
             .width(Length::Fill),
     ]

@@ -46,15 +46,58 @@ impl GitFleetApp {
                     p,
                 ),
                 if !ownership.is_owner {
+                    let holder_line = match ownership.owner_pid {
+                        Some(pid) => format!("Workspace lock is held by PID {pid}"),
+                        None => "Workspace lock is held by another process".to_string(),
+                    };
+                    let mut tip_col: iced::widget::Column<'_, Message> = column![
+                        text(holder_line)
+                            .size(type_scale::CAPTION)
+                            .color(p.warning_fg),
+                        text("Another GitFleet window is using this workspace, or a previous session exited unexpectedly leaving a stale lock file.")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_secondary),
+                    ]
+                    .spacing(3);
+                    if let Some(lock_path) = &ownership.lock_path {
+                        let lock_name = lock_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(".lock");
+                        tip_col = tip_col.push(
+                            text(format!("Lock file: {lock_name}"))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_muted),
+                        );
+                    }
+                    tip_col = tip_col.push(
+                        text("Click to claim ownership and take over saving workspace changes.")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_primary),
+                    );
                     Element::from(
-                        button(
-                            text("Locked — Claim")
-                                .size(type_scale::CAPTION)
-                                .color(p.warning_fg),
+                        tooltip(
+                            button(
+                                row![
+                                    icons::lock(icon_size::XS, p.warning_fg),
+                                    text("Locked — Claim")
+                                        .size(type_scale::CAPTION)
+                                        .color(p.warning_fg),
+                                ]
+                                .spacing(5)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding([3, 8])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::TakeWorkspaceOwnership),
+                            container(tip_col)
+                                .padding([7, 10])
+                                .max_width(340.0)
+                                .style(theme::tooltip_box(p)),
+                            tooltip::Position::Bottom,
                         )
-                        .padding([3, 8])
-                        .style(theme::subtle_btn(p))
-                        .on_press(Message::TakeWorkspaceOwnership),
+                        .gap(5),
                     )
                 } else {
                     Space::with_width(Length::Shrink).into()

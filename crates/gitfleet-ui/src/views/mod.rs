@@ -58,6 +58,18 @@ pub(crate) fn slim_scroll<'a>(
         .style(theme::slim_scrollable(p))
 }
 
+/// Vertical scrollable with an overlay scrollbar (0px reserved right gutter when content fits)
+/// so context menus and popup cards keep symmetrical start/end horizontal padding.
+pub(crate) fn slim_scroll_overlay<'a>(
+    content: impl Into<Element<'a, Message>>,
+    p: Palette,
+) -> scrollable::Scrollable<'a, Message> {
+    scrollable(content)
+        .width(Length::Fill)
+        .direction(theme::slim_overlay_vertical_direction())
+        .style(theme::slim_scrollable(p))
+}
+
 pub(crate) fn slim_scroll_h<'a>(
     content: impl Into<Element<'a, Message>>,
     min_width: f32,

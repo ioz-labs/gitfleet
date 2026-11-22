@@ -1088,6 +1088,285 @@ where
     })
 }
 
+/// Computes the top-left origin of a cascading submenu attached to `main_rect` at item vertical
+/// offset `trigger_local_y` (relative to `main_rect.y`).
+/// Prefers placing the submenu to the right of `main_rect`, flips cleanly to the left when
+/// horizontal space runs out (leaving `main_rect` stationary under the cursor), and aligns the
+/// submenu top padding (`card_top_pad`) with the trigger row while clamping inside `viewport`.
+pub fn compute_submenu_origin(
+    main_rect: Rectangle,
+    trigger_local_y: f32,
+    sub_size: Size,
+    viewport: Size,
+    gap: f32,
+    margin: f32,
+    card_top_pad: f32,
+) -> Point {
+    let max_x = (viewport.width - sub_size.width - margin).max(margin);
+    let max_y = (viewport.height - sub_size.height - margin).max(margin);
+
+    let right_x = main_rect.x + main_rect.width + gap;
+    let x = if right_x + sub_size.width <= viewport.width - margin {
+        right_x
+    } else {
+        let left_x = main_rect.x - sub_size.width - gap;
+        if left_x >= margin {
+            left_x
+        } else {
+            right_x.min(max_x).max(margin)
+        }
+    };
+
+    let y = (main_rect.y + trigger_local_y - card_top_pad).clamp(margin, max_y);
+    Point::new(x, y)
+}
+
+fn find_menu_item_local_y(root: &adv_layout::Node, target_idx: usize) -> Option<f32> {
+    let mut cur = root;
+    let mut acc_y = 0.0_f32;
+    loop {
+        let kids = cur.children();
+        if kids.len() > 1 {
+            return kids.get(target_idx).map(|n| acc_y + n.bounds().y);
+        }
+        if let Some(only) = kids.first() {
+            acc_y += only.bounds().y;
+            cur = only;
+        } else {
+            return None;
+        }
+    }
+}
+
+/// Positions a floating context menu (`main_card`) at cursor `anchor` and optionally positions
+/// a cascading submenu aligned vertically with the active trigger item (`submenu_trigger_idx`)
+/// and horizontally beside `main_card` without shifting `main_card`.
+pub fn popup_with_submenu<'a, M>(
+    anchor: Point,
+    main_card: impl Into<Element<'a, M>>,
+    submenu: Option<(Element<'a, M>, Option<usize>)>,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    struct PopupWithSubmenu<'a, M> {
+        anchor: Point,
+        children: Vec<Element<'a, M>>,
+        submenu_trigger_idx: Option<usize>,
+    }
+
+    impl<'a, M> Widget<M, Theme, Renderer> for PopupWithSubmenu<'a, M> {
+        fn tag(&self) -> tree::Tag {
+            tree::Tag::stateless()
+        }
+
+        fn state(&self) -> tree::State {
+            tree::State::None
+        }
+
+        fn children(&self) -> Vec<Tree> {
+            self.children.iter().map(Tree::new).collect()
+        }
+
+        fn diff(&self, tree: &mut Tree) {
+            tree.diff_children(&self.children);
+        }
+
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Fill, Length::Fill)
+        }
+
+        fn layout(
+            &self,
+            tree: &mut Tree,
+            renderer: &Renderer,
+            limits: &adv_layout::Limits,
+        ) -> adv_layout::Node {
+            let viewport = limits.max();
+            let margin = 8.0;
+            let gap = 4.0;
+            let child_limits = adv_layout::Limits::new(
+                Size::ZERO,
+                Size::new(
+                    (viewport.width - margin * 2.0).max(120.0),
+                    (viewport.height - margin * 2.0).max(120.0),
+                ),
+            );
+
+            let main_node =
+                self.children[0]
+                    .as_widget()
+                    .layout(&mut tree.children[0], renderer, &child_limits);
+            let main_size = main_node.size();
+            let main_origin = compute_popup_origin(self.anchor, main_size, viewport, margin);
+            let main_rect = Rectangle::new(main_origin, main_size);
+
+            let mut positioned = Vec::with_capacity(self.children.len());
+            let trigger_local_y = self
+                .submenu_trigger_idx
+                .and_then(|idx| find_menu_item_local_y(&main_node, idx))
+                .unwrap_or(6.0);
+            positioned.push(main_node.move_to(main_origin));
+
+            if self.children.len() > 1 {
+                let sub_node =
+                    self.children[1]
+                        .as_widget()
+                        .layout(&mut tree.children[1], renderer, &child_limits);
+                let sub_origin = compute_submenu_origin(
+                    main_rect,
+                    trigger_local_y,
+                    sub_node.size(),
+                    viewport,
+                    gap,
+                    margin,
+                    6.0,
+                );
+                positioned.push(sub_node.move_to(sub_origin));
+            }
+
+            adv_layout::Node::with_children(viewport, positioned)
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut Renderer,
+            theme: &Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter()
+                .zip(&tree.children)
+                .zip(layout.children())
+            {
+                child.as_widget().draw(
+                    child_tree,
+                    renderer,
+                    theme,
+                    style,
+                    child_layout,
+                    cursor,
+                    viewport,
+                );
+            }
+        }
+
+        fn on_event(
+            &mut self,
+            tree: &mut Tree,
+            event: iced::Event,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            renderer: &Renderer,
+            clipboard: &mut dyn Clipboard,
+            shell: &mut Shell<'_, M>,
+            viewport: &Rectangle,
+        ) -> event::Status {
+            let is_move = matches!(event, iced::Event::Mouse(mouse::Event::CursorMoved { .. }));
+            let mut status = event::Status::Ignored;
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter_mut()
+                .rev()
+                .zip(tree.children.iter_mut().rev())
+                .zip(layout.children().rev())
+            {
+                let s = child.as_widget_mut().on_event(
+                    child_tree,
+                    event.clone(),
+                    child_layout,
+                    cursor,
+                    renderer,
+                    clipboard,
+                    shell,
+                    viewport,
+                );
+                status = status.merge(s);
+                if status == event::Status::Captured && !is_move {
+                    break;
+                }
+            }
+            status
+        }
+
+        fn mouse_interaction(
+            &self,
+            tree: &Tree,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+            renderer: &Renderer,
+        ) -> mouse::Interaction {
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter()
+                .rev()
+                .zip(tree.children.iter().rev())
+                .zip(layout.children().rev())
+            {
+                let interaction = child.as_widget().mouse_interaction(
+                    child_tree,
+                    child_layout,
+                    cursor,
+                    viewport,
+                    renderer,
+                );
+                if interaction != mouse::Interaction::None {
+                    return interaction;
+                }
+            }
+            mouse::Interaction::None
+        }
+
+        fn operate(
+            &self,
+            tree: &mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            operation: &mut dyn iced::advanced::widget::Operation,
+        ) {
+            for ((child, child_tree), child_layout) in self
+                .children
+                .iter()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+            {
+                child
+                    .as_widget()
+                    .operate(child_tree, child_layout, renderer, operation);
+            }
+        }
+
+        fn overlay<'b>(
+            &'b mut self,
+            tree: &'b mut Tree,
+            layout: Layout<'_>,
+            renderer: &Renderer,
+            translation: Vector,
+        ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+            overlay::from_children(&mut self.children, tree, layout, renderer, translation)
+        }
+    }
+
+    let mut children = vec![main_card.into()];
+    let mut submenu_trigger_idx = None;
+    if let Some((sub, trigger_idx)) = submenu {
+        children.push(sub);
+        submenu_trigger_idx = trigger_idx;
+    }
+
+    Element::new(PopupWithSubmenu {
+        anchor,
+        children,
+        submenu_trigger_idx,
+    })
+}
+
 /// Renders a non-interactive floating ghost pill near `cursor_pos` during drag-and-drop without
 /// intercepting mouse events so underlying drop targets still receive hover enter/exit events.
 pub fn floating_ghost<'a, M>(pos: Point, content: impl Into<Element<'a, M>>) -> Element<'a, M>
@@ -2294,6 +2573,27 @@ mod tests {
             compute_popup_origin(Point::new(1380.0, 300.0), card, vp, 8.0),
             Point::new(1132.0, 300.0)
         );
+    }
+
+    #[test]
+    fn submenu_origin_aligns_with_trigger_and_flips_cleanly_at_edges() {
+        let vp = Size::new(1440.0, 860.0);
+        let main = Rectangle::new(Point::new(100.0, 200.0), Size::new(272.0, 340.0));
+        let sub = Size::new(248.0, 140.0);
+
+        // Normal: placed to the right of main card, vertically aligned with trigger row at y=240
+        let pos = compute_submenu_origin(main, 240.0, sub, vp, 4.0, 8.0, 6.0);
+        assert_eq!(pos, Point::new(376.0, 434.0));
+
+        // Near right edge: flips to the left side without moving main card
+        let right_main = Rectangle::new(Point::new(1120.0, 200.0), Size::new(272.0, 340.0));
+        let pos_left = compute_submenu_origin(right_main, 240.0, sub, vp, 4.0, 8.0, 6.0);
+        assert_eq!(pos_left, Point::new(868.0, 434.0));
+
+        // Near bottom edge: clamps vertically inside viewport margin
+        let low_main = Rectangle::new(Point::new(100.0, 510.0), Size::new(272.0, 340.0));
+        let pos_clamped = compute_submenu_origin(low_main, 300.0, sub, vp, 4.0, 8.0, 6.0);
+        assert_eq!(pos_clamped, Point::new(376.0, 712.0));
     }
 
     #[test]

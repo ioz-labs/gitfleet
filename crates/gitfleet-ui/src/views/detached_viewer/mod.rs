@@ -176,13 +176,14 @@ impl GitFleetApp {
                         icon,
                         text(label)
                             .size(type_scale::BODY)
+                            .line_height(text::LineHeight::Relative(1.15))
                             .color(if danger { p.danger_fg } else { p.text_primary }),
                     ]
                     .spacing(space::SM)
                     .align_y(Alignment::Center),
                 )
                 .width(Length::Fill)
-                .padding([6, 10])
+                .padding([5, 10])
                 .style(theme::context_menu_item(p, danger))
                 .on_press(Message::Detached(win_id, act))
                 .into()
@@ -192,9 +193,10 @@ impl GitFleetApp {
                 container(
                     text(truncate_chars(name, 28))
                         .size(type_scale::CAPTION)
+                        .line_height(text::LineHeight::Relative(1.15))
                         .color(p.text_muted),
                 )
-                .padding([2, 10]),
+                .padding([5, 10]),
             ]
             .spacing(2);
 
