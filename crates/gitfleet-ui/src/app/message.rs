@@ -522,6 +522,28 @@ pub(crate) enum Message {
     PickExportDiagnostics,
     ExportDiagnosticsPath(Option<PathBuf>),
 
+    // Software Updates
+    CheckForUpdates {
+        manual: bool,
+    },
+    UpdateCheckCompleted {
+        manual: bool,
+        result: Result<gitfleet_app::updater::UpdateCheckOutcome, String>,
+    },
+    OpenUpdateModal,
+    CloseUpdateModal,
+    StartApplyUpdate {
+        force_dirty: bool,
+    },
+    CancelUpdateDownload,
+    UpdateProgressTick,
+    UpdateApplyCompleted(Result<gitfleet_app::updater::ApplyUpdateOutcome, String>),
+    SkipAvailableUpdate,
+    ClearSkippedUpdate,
+    ToggleAutoCheckUpdates(bool),
+    OpenExternalUrl(String),
+    RevealUpdateArtifact(PathBuf),
+
     // Action Error Notification Modal
     CloseErrorModal,
     OpenLastErrorModal,

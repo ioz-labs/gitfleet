@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono.workspace = true
 directories.workspace = true
+flate2.workspace = true
 gitfleet-core.workspace = true
 gitfleet-docs.workspace = true
 gitfleet-git.workspace = true
@@ -14,9 +16,17 @@ gitfleet-search.workspace = true
 gitfleet-security.workspace = true
 gitfleet-terminal.workspace = true
 gitfleet-workspace.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 which.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true

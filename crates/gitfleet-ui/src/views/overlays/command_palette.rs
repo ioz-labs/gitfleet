@@ -64,6 +64,7 @@ impl GitFleetApp {
             ("Tools: 3-Layer Ignore Editor", "", Message::ToggleDrawer(DrawerTab::Ignore)),
             ("Tools: Command Log", "", Message::ToggleDrawer(DrawerTab::CommandLog)),
             ("Tools: Settings & Diagnostics", "", Message::ToggleSettingsModal),
+            ("App: Check for Updates…", "", Message::CheckForUpdates { manual: true }),
             ("Files: Flat Changed Mode", "", Message::SetFilesViewMode(FilesViewMode::Flat)),
             ("Files: Dir-Filtered Changes Mode", "", Message::SetFilesViewMode(FilesViewMode::Dir)),
             ("Files: All Files Explorer (VS Code)", "", Message::SetFilesViewMode(FilesViewMode::AllFiles)),

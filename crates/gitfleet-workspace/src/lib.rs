@@ -827,6 +827,10 @@ impl WorkspaceService {
         svc
     }
 
+    pub fn release_lock(&self) {
+        self.release_current_lock();
+    }
+
     fn release_current_lock(&self) {
         if let Ok(own) = self.ownership.read()
             && own.is_owner

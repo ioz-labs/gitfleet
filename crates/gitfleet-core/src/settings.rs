@@ -22,6 +22,14 @@ pub struct AppSettings {
     pub oversized_threshold_mb: u64,
     #[serde(default = "default_true")]
     pub watch_filesystem: bool,
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    #[serde(default)]
+    pub skipped_update_version: Option<String>,
+    #[serde(default)]
+    pub last_update_check_epoch_secs: Option<i64>,
+    #[serde(default)]
+    pub last_update_etag: Option<String>,
 }
 
 fn default_oversized_mb() -> u64 {
@@ -52,6 +60,10 @@ impl Default for AppSettings {
             max_parallel_bulk_ops: 6,
             oversized_threshold_mb: 5,
             watch_filesystem: true,
+            auto_check_updates: true,
+            skipped_update_version: None,
+            last_update_check_epoch_secs: None,
+            last_update_etag: None,
         }
     }
 }

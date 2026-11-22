@@ -12,6 +12,8 @@ mod views;
 use app::GitFleetApp;
 
 fn main() -> iced::Result {
+    gitfleet_app::updater::cleanup_stale_old_binary();
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();

@@ -282,6 +282,75 @@ impl GitFleetApp {
             );
         }
 
+        // Subtle software-update indicator (visible ONLY when a new non-skipped release is ready or downloading)
+        let skipped_ver = self.service.settings().skipped_update_version;
+        match &self.update_status {
+            crate::app::UpdateUiStatus::Available { release }
+                if skipped_ver.as_deref() != Some(release.version.as_str()) =>
+            {
+                let ver_label = format!("v{}", release.version);
+                let tip_text = format!(
+                    "GitFleet {ver_label} is available — click to review release notes & update"
+                );
+                right = right.push(tip(
+                    button(
+                        row![
+                            icons::sparkle(11.0, p.accent_fg),
+                            text(format!("Update {ver_label}"))
+                                .size(type_scale::BADGE)
+                                .color(p.accent_fg)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([2, 8])
+                    .style(theme::filter_pill_btn(p, true))
+                    .on_press(Message::OpenUpdateModal),
+                    tip_text,
+                    tooltip::Position::Top,
+                    p,
+                ));
+            }
+            crate::app::UpdateUiStatus::Applying {
+                phase,
+                downloaded_bytes,
+                total_bytes,
+                ..
+            } => {
+                let label = if *phase == gitfleet_app::updater::UpdateDownloadPhase::Downloading
+                    && *total_bytes > 0
+                {
+                    let pct = ((*downloaded_bytes as f32 / *total_bytes as f32).clamp(0.0, 1.0)
+                        * 100.0)
+                        .round() as u32;
+                    format!("Updating {pct}%")
+                } else {
+                    "Updating…".to_string()
+                };
+                right = right.push(tip(
+                    button(
+                        row![
+                            icons::refresh(11.0, p.accent_fg),
+                            text(label)
+                                .size(type_scale::BADGE)
+                                .color(p.accent_fg)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([2, 8])
+                    .style(theme::filter_pill_btn(p, true))
+                    .on_press(Message::OpenUpdateModal),
+                    "Click to view update progress or cancel",
+                    tooltip::Position::Top,
+                    p,
+                ));
+            }
+            _ => {}
+        }
+
         let search_active = self.drawer_tab == Some(DrawerTab::Search);
         let search_color = if search_active {
             p.accent_fg

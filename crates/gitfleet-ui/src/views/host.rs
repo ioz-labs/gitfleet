@@ -662,6 +662,10 @@ impl GitFleetApp {
             modal_layers.push(self.view_scan_modal(p, modal));
         }
 
+        if self.show_update_modal {
+            modal_layers.push(self.view_update_modal(p));
+        }
+
         if let Some(confirm) = &self.pending_confirm {
             modal_layers.push(self.view_confirm_modal(p, confirm));
         }

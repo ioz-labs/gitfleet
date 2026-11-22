@@ -70,6 +70,15 @@ toml_edit = "0.22"
 serde_yaml_ng = "0.10"
 fontdb = "0.18"
 
+# Self-update & release verification (100% pure Rust TLS + archive extraction)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "rustls-tls-native-roots", "json", "gzip"] }
+semver = "1"
+sha2 = "0.10"
+hex = "0.4"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

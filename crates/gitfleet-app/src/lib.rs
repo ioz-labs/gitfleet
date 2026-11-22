@@ -1,3 +1,5 @@
+pub mod updater;
+
 use directories::ProjectDirs;
 use gitfleet_core::{AppResult, AppSettings, CommandLogStore, EventBus, UndoStack};
 use gitfleet_docs::DocsService;
@@ -10,6 +12,7 @@ use gitfleet_workspace::WorkspaceService;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use updater::UpdaterService;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectedTool {
@@ -35,6 +38,7 @@ pub struct AppService {
     pub terminal: TerminalService,
     pub docs: DocsService,
     pub scheduler: SchedulerService,
+    pub updater: UpdaterService,
 }
 
 impl AppService {
@@ -60,6 +64,7 @@ impl AppService {
             terminal: TerminalService::new(events.clone()),
             docs: DocsService::new(),
             scheduler,
+            updater: UpdaterService::new(),
             events,
             settings: RwLock::new(loaded_settings),
             command_log,

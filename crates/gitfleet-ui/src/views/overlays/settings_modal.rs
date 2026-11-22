@@ -932,7 +932,125 @@ impl GitFleetApp {
 
     fn view_settings_diagnostics_tab(&self, p: Palette) -> Element<'_, Message> {
         let ws = self.service.workspace.current();
+        let s = self.service.settings();
         let has_repo = self.current_repo().is_some();
+        let channel_label = self.service.updater.channel().label();
+        let update_subtitle = match &self.update_status {
+            crate::app::UpdateUiStatus::Checking => {
+                format!("Checking GitHub Releases…  ·  {channel_label}")
+            }
+            crate::app::UpdateUiStatus::UpToDate => format!(
+                "v{} is up to date  ·  {channel_label}",
+                env!("CARGO_PKG_VERSION")
+            ),
+            crate::app::UpdateUiStatus::Available { release } => format!(
+                "v{} available (installed: v{})  ·  {channel_label}",
+                release.version,
+                env!("CARGO_PKG_VERSION")
+            ),
+            crate::app::UpdateUiStatus::Applying { phase, .. } => {
+                format!("{}  ·  {channel_label}", phase.label())
+            }
+            crate::app::UpdateUiStatus::AppliedManual { release, .. } => {
+                format!("v{} downloaded  ·  {channel_label}", release.version)
+            }
+            crate::app::UpdateUiStatus::Error(err) => {
+                format!("Last check failed: {}  ·  {channel_label}", truncate_chars(err, 48))
+            }
+            crate::app::UpdateUiStatus::Idle => format!(
+                "GitFleet v{}  ·  {channel_label}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        };
+
+        let mut update_actions = row![].spacing(space::XS).align_y(Alignment::Center);
+        if let Some(skipped) = &s.skipped_update_version {
+            update_actions = update_actions.push(
+                button(
+                    text(format!("Unskip v{skipped}"))
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([6, 10])
+                .style(theme::subtle_btn(p))
+                .on_press(Message::ClearSkippedUpdate),
+            );
+        }
+        if let Some(rel) = self.update_status.release() {
+            update_actions = update_actions.push(
+                button(
+                    row![
+                        icons::sparkle(13.0, Color::WHITE),
+                        text(format!("View v{}…", rel.version))
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([6, 12])
+                .style(theme::primary_btn(p))
+                .on_press(Message::OpenUpdateModal),
+            );
+        } else {
+            let checking = self.update_status.is_busy();
+            update_actions = update_actions.push(
+                button(
+                    row![
+                        icons::refresh(
+                            13.0,
+                            if checking { p.text_muted } else { p.text_primary }
+                        ),
+                        text(if checking {
+                            "Checking…"
+                        } else {
+                            "Check for Updates"
+                        })
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([6, 12])
+                .style(theme::subtle_btn(p))
+                .on_press_maybe((!checking).then_some(Message::CheckForUpdates { manual: true })),
+            );
+        }
+
+        let updates_card = grouped_card(
+            p,
+            vec![
+                setting_row(
+                    p,
+                    "Check for updates automatically",
+                    "Silently check GitHub Releases at startup (at most once every 12 hours, with SHA-256 verification).",
+                    theme::toggle_switch(
+                        p,
+                        s.auto_check_updates,
+                        Message::ToggleAutoCheckUpdates(!s.auto_check_updates),
+                    ),
+                ),
+                row![
+                    column![
+                        text("Software Updates")
+                            .size(type_scale::BODY)
+                            .color(p.text_primary),
+                        text(update_subtitle)
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill),
+                    update_actions,
+                ]
+                .spacing(space::MD)
+                .align_y(Alignment::Center)
+                .padding([11, 14])
+                .width(Length::Fill)
+                .into(),
+            ],
+        );
 
         // 2-Column Environment Summary Tiles
         let env_tiles = row![
@@ -1107,6 +1225,7 @@ impl GitFleetApp {
         );
 
         column![
+            column![setting_group_title(p, "UPDATES"), updates_card].spacing(space::SM),
             column![setting_group_title(p, "ENVIRONMENT"), env_tiles].spacing(space::SM),
             column![tools_header, tools_card].spacing(space::SM),
             column![setting_group_title(p, "TROUBLESHOOTING"), actions_card].spacing(space::SM),

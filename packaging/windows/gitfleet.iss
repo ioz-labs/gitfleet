@@ -66,3 +66,10 @@ Name: "{autodesktop}\GitFleet"; Filename: "{app}\gitfleet.exe"; Tasks: desktopic
 
 [Run]
 Filename: "{app}\gitfleet.exe"; Description: "{cm:LaunchProgram,GitFleet}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\gitfleet.exe"; Flags: nowait; Check: ShouldLaunchSilent
+
+[Code]
+function ShouldLaunchSilent: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;

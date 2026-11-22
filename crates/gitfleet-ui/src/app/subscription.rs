@@ -55,6 +55,10 @@ impl GitFleetApp {
             subs.push(time::every(Duration::from_millis(750)).map(|_| Message::ImageDiffBlinkTick));
         }
 
+        if self.update_tracker.is_some() {
+            subs.push(time::every(Duration::from_millis(100)).map(|_| Message::UpdateProgressTick));
+        }
+
         if terminal_capture_keys {
             subs.push(event::listen_with(handle_window_and_terminal_event));
         } else {

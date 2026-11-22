@@ -15,4 +15,5 @@ mod rename_group_modal;
 mod rename_workspace_modal;
 mod scan_modal;
 mod settings_modal;
+mod update_modal;
 mod workspace_modal;

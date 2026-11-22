@@ -172,6 +172,13 @@ impl GitFleetApp {
                     }
                     return Task::none();
                 }
+                if self.show_update_modal {
+                    if !matches!(self.update_status, crate::app::UpdateUiStatus::Applying { .. }) {
+                        self.show_update_modal = false;
+                        self.update_confirm_dirty = false;
+                    }
+                    return Task::none();
+                }
                 if self.context_menu.is_some() {
                     self.context_menu = None;
                     return Task::none();
@@ -677,6 +684,301 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::ExportDiagnosticsPath(None) => Task::none(),
+
+            // ── Software Updates ─────────────────────────────────────────────────
+            Message::CheckForUpdates { manual } => {
+                if matches!(self.update_status, crate::app::UpdateUiStatus::Applying { .. }) {
+                    if manual {
+                        self.show_palette = false;
+                        self.show_update_modal = true;
+                    }
+                    return Task::none();
+                }
+                if manual {
+                    self.show_palette = false;
+                    self.show_update_modal = true;
+                    self.update_confirm_dirty = false;
+                    self.update_status = crate::app::UpdateUiStatus::Checking;
+                }
+                let etag = if manual {
+                    None
+                } else {
+                    self.service.settings().last_update_etag
+                };
+                let svc = self.service.clone();
+                Task::perform(
+                    async move { svc.updater.check_latest_release(etag.as_deref()).await },
+                    move |result| Message::UpdateCheckCompleted { manual, result },
+                )
+            }
+            Message::UpdateCheckCompleted { manual, result } => {
+                match result {
+                    Ok(outcome) => {
+                        let mut s = self.service.settings();
+                        s.last_update_check_epoch_secs = Some(Utc::now().timestamp());
+                        match outcome {
+                            gitfleet_app::updater::UpdateCheckOutcome::NotModified => {
+                                self.service.update_settings(s);
+                                if manual
+                                    && matches!(
+                                        self.update_status,
+                                        crate::app::UpdateUiStatus::Checking
+                                            | crate::app::UpdateUiStatus::Idle
+                                    )
+                                {
+                                    self.update_status = crate::app::UpdateUiStatus::UpToDate;
+                                }
+                            }
+                            gitfleet_app::updater::UpdateCheckOutcome::UpToDate { etag, .. } => {
+                                if etag.is_some() {
+                                    s.last_update_etag = etag;
+                                }
+                                self.service.update_settings(s);
+                                self.update_release_markdown.clear();
+                                self.update_status = crate::app::UpdateUiStatus::UpToDate;
+                                if manual {
+                                    self.toast_is_error = false;
+                                    self.toast_message = format!(
+                                        "GitFleet v{} is up to date",
+                                        gitfleet_app::updater::current_app_version()
+                                    );
+                                }
+                            }
+                            gitfleet_app::updater::UpdateCheckOutcome::Available {
+                                release,
+                                etag,
+                                ..
+                            } => {
+                                if etag.is_some() {
+                                    s.last_update_etag = etag;
+                                }
+                                if manual
+                                    && s.skipped_update_version.as_deref()
+                                        == Some(release.version.as_str())
+                                {
+                                    s.skipped_update_version = None;
+                                }
+                                let skipped = s.skipped_update_version.clone();
+                                self.service.update_settings(s);
+
+                                self.update_release_markdown =
+                                    iced::widget::markdown::parse(&release.body).collect();
+                                let ver = release.version.clone();
+                                self.update_status =
+                                    crate::app::UpdateUiStatus::Available { release };
+                                if manual {
+                                    self.show_update_modal = true;
+                                } else if skipped.as_deref() != Some(ver.as_str()) {
+                                    tracing::info!("GitFleet update available: v{ver}");
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if manual {
+                            self.update_status = crate::app::UpdateUiStatus::Error(err);
+                            self.show_update_modal = true;
+                        } else {
+                            tracing::debug!("Background update check skipped/failed: {err}");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenUpdateModal => {
+                self.show_palette = false;
+                self.update_confirm_dirty = false;
+                self.show_update_modal = true;
+                if matches!(self.update_status, crate::app::UpdateUiStatus::Idle) {
+                    return Task::done(Message::CheckForUpdates { manual: true });
+                }
+                Task::none()
+            }
+            Message::CloseUpdateModal => {
+                if !matches!(
+                    self.update_status,
+                    crate::app::UpdateUiStatus::Applying {
+                        phase: gitfleet_app::updater::UpdateDownloadPhase::Installing,
+                        ..
+                    }
+                ) {
+                    self.show_update_modal = false;
+                    self.update_confirm_dirty = false;
+                }
+                Task::none()
+            }
+            Message::StartApplyUpdate { force_dirty } => {
+                let Some(release) = self.update_status.release().cloned() else {
+                    return Task::none();
+                };
+                if self.service.updater.channel().supports_auto_restart()
+                    && !force_dirty
+                    && !self.unsaved_editor_names().is_empty()
+                {
+                    self.update_confirm_dirty = true;
+                    return Task::none();
+                }
+                self.update_confirm_dirty = false;
+                let tracker = gitfleet_app::updater::UpdateDownloadTracker::new();
+                let total_bytes = release.asset.as_ref().map(|a| a.size_bytes).unwrap_or(0);
+                self.update_tracker = Some(tracker.clone());
+                self.update_status = crate::app::UpdateUiStatus::Applying {
+                    release: Box::new(release.clone()),
+                    phase: gitfleet_app::updater::UpdateDownloadPhase::Downloading,
+                    downloaded_bytes: 0,
+                    total_bytes,
+                };
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        svc.updater
+                            .download_and_apply_update(&release, tracker)
+                            .await
+                    },
+                    Message::UpdateApplyCompleted,
+                )
+            }
+            Message::CancelUpdateDownload => {
+                if let Some(tr) = &self.update_tracker {
+                    tr.cancel();
+                }
+                Task::none()
+            }
+            Message::UpdateProgressTick => {
+                if let Some(tr) = &self.update_tracker {
+                    let (p_phase, dl, tot) = tr.snapshot();
+                    if let crate::app::UpdateUiStatus::Applying {
+                        phase,
+                        downloaded_bytes,
+                        total_bytes,
+                        ..
+                    } = &mut self.update_status
+                    {
+                        *phase = p_phase;
+                        *downloaded_bytes = dl;
+                        if tot > 0 {
+                            *total_bytes = tot;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::UpdateApplyCompleted(result) => {
+                let prev_release = self.update_status.release().cloned();
+                self.update_tracker = None;
+                self.update_confirm_dirty = false;
+                match result {
+                    Ok(
+                        outcome @ (gitfleet_app::updater::ApplyUpdateOutcome::ReadyForInstaller {
+                            ..
+                        }
+                        | gitfleet_app::updater::ApplyUpdateOutcome::ReadyToRelaunchPortable {
+                            ..
+                        }),
+                    ) => {
+                        self.service.workspace.release_lock();
+                        if let Err(err) = gitfleet_app::updater::launch_update_handoff(&outcome) {
+                            self.update_status = crate::app::UpdateUiStatus::Error(err);
+                            self.show_update_modal = true;
+                            return Task::none();
+                        }
+                        return iced::exit();
+                    }
+                    Ok(gitfleet_app::updater::ApplyUpdateOutcome::OpenedArtifact {
+                        path,
+                        note,
+                        manual_command,
+                    }) => {
+                        if let Some(rel) = prev_release {
+                            self.update_status = crate::app::UpdateUiStatus::AppliedManual {
+                                release: Box::new(rel),
+                                note,
+                                manual_command,
+                                artifact_path: Some(path),
+                            };
+                        }
+                    }
+                    Ok(gitfleet_app::updater::ApplyUpdateOutcome::ManualCommand {
+                        command,
+                        ..
+                    }) => {
+                        if let Some(rel) = prev_release {
+                            let note = if command.is_empty() {
+                                "Opened GitHub Releases page in your browser.".to_string()
+                            } else {
+                                "Run the package manager command below to finish updating."
+                                    .to_string()
+                            };
+                            self.update_status = crate::app::UpdateUiStatus::AppliedManual {
+                                release: Box::new(rel),
+                                note,
+                                manual_command: (!command.is_empty()).then_some(command),
+                                artifact_path: None,
+                            };
+                        }
+                    }
+                    Err(err) => {
+                        if err.to_ascii_lowercase().contains("cancelled") {
+                            if let Some(rel) = prev_release {
+                                self.update_status = crate::app::UpdateUiStatus::Available {
+                                    release: Box::new(rel),
+                                };
+                            } else {
+                                self.update_status = crate::app::UpdateUiStatus::Idle;
+                            }
+                            self.toast_is_error = false;
+                            self.toast_message = "Update download cancelled".into();
+                        } else {
+                            self.update_status = crate::app::UpdateUiStatus::Error(err);
+                            self.show_update_modal = true;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::SkipAvailableUpdate => {
+                if let Some(rel) = self.update_status.release() {
+                    let ver = rel.version.clone();
+                    let mut s = self.service.settings();
+                    s.skipped_update_version = Some(ver.clone());
+                    self.service.update_settings(s);
+                    self.show_update_modal = false;
+                    self.update_confirm_dirty = false;
+                    self.toast_is_error = false;
+                    self.toast_message =
+                        format!("Skipped GitFleet v{ver} — check anytime in Settings → Tools & Info");
+                }
+                Task::none()
+            }
+            Message::ClearSkippedUpdate => {
+                let mut s = self.service.settings();
+                s.skipped_update_version = None;
+                s.last_update_etag = None;
+                self.service.update_settings(s);
+                self.toast_is_error = false;
+                self.toast_message = "Cleared skipped version".into();
+                Task::done(Message::CheckForUpdates { manual: true })
+            }
+            Message::ToggleAutoCheckUpdates(enabled) => {
+                let mut s = self.service.settings();
+                s.auto_check_updates = enabled;
+                self.service.update_settings(s);
+                Task::none()
+            }
+            Message::OpenExternalUrl(url) => {
+                if let Err(err) = gitfleet_app::updater::open_url_in_browser(&url) {
+                    self.toast_is_error = true;
+                    self.toast_message = err;
+                }
+                Task::none()
+            }
+            Message::RevealUpdateArtifact(path) => {
+                if let Err(err) = self.service.reveal_in_file_manager(&path) {
+                    self.toast_is_error = true;
+                    self.toast_message = format!("Could not reveal file: {err}");
+                }
+                Task::none()
+            }
 
             // ── Context Menus, Confirmations & Clipboard ──────────────────────────
             Message::CursorMoved(win_id, pos) => {

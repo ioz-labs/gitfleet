@@ -161,6 +161,45 @@ pub(crate) enum EncodingModalMode {
     ReopenWithEncoding,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) enum UpdateUiStatus {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available {
+        release: Box<gitfleet_app::updater::ReleaseInfo>,
+    },
+    Applying {
+        release: Box<gitfleet_app::updater::ReleaseInfo>,
+        phase: gitfleet_app::updater::UpdateDownloadPhase,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    },
+    AppliedManual {
+        release: Box<gitfleet_app::updater::ReleaseInfo>,
+        note: String,
+        manual_command: Option<String>,
+        artifact_path: Option<PathBuf>,
+    },
+    Error(String),
+}
+
+impl UpdateUiStatus {
+    pub(crate) fn release(&self) -> Option<&gitfleet_app::updater::ReleaseInfo> {
+        match self {
+            Self::Available { release }
+            | Self::Applying { release, .. }
+            | Self::AppliedManual { release, .. } => Some(release),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_busy(&self) -> bool {
+        matches!(self, Self::Checking | Self::Applying { .. })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ActionErrorState {
     pub(crate) title: String,

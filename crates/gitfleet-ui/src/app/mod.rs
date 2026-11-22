@@ -309,6 +309,13 @@ pub(crate) struct GitFleetApp {
     pub(crate) git_version: String,
     pub(crate) detected_tools: Vec<DetectedTool>,
 
+    // Software Updater
+    pub(crate) show_update_modal: bool,
+    pub(crate) update_status: UpdateUiStatus,
+    pub(crate) update_release_markdown: Vec<iced::widget::markdown::Item>,
+    pub(crate) update_tracker: Option<Arc<gitfleet_app::updater::UpdateDownloadTracker>>,
+    pub(crate) update_confirm_dirty: bool,
+
     // Context Menus, Confirmations, Error Popup & Clipboard
     pub(crate) cursor_pos: Point,
     pub(crate) window_size: Size,
@@ -586,6 +593,11 @@ impl GitFleetApp {
             settings_font_filter: String::new(),
             git_version: "checking…".into(),
             detected_tools: Vec::new(),
+            show_update_modal: false,
+            update_status: UpdateUiStatus::Idle,
+            update_release_markdown: Vec::new(),
+            update_tracker: None,
+            update_confirm_dirty: false,
             cursor_pos: Point::ORIGIN,
             window_size: Size::new(1440.0, 900.0),
             context_menu: None,
@@ -611,6 +623,25 @@ impl GitFleetApp {
                 async move { svc.git.git_version().await },
                 Message::GitVersionLoaded,
             ));
+        }
+        {
+            let cur_settings = app.service.settings();
+            let now_secs = chrono::Utc::now().timestamp();
+            if gitfleet_app::updater::should_auto_check(
+                &cur_settings,
+                now_secs,
+                cfg!(debug_assertions),
+            ) {
+                let svc = app.service.clone();
+                let etag = cur_settings.last_update_etag.clone();
+                tasks.push(Task::perform(
+                    async move { svc.updater.check_latest_release(etag.as_deref()).await },
+                    |result| Message::UpdateCheckCompleted {
+                        manual: false,
+                        result,
+                    },
+                ));
+            }
         }
         for repo in &ws.repos {
             tasks.push(app.load_status_task(repo.clone()));
@@ -762,6 +793,7 @@ impl GitFleetApp {
             || self.show_git_flow_modal
             || self.show_workspace_modal
             || self.show_settings_modal
+            || self.show_update_modal
             || self.show_eol_modal
             || self.show_encoding_modal
             || self.show_syntax_modal
@@ -778,6 +810,27 @@ impl GitFleetApp {
             || self.add_gitignore_modal.is_some()
             || self.commit_modal.is_some()
             || self.scan_modal.is_some()
+    }
+
+    pub(crate) fn unsaved_editor_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.editor_dirty {
+            let label = self
+                .active_file_path
+                .as_deref()
+                .and_then(|p| p.rsplit(['/', '\\']).next())
+                .unwrap_or("Host Editor")
+                .to_string();
+            names.push(label);
+        }
+        for viewer in self.detached_viewers.values() {
+            for tab in &viewer.tabs {
+                if tab.dirty {
+                    names.push(tab.title.clone());
+                }
+            }
+        }
+        names
     }
 
     pub(crate) fn active_error_context(&self) -> Option<String> {
