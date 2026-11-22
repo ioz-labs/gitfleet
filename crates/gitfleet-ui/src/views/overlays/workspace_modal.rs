@@ -278,6 +278,19 @@ impl GitFleetApp {
             r = r.push(
                 button(
                     row![
+                        icons::pencil(icon_size::XS, p.text_secondary),
+                        text("Rename").size(type_scale::CAPTION),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding(pad::BTN_SM)
+                .style(theme::subtle_btn(p))
+                .on_press(Message::OpenRenameGroupModal(g.clone())),
+            );
+            r = r.push(
+                button(
+                    row![
                         icons::trash(icon_size::XS, p.danger_fg),
                         text("Delete").size(type_scale::CAPTION).color(p.danger_fg),
                     ]

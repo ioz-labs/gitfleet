@@ -599,6 +599,10 @@ impl GitFleetApp {
             modal_layers.push(self.view_rename_workspace_modal(p, modal));
         }
 
+        if let Some(modal) = &self.rename_group_modal {
+            modal_layers.push(self.view_rename_group_modal(p, modal));
+        }
+
         if let Some(modal) = &self.rename_entry_modal {
             modal_layers.push(self.view_rename_entry_modal(p, modal));
         }

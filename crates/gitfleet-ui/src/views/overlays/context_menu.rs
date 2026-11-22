@@ -306,6 +306,12 @@ impl GitFleetApp {
                 let child_repo_count = gitfleet_workspace::count_repos_in_group(&ws, name);
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
+                    icons::pencil(12.0, p.text_secondary).into(),
+                    "Rename Group…".into(),
+                    Message::OpenRenameGroupModal(name.clone()),
+                    false,
+                )));
+                items = items.push(close_sub(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
                     if child_repo_count > 0 {
                         format!(

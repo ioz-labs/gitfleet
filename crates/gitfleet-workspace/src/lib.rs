@@ -1108,48 +1108,14 @@ impl WorkspaceService {
         Ok(())
     }
 
-    pub fn rename_group(&self, old_name: &str, new_name: String) -> AppResult<()> {
-        let trimmed = normalize_group_path(&new_name);
-        if trimmed.is_empty() {
-            return Ok(());
-        }
-        let old_prefix = format!("{old_name}/");
-        let rewrite = |val: &str| -> Option<String> {
-            if val == old_name {
-                Some(trimmed.clone())
-            } else if let Some(rest) = val.strip_prefix(&old_prefix) {
-                Some(format!("{trimmed}/{rest}"))
-            } else {
-                None
-            }
+    pub fn rename_group(&self, old_name: &str, new_name: String) -> AppResult<String> {
+        let renamed = if let Ok(mut guard) = self.state.write() {
+            rename_group_in(&mut guard, old_name, &new_name)?
+        } else {
+            normalize_group_path(&new_name)
         };
-        if let Ok(mut guard) = self.state.write() {
-            for g in &mut guard.groups {
-                if let Some(next) = rewrite(g) {
-                    *g = next;
-                }
-            }
-            for repo in &mut guard.repos {
-                if let Some(cur) = repo.group.as_deref()
-                    && let Some(next) = rewrite(cur)
-                {
-                    repo.group = Some(next);
-                }
-            }
-            for c in &mut guard.ui.collapsed_groups {
-                if let Some(next) = rewrite(c) {
-                    *c = next;
-                }
-            }
-            let rewritten_keys: HashMap<String, String> = guard
-                .group_secret_keys
-                .drain()
-                .map(|(g, key_id)| (rewrite(&g).unwrap_or(g), key_id))
-                .collect();
-            guard.group_secret_keys = rewritten_keys;
-        }
         self.auto_save();
-        Ok(())
+        Ok(renamed)
     }
 
     pub fn delete_group(&self, name: &str) -> AppResult<Vec<RepoId>> {
@@ -1695,6 +1661,87 @@ fn scan_recursive(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<Path
         }
         scan_recursive(&path, depth + 1, max_depth, out);
     }
+}
+
+/// Renames a group (and all its descendant subgroups, assigned repositories, collapsed states,
+/// and group secret key bindings) cleanly, ensuring ancestor groups exist and deduplicating lists.
+fn rename_group_in(cfg: &mut WorkspaceConfig, old_name: &str, new_name: &str) -> AppResult<String> {
+    let old_norm = normalize_group_path(old_name);
+    let new_norm = normalize_group_path(new_name);
+    if old_norm.is_empty() || new_norm.is_empty() {
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Group name cannot be empty.",
+        )));
+    }
+    if new_norm == old_norm {
+        return Ok(new_norm);
+    }
+
+    let old_prefix = format!("{old_norm}/");
+    if new_norm.starts_with(&old_prefix) {
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Cannot rename a group into one of its own subgroups.",
+        )));
+    }
+
+    if cfg.groups.iter().any(|g| g == &new_norm)
+        || cfg
+            .repos
+            .iter()
+            .any(|r| r.group.as_deref() == Some(new_norm.as_str()))
+    {
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("Group '{new_norm}' already exists."),
+        )));
+    }
+
+    let rewrite = |val: &str| -> Option<String> {
+        if val == old_norm {
+            Some(new_norm.clone())
+        } else {
+            val.strip_prefix(&old_prefix)
+                .map(|rest| format!("{new_norm}/{rest}"))
+        }
+    };
+
+    for g in &mut cfg.groups {
+        if let Some(next) = rewrite(g) {
+            *g = next;
+        }
+    }
+    ensure_group_ancestors(&mut cfg.groups, &new_norm);
+    let mut seen_groups = HashSet::with_capacity(cfg.groups.len());
+    cfg.groups.retain(|g| seen_groups.insert(g.clone()));
+
+    for repo in &mut cfg.repos {
+        if let Some(cur) = repo.group.as_deref()
+            && let Some(next) = rewrite(cur)
+        {
+            repo.group = Some(next);
+        }
+    }
+
+    for c in &mut cfg.ui.collapsed_groups {
+        if let Some(next) = rewrite(c) {
+            *c = next;
+        }
+    }
+    let mut seen_collapsed = HashSet::with_capacity(cfg.ui.collapsed_groups.len());
+    cfg.ui
+        .collapsed_groups
+        .retain(|c| seen_collapsed.insert(c.clone()));
+
+    let rewritten_keys: HashMap<String, String> = cfg
+        .group_secret_keys
+        .drain()
+        .map(|(g, key_id)| (rewrite(&g).unwrap_or(g), key_id))
+        .collect();
+    cfg.group_secret_keys = rewritten_keys;
+
+    Ok(new_norm)
 }
 
 #[cfg(test)]
@@ -2264,5 +2311,87 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn renames_group_subgroups_repos_collapsed_and_secret_keys() {
+        let mut cfg = WorkspaceConfig {
+            groups: vec![
+                "work".into(),
+                "work/backend".into(),
+                "work/backend/api".into(),
+                "personal".into(),
+            ],
+            ..Default::default()
+        };
+        cfg.ui.collapsed_groups = vec!["work".into(), "work/backend".into()];
+        cfg.group_secret_keys
+            .insert("work".into(), "key-work".into());
+        cfg.group_secret_keys
+            .insert("work/backend".into(), "key-be".into());
+        cfg.repos = vec![
+            RepoEntry {
+                id: RepoId::new(),
+                name: "svc".into(),
+                path: PathBuf::from("svc"),
+                group: Some("work/backend/api".into()),
+                pinned: false,
+                available: true,
+                secret_key_id: None,
+                secret_profile: None,
+            },
+            RepoEntry {
+                id: RepoId::new(),
+                name: "notes".into(),
+                path: PathBuf::from("notes"),
+                group: Some("personal".into()),
+                pinned: false,
+                available: true,
+                secret_key_id: None,
+                secret_profile: None,
+            },
+        ];
+
+        // Top-level rename cascades to subgroups, repos, collapsed state, and secret keys
+        let renamed = rename_group_in(&mut cfg, "work", "company").unwrap();
+        assert_eq!(renamed, "company");
+        assert_eq!(
+            cfg.groups,
+            vec![
+                "company".to_string(),
+                "company/backend".to_string(),
+                "company/backend/api".to_string(),
+                "personal".to_string(),
+            ]
+        );
+        assert_eq!(cfg.repos[0].group.as_deref(), Some("company/backend/api"));
+        assert_eq!(cfg.repos[1].group.as_deref(), Some("personal"));
+        assert_eq!(
+            cfg.ui.collapsed_groups,
+            vec!["company".to_string(), "company/backend".to_string()]
+        );
+        assert_eq!(
+            cfg.group_secret_keys.get("company").map(String::as_str),
+            Some("key-work")
+        );
+        assert_eq!(
+            cfg.group_secret_keys
+                .get("company/backend")
+                .map(String::as_str),
+            Some("key-be")
+        );
+
+        // Moving subgroup under a new parent creates ancestor group automatically
+        let moved = rename_group_in(&mut cfg, "company/backend", "platform/core").unwrap();
+        assert_eq!(moved, "platform/core");
+        assert!(cfg.groups.contains(&"platform".to_string()));
+        assert!(cfg.groups.contains(&"platform/core".to_string()));
+        assert!(cfg.groups.contains(&"platform/core/api".to_string()));
+        assert_eq!(cfg.repos[0].group.as_deref(), Some("platform/core/api"));
+
+        // Rejects empty, self-descendant, and colliding group names
+        assert!(rename_group_in(&mut cfg, "company", "   ").is_err());
+        assert!(rename_group_in(&mut cfg, "company", "company/sub").is_err());
+        assert!(rename_group_in(&mut cfg, "company", "personal").is_err());
     }
 }

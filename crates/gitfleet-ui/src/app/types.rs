@@ -817,6 +817,13 @@ pub(crate) struct RenameWorkspaceModalState {
     pub(crate) file_hint: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RenameGroupModalState {
+    pub(crate) old_name: String,
+    pub(crate) new_name: String,
+    pub(crate) error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitModalScope {
     Staged,

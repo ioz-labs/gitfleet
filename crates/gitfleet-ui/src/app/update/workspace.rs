@@ -1,6 +1,6 @@
 use crate::app::{
-    ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, RenameWorkspaceModalState,
-    ScanModalState,
+    ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, RenameGroupModalState,
+    RenameWorkspaceModalState, ScanModalState,
 };
 use crate::preview;
 use gitfleet_core::RepoId;
@@ -720,6 +720,56 @@ impl GitFleetApp {
                         self.show_inline_group_input = false;
                         self.toast_is_error = false;
                         self.toast_message = format!("Created group '{normalized}'");
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenRenameGroupModal(name) => {
+                self.context_menu = None;
+                self.show_palette = false;
+                let normalized = gitfleet_workspace::normalize_group_path(&name);
+                if normalized.is_empty() {
+                    return Task::none();
+                }
+                self.rename_group_modal = Some(RenameGroupModalState {
+                    old_name: normalized.clone(),
+                    new_name: normalized,
+                    error: None,
+                });
+                text_input::focus(self.rename_group_input_id.clone())
+            }
+            Message::RenameGroupInputChanged(val) => {
+                if let Some(m) = &mut self.rename_group_modal {
+                    m.new_name = val;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            Message::SubmitRenameGroup => {
+                let Some((old_name, new_name)) = self
+                    .rename_group_modal
+                    .as_ref()
+                    .map(|m| (m.old_name.clone(), m.new_name.clone()))
+                else {
+                    return Task::none();
+                };
+                match self.service.workspace.rename_group(&old_name, new_name) {
+                    Ok(renamed) => {
+                        self.rename_group_modal = None;
+                        self.refresh_vault_summary();
+                        self.toast_is_error = false;
+                        self.toast_message = if renamed == old_name {
+                            format!("Group '{old_name}' unchanged")
+                        } else {
+                            format!("Renamed group '{old_name}' → '{renamed}'")
+                        };
+                    }
+                    Err(e) => {
+                        if let Some(m) = &mut self.rename_group_modal {
+                            m.error = Some(e.to_string());
+                        } else {
+                            self.report_action_error("Rename Group Failed", e.to_string(), false);
+                        }
                     }
                 }
                 Task::none()

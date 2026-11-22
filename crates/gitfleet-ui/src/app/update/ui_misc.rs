@@ -144,6 +144,10 @@ impl GitFleetApp {
                     self.rename_workspace_modal = None;
                     return Task::none();
                 }
+                if self.rename_group_modal.is_some() {
+                    self.rename_group_modal = None;
+                    return Task::none();
+                }
                 if self.rename_entry_modal.is_some() {
                     self.rename_entry_modal = None;
                     return Task::none();
@@ -764,6 +768,7 @@ impl GitFleetApp {
                     || self.discard_modal.is_some()
                     || self.rename_branch_modal.is_some()
                     || self.rename_workspace_modal.is_some()
+                    || self.rename_group_modal.is_some()
                     || self.rename_entry_modal.is_some()
                     || self.add_gitignore_modal.is_some()
                     || self.scan_modal.is_some()

@@ -192,6 +192,10 @@ pub(crate) struct GitFleetApp {
     pub(crate) rename_workspace_modal: Option<RenameWorkspaceModalState>,
     pub(crate) rename_workspace_input_id: text_input::Id,
 
+    // Rename Group Modal
+    pub(crate) rename_group_modal: Option<RenameGroupModalState>,
+    pub(crate) rename_group_input_id: text_input::Id,
+
     // Rename File/Folder & Add to .gitignore Modals
     pub(crate) rename_entry_modal: Option<RenameEntryModalState>,
     pub(crate) rename_entry_input_id: text_input::Id,
@@ -485,6 +489,8 @@ impl GitFleetApp {
             rename_branch_input_id: text_input::Id::unique(),
             rename_workspace_modal: None,
             rename_workspace_input_id: text_input::Id::unique(),
+            rename_group_modal: None,
+            rename_group_input_id: text_input::Id::unique(),
             rename_entry_modal: None,
             rename_entry_input_id: text_input::Id::unique(),
             add_gitignore_modal: None,
@@ -763,6 +769,7 @@ impl GitFleetApp {
             || self.discard_modal.is_some()
             || self.rename_branch_modal.is_some()
             || self.rename_workspace_modal.is_some()
+            || self.rename_group_modal.is_some()
             || self.rename_entry_modal.is_some()
             || self.add_gitignore_modal.is_some()
             || self.commit_modal.is_some()
