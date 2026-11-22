@@ -626,14 +626,13 @@ impl GitFleetApp {
         }
         {
             let cur_settings = app.service.settings();
-            let now_secs = chrono::Utc::now().timestamp();
-            if gitfleet_app::updater::should_auto_check(
-                &cur_settings,
-                now_secs,
-                cfg!(debug_assertions),
-            ) {
+            if gitfleet_app::updater::should_auto_check(&cur_settings, cfg!(debug_assertions)) {
                 let svc = app.service.clone();
-                let etag = cur_settings.last_update_etag.clone();
+                let etag = gitfleet_app::updater::effective_etag_for_version(
+                    &cur_settings,
+                    gitfleet_app::updater::current_app_version(),
+                )
+                .map(str::to_string);
                 tasks.push(Task::perform(
                     async move { svc.updater.check_latest_release(etag.as_deref()).await },
                     |result| Message::UpdateCheckCompleted {

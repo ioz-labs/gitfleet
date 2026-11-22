@@ -20,8 +20,6 @@ pub const GITHUB_OWNER: &str = "ioz-labs";
 pub const GITHUB_REPO: &str = "gitfleet";
 pub const RELEASES_PAGE_URL: &str = "https://github.com/ioz-labs/gitfleet/releases";
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/ioz-labs/gitfleet/releases/latest";
-/// Minimum interval between silent background update checks (12 hours).
-pub const AUTO_CHECK_INTERVAL_SECS: i64 = 12 * 60 * 60;
 
 /// Detected installation mechanism for the currently running GitFleet binary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,13 +304,22 @@ pub fn is_newer_version(current: &str, candidate: &str) -> Result<bool, String> 
 }
 
 /// Decides whether a silent background update check should fire on app startup.
-pub fn should_auto_check(settings: &AppSettings, now_epoch_secs: i64, is_debug_build: bool) -> bool {
-    if is_debug_build || !settings.auto_check_updates {
-        return false;
-    }
-    match settings.last_update_check_epoch_secs {
-        None => true,
-        Some(last) => now_epoch_secs.saturating_sub(last) >= AUTO_CHECK_INTERVAL_SECS,
+/// Disabled in debug builds (`cargo run`) to keep local development quiet; in release builds,
+/// conditional `If-None-Match` (`304 Not Modified`) responses consume zero GitHub API quota.
+pub fn should_auto_check(settings: &AppSettings, is_debug_build: bool) -> bool {
+    !is_debug_build && settings.auto_check_updates
+}
+
+/// Returns the cached ETag only when it was recorded for `current_version` (preventing a
+/// version downgrade or prior update from getting stuck behind a stale `304 Not Modified`).
+pub fn effective_etag_for_version<'a>(
+    settings: &'a AppSettings,
+    current_version: &str,
+) -> Option<&'a str> {
+    if settings.last_update_etag_version.as_deref() == Some(current_version) {
+        settings.last_update_etag.as_deref()
+    } else {
+        None
     }
 }
 
@@ -1190,25 +1197,22 @@ mod tests {
     }
 
     #[test]
-    fn respects_auto_check_cooldown_and_debug_flag() {
+    fn respects_auto_check_setting_and_version_scoped_etag() {
         let mut settings = AppSettings::default();
-        assert!(!should_auto_check(&settings, 100_000, true));
-        assert!(should_auto_check(&settings, 100_000, false));
+        assert!(!should_auto_check(&settings, true));
+        assert!(should_auto_check(&settings, false));
 
-        settings.last_update_check_epoch_secs = Some(100_000);
-        assert!(!should_auto_check(&settings, 100_000 + 3600, false));
-        assert!(should_auto_check(
-            &settings,
-            100_000 + AUTO_CHECK_INTERVAL_SECS,
-            false
-        ));
+        settings.last_update_etag = Some("\"etag-123\"".to_string());
+        settings.last_update_etag_version = Some("0.6.0".to_string());
+        assert_eq!(
+            effective_etag_for_version(&settings, "0.6.0"),
+            Some("\"etag-123\"")
+        );
+        // Different app version must ignore stale ETag so downgrades/upgrades never stick on 304.
+        assert_eq!(effective_etag_for_version(&settings, "0.4.9"), None);
 
         settings.auto_check_updates = false;
-        assert!(!should_auto_check(
-            &settings,
-            100_000 + AUTO_CHECK_INTERVAL_SECS * 10,
-            false
-        ));
+        assert!(!should_auto_check(&settings, false));
     }
 
     #[test]

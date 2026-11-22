@@ -130,7 +130,7 @@ impl GitFleetApp {
                             ]
                             .spacing(space::SM)
                             .align_y(Alignment::Center),
-                            text("Automatic background checks run at most once every 12 hours using ETag caching.")
+                            text("Automatic startup checks use zero-quota ETag caching (304 Not Modified).")
                                 .size(type_scale::CAPTION)
                                 .color(p.text_muted),
                         ]

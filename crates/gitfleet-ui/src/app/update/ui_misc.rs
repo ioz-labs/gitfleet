@@ -703,7 +703,12 @@ impl GitFleetApp {
                 let etag = if manual {
                     None
                 } else {
-                    self.service.settings().last_update_etag
+                    let s = self.service.settings();
+                    gitfleet_app::updater::effective_etag_for_version(
+                        &s,
+                        gitfleet_app::updater::current_app_version(),
+                    )
+                    .map(str::to_string)
                 };
                 let svc = self.service.clone();
                 Task::perform(
@@ -732,6 +737,9 @@ impl GitFleetApp {
                             gitfleet_app::updater::UpdateCheckOutcome::UpToDate { etag, .. } => {
                                 if etag.is_some() {
                                     s.last_update_etag = etag;
+                                    s.last_update_etag_version = Some(
+                                        gitfleet_app::updater::current_app_version().to_string(),
+                                    );
                                 }
                                 self.service.update_settings(s);
                                 self.update_release_markdown.clear();
@@ -746,12 +754,12 @@ impl GitFleetApp {
                             }
                             gitfleet_app::updater::UpdateCheckOutcome::Available {
                                 release,
-                                etag,
                                 ..
                             } => {
-                                if etag.is_some() {
-                                    s.last_update_etag = etag;
-                                }
+                                // Clear cached UpToDate ETag so reopening the app before updating
+                                // continues to surface the available-update indicator reliably.
+                                s.last_update_etag = None;
+                                s.last_update_etag_version = None;
                                 if manual
                                     && s.skipped_update_version.as_deref()
                                         == Some(release.version.as_str())
@@ -954,6 +962,7 @@ impl GitFleetApp {
                 let mut s = self.service.settings();
                 s.skipped_update_version = None;
                 s.last_update_etag = None;
+                s.last_update_etag_version = None;
                 self.service.update_settings(s);
                 self.toast_is_error = false;
                 self.toast_message = "Cleared skipped version".into();

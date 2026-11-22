@@ -1024,7 +1024,7 @@ impl GitFleetApp {
                 setting_row(
                     p,
                     "Check for updates automatically",
-                    "Silently check GitHub Releases at startup (at most once every 12 hours, with SHA-256 verification).",
+                    "Silently check GitHub Releases on startup using zero-quota ETag caching and SHA-256 verification.",
                     theme::toggle_switch(
                         p,
                         s.auto_check_updates,

@@ -30,6 +30,8 @@ pub struct AppSettings {
     pub last_update_check_epoch_secs: Option<i64>,
     #[serde(default)]
     pub last_update_etag: Option<String>,
+    #[serde(default)]
+    pub last_update_etag_version: Option<String>,
 }
 
 fn default_oversized_mb() -> u64 {
@@ -64,6 +66,7 @@ impl Default for AppSettings {
             skipped_update_version: None,
             last_update_check_epoch_secs: None,
             last_update_etag: None,
+            last_update_etag_version: None,
         }
     }
 }
