@@ -233,6 +233,9 @@ pub(crate) fn map_text_diff_msg(win_id: window::Id, msg: Message) -> Message {
         Message::PreviewEditorAction(action) => {
             Message::Detached(win_id, DetachedAction::PreviewEditorAction(action))
         }
+        Message::PreviewScrolled(vp) => {
+            Message::Detached(win_id, DetachedAction::PreviewScrolled(vp))
+        }
         Message::PreviewLinkClicked(url) => {
             Message::Detached(win_id, DetachedAction::PreviewLinkClicked(url))
         }

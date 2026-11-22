@@ -626,10 +626,25 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::PreviewEditorAction(action) => {
-                if !action.is_edit()
-                    && let Some(tab) = v.active_tab_mut()
-                {
-                    tab.preview_editor.perform(action);
+                if !action.is_edit() {
+                    let cfg = crate::views::code_editor::NumberedEditorConfig::preview(
+                        v.editor_font_size,
+                        v.editor_word_wrap,
+                    );
+                    if let Some(tab) = v.active_tab_mut() {
+                        return crate::views::code_editor::perform_numbered_editor_action(
+                            &mut tab.preview_editor,
+                            action,
+                            &mut tab.preview_scroll,
+                            cfg,
+                        );
+                    }
+                }
+                Task::none()
+            }
+            DetachedAction::PreviewScrolled(vp) => {
+                if let Some(tab) = v.active_tab_mut() {
+                    tab.preview_scroll.on_scroll(vp);
                 }
                 Task::none()
             }
@@ -641,6 +656,7 @@ impl GitFleetApp {
             DetachedAction::TogglePreviewRaw => {
                 if let Some(tab) = v.active_tab_mut() {
                     tab.preview_raw_mode = !tab.preview_raw_mode;
+                    return tab.preview_scroll.reset();
                 }
                 Task::none()
             }
@@ -716,7 +732,11 @@ impl GitFleetApp {
                     return Task::none();
                 };
                 let is_active = v.active_tab == Some(idx);
-                let editable = {
+                let studio_cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let (editable, scroll_task) = {
                     let tab = &mut v.tabs[idx];
                     let ok = tab.apply_loaded_doc(&payload.path, root.as_deref(), payload.doc);
                     if !ok && tab.mode == DetachedViewMode::Edit {
@@ -726,12 +746,20 @@ impl GitFleetApp {
                         tab.mode = DetachedViewMode::Edit;
                     }
                     tab.hydrate_active_mode();
-                    if let Some((line_idx, col_start, col_end)) = payload.jump_match
+                    let task = if let Some((line_idx, col_start, col_end)) = payload.jump_match
                         && ok
                     {
                         jump_editor_to_span(&mut tab.editor_content, line_idx, col_start, col_end);
-                    }
-                    ok
+                        crate::views::code_editor::scroll_numbered_editor_to_line(
+                            &tab.editor_content,
+                            &mut tab.editor_scroll,
+                            line_idx,
+                            studio_cfg,
+                        )
+                    } else {
+                        Task::batch([tab.editor_scroll.reset(), tab.preview_scroll.reset()])
+                    };
+                    (ok, task)
                 };
                 if is_active {
                     v.recompute_in_file_matches(false);
@@ -752,7 +780,7 @@ impl GitFleetApp {
                         v.status_note = tab.rel_path.clone().unwrap_or_else(|| tab.title.clone());
                     }
                 }
-                Task::none()
+                scroll_task
             }
             DetachedAction::LeftFilePicked(Some(left)) => {
                 v.compare_left = Some(left.clone());
@@ -882,36 +910,63 @@ impl GitFleetApp {
             // ── Direct Code Editor ───────────────────────────────────────────
             DetachedAction::EditorAction(action) => {
                 let is_edit = action.is_edit();
-                if let Some(tab) = v.active_tab_mut() {
-                    tab.editor_content.perform(action);
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut() {
+                    let task = crate::views::code_editor::perform_numbered_editor_action(
+                        &mut tab.editor_content,
+                        action,
+                        &mut tab.editor_scroll,
+                        cfg,
+                    );
                     if is_edit {
                         tab.dirty = true;
                         tab.preview_hydrated = false;
                     }
-                }
+                    task
+                } else {
+                    Task::none()
+                };
                 if is_edit && v.in_file_find_open && !v.in_file_query.is_empty() {
                     v.recompute_in_file_matches(true);
+                }
+                scroll_task
+            }
+            DetachedAction::EditorScrolled(vp) => {
+                if let Some(tab) = v.active_tab_mut() {
+                    tab.editor_scroll.on_scroll(vp);
                 }
                 Task::none()
             }
             DetachedAction::InsertIndent => {
-                if let Some(tab) = v.active_tab_mut()
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
                     && tab.mode == DetachedViewMode::Edit
                     && tab.is_editable()
                 {
                     tab.ensure_editor_hydrated();
                     let spaces = " ".repeat(tab.language.default_indent_spaces());
-                    tab.editor_content
-                        .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                            Arc::new(spaces),
-                        )));
+                    let task = crate::views::code_editor::perform_numbered_editor_action(
+                        &mut tab.editor_content,
+                        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(spaces))),
+                        &mut tab.editor_scroll,
+                        cfg,
+                    );
                     tab.dirty = true;
                     tab.preview_hydrated = false;
-                }
+                    task
+                } else {
+                    Task::none()
+                };
                 if v.in_file_find_open && !v.in_file_query.is_empty() {
                     v.recompute_in_file_matches(true);
                 }
-                Task::none()
+                scroll_task
             }
             DetachedAction::OpenStatusMenu(kind) => {
                 if v.status_menu.is_some_and(|(cur, _)| cur == kind) {
@@ -1028,8 +1083,7 @@ impl GitFleetApp {
             DetachedAction::InFileQueryChanged(q) => {
                 v.in_file_query = q;
                 v.recompute_in_file_matches(false);
-                v.jump_active_editor_to_match();
-                Task::none()
+                v.jump_active_editor_to_match()
             }
             DetachedAction::InFileReplaceChanged(r) => {
                 v.in_file_replace = r;
@@ -1038,20 +1092,17 @@ impl GitFleetApp {
             DetachedAction::ToggleInFileCase => {
                 v.in_file_options.case_sensitive = !v.in_file_options.case_sensitive;
                 v.recompute_in_file_matches(false);
-                v.jump_active_editor_to_match();
-                Task::none()
+                v.jump_active_editor_to_match()
             }
             DetachedAction::ToggleInFileWholeWord => {
                 v.in_file_options.whole_word = !v.in_file_options.whole_word;
                 v.recompute_in_file_matches(false);
-                v.jump_active_editor_to_match();
-                Task::none()
+                v.jump_active_editor_to_match()
             }
             DetachedAction::ToggleInFileRegex => {
                 v.in_file_options.regex = !v.in_file_options.regex;
                 v.recompute_in_file_matches(false);
-                v.jump_active_editor_to_match();
-                Task::none()
+                v.jump_active_editor_to_match()
             }
             DetachedAction::InFileJump(delta) => {
                 let len = v.in_file_matches.len();
@@ -1069,8 +1120,7 @@ impl GitFleetApp {
                     }
                 };
                 v.in_file_active_idx = Some(next);
-                v.jump_active_editor_to_match();
-                Task::none()
+                v.jump_active_editor_to_match()
             }
             DetachedAction::InFileJumpIndex(idx) => {
                 if idx < v.in_file_matches.len() {
@@ -1081,7 +1131,7 @@ impl GitFleetApp {
                         tab.mode = DetachedViewMode::Edit;
                         tab.ensure_editor_hydrated();
                     }
-                    v.jump_active_editor_to_match();
+                    return v.jump_active_editor_to_match();
                 }
                 Task::none()
             }
@@ -1114,9 +1164,10 @@ impl GitFleetApp {
                             tab.preview_hydrated = false;
                         }
                         v.recompute_in_file_matches(true);
-                        v.jump_active_editor_to_match();
+                        let scroll_task = v.jump_active_editor_to_match();
                         v.status_is_error = false;
                         v.status_note = "Replaced 1 occurrence".into();
+                        return scroll_task;
                     }
                     Some(Err(err)) => {
                         v.status_is_error = true;

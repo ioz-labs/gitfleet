@@ -152,6 +152,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) editor_hydrated: bool,
     pub(crate) preview_state: preview::PreviewState,
     pub(crate) preview_editor: text_editor::Content,
+    pub(crate) preview_scroll: crate::views::code_editor::CodeScrollState,
     pub(crate) preview_raw_mode: bool,
     pub(crate) open_doc_id: Option<DocumentId>,
     pub(crate) open_doc_version: Option<String>,
@@ -160,6 +161,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) open_doc_encoding: FileEncoding,
     pub(crate) open_doc_language: CodeLanguage,
     pub(crate) editor_content: text_editor::Content,
+    pub(crate) editor_scroll: crate::views::code_editor::CodeScrollState,
     pub(crate) editor_dirty: bool,
     pub(crate) show_eol_modal: bool,
     pub(crate) show_encoding_modal: bool,
@@ -458,6 +460,7 @@ impl GitFleetApp {
             editor_hydrated: false,
             preview_state: preview::PreviewState::Empty,
             preview_editor: text_editor::Content::new(),
+            preview_scroll: crate::views::code_editor::CodeScrollState::new(),
             preview_raw_mode: false,
             open_doc_id: None,
             open_doc_version: None,
@@ -466,6 +469,7 @@ impl GitFleetApp {
             open_doc_encoding: FileEncoding::Utf8,
             open_doc_language: CodeLanguage::PlainText,
             editor_content: text_editor::Content::new(),
+            editor_scroll: crate::views::code_editor::CodeScrollState::new(),
             editor_dirty: false,
             show_eol_modal: false,
             show_encoding_modal: false,
@@ -1168,7 +1172,9 @@ impl GitFleetApp {
             self.editor_hydrated = false;
             self.preview_state = preview::PreviewState::Empty;
             self.preview_editor = text_editor::Content::new();
+            self.preview_scroll.reset_offsets();
             self.editor_content = text_editor::Content::new();
+            self.editor_scroll.reset_offsets();
             self.open_doc_id = None;
             self.open_doc_version = None;
             self.open_doc_path = None;

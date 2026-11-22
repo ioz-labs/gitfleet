@@ -1650,7 +1650,7 @@ impl GitFleetApp {
                 } else if self.bottom_mode == BottomViewMode::Edit {
                     self.ensure_editor_hydrated();
                 }
-                Task::none()
+                Task::batch([self.preview_scroll.reset(), self.editor_scroll.reset()])
             }
             Message::ImageDiffLoaded(req_id, title, data) => {
                 if req_id == self.diff_request_id {
@@ -1738,13 +1738,26 @@ impl GitFleetApp {
             Message::PreviewEditorAction(action) => {
                 self.focus_pane = ActiveFocusPane::TextInput;
                 if !action.is_edit() {
-                    self.preview_editor.perform(action);
+                    let cfg = crate::views::code_editor::NumberedEditorConfig::preview(
+                        crate::theme::type_scale::CODE,
+                        false,
+                    );
+                    return crate::views::code_editor::perform_numbered_editor_action(
+                        &mut self.preview_editor,
+                        action,
+                        &mut self.preview_scroll,
+                        cfg,
+                    );
                 }
+                Task::none()
+            }
+            Message::PreviewScrolled(vp) => {
+                self.preview_scroll.on_scroll(vp);
                 Task::none()
             }
             Message::TogglePreviewRaw => {
                 self.preview_raw_mode = !self.preview_raw_mode;
-                Task::none()
+                self.preview_scroll.reset()
             }
             Message::CopyPreviewText => {
                 if let Some(sel) = self.preview_editor.selection().filter(|s| !s.is_empty()) {
@@ -1762,10 +1775,19 @@ impl GitFleetApp {
             Message::EditorAction(action) => {
                 self.focus_pane = ActiveFocusPane::TextInput;
                 let is_edit = action.is_edit();
-                self.editor_content.perform(action);
+                let scroll_task = crate::views::code_editor::perform_numbered_editor_action(
+                    &mut self.editor_content,
+                    action,
+                    &mut self.editor_scroll,
+                    crate::views::code_editor::NumberedEditorConfig::host_edit(),
+                );
                 if is_edit {
                     self.editor_dirty = true;
                 }
+                scroll_task
+            }
+            Message::EditorScrolled(vp) => {
+                self.editor_scroll.on_scroll(vp);
                 Task::none()
             }
             Message::SaveDocument => {
@@ -2096,6 +2118,10 @@ impl GitFleetApp {
                         self.open_doc_path = Some(full_path);
                         self.editor_dirty = false;
                         self.bottom_mode = BottomViewMode::Edit;
+                        return Task::batch([
+                            self.preview_scroll.reset(),
+                            self.editor_scroll.reset(),
+                        ]);
                     }
                     Err(e) => {
                         self.report_action_error("Open File Failed", e.to_string(), false);

@@ -508,6 +508,8 @@ impl GitFleetApp {
         render_file_preview(
             &self.preview_state,
             &self.preview_editor,
+            &self.preview_scroll,
+            crate::views::code_editor::NumberedEditorConfig::preview(type_scale::CODE, false),
             self.preview_raw_mode,
             self.theme_mode,
             p,
@@ -532,16 +534,19 @@ impl GitFleetApp {
             active_match_line: None,
             active_match_cols: None,
         };
-        text_editor(&self.editor_content)
+        let ed = text_editor(&self.editor_content)
             .on_action(Message::EditorAction)
-            .font(theme::CODE_FONT)
-            .size(type_scale::CODE)
-            .height(Length::Fill)
             .highlight_with::<crate::syntax::CodeSyntaxHighlighter>(
                 hl_settings,
                 crate::syntax::format_code_token,
-            )
-            .style(theme::dark_editor(p))
-            .into()
+            );
+        crate::views::code_editor::numbered_code_editor(
+            &self.editor_content,
+            ed,
+            &self.editor_scroll,
+            crate::views::code_editor::NumberedEditorConfig::host_edit(),
+            p,
+            Message::EditorScrolled,
+        )
     }
 }

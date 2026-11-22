@@ -196,6 +196,7 @@ pub(crate) enum DetachedAction {
     ImageMsg(ImageDiffMsg),
     CsvMsg(CsvDiffMsg),
     PreviewEditorAction(text_editor::Action),
+    PreviewScrolled(scrollable::Viewport),
     PreviewLinkClicked(String),
     TogglePreviewRaw,
     CopyPreviewText,
@@ -218,6 +219,7 @@ pub(crate) enum DetachedAction {
 
     // Direct Code Editor
     EditorAction(text_editor::Action),
+    EditorScrolled(scrollable::Viewport),
     InsertIndent,
     SaveEditor,
     RevertEditor,
@@ -305,6 +307,7 @@ pub(crate) struct StudioTab {
     pub(crate) raw_text: Option<String>,
     pub(crate) editor_hydrated: bool,
     pub(crate) editor_content: text_editor::Content,
+    pub(crate) editor_scroll: crate::views::code_editor::CodeScrollState,
     pub(crate) dirty: bool,
     pub(crate) loading_file: bool,
     pub(crate) file_load_req_id: u64,
@@ -342,6 +345,7 @@ pub(crate) struct StudioTab {
     pub(crate) preview_hydrated: bool,
     pub(crate) preview_state: PreviewState,
     pub(crate) preview_editor: text_editor::Content,
+    pub(crate) preview_scroll: crate::views::code_editor::CodeScrollState,
     pub(crate) preview_raw_mode: bool,
 }
 
@@ -363,6 +367,7 @@ impl StudioTab {
             raw_text: None,
             editor_hydrated: false,
             editor_content: text_editor::Content::new(),
+            editor_scroll: crate::views::code_editor::CodeScrollState::new(),
             dirty: false,
             loading_file: false,
             file_load_req_id: 0,
@@ -404,6 +409,7 @@ impl StudioTab {
             preview_hydrated: false,
             preview_state: PreviewState::Empty,
             preview_editor: text_editor::Content::new(),
+            preview_scroll: crate::views::code_editor::CodeScrollState::new(),
             preview_raw_mode: false,
         }
     }
@@ -549,6 +555,8 @@ impl StudioTab {
         self.diff_left_scroll_x = 0.0;
         self.diff_right_scroll_x = 0.0;
         self.diff_active_change = 0;
+        self.editor_scroll.reset_offsets();
+        self.preview_scroll.reset_offsets();
     }
 
     pub(crate) fn reset_scroll_task(&self) -> Task<Message> {
@@ -563,6 +571,14 @@ impl StudioTab {
             ),
             scrollable::scroll_to(
                 self.diff_unified_scroll_id.clone(),
+                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+            scrollable::scroll_to(
+                self.editor_scroll.id.clone(),
+                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            ),
+            scrollable::scroll_to(
+                self.preview_scroll.id.clone(),
                 scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
             ),
         ])
@@ -1247,14 +1263,16 @@ impl DetachedViewerState {
         }
     }
 
-    pub(crate) fn jump_active_editor_to_match(&mut self) {
+    pub(crate) fn jump_active_editor_to_match(&mut self) -> Task<Message> {
         let Some(m) = self
             .in_file_active_idx
             .and_then(|i| self.in_file_matches.get(i))
             .cloned()
         else {
-            return;
+            return Task::none();
         };
+        let font_size = self.editor_font_size;
+        let word_wrap = self.editor_word_wrap;
         if let Some(tab) = self.active_tab_mut() {
             if tab.mode == DetachedViewMode::Edit && tab.is_editable() {
                 jump_editor_to_span(
@@ -1263,15 +1281,30 @@ impl DetachedViewerState {
                     m.col_start,
                     m.col_end,
                 );
-            } else if tab.mode == DetachedViewMode::Preview && tab.preview_raw_mode {
+                return crate::views::code_editor::scroll_numbered_editor_to_line(
+                    &tab.editor_content,
+                    &mut tab.editor_scroll,
+                    m.line_index,
+                    crate::views::code_editor::NumberedEditorConfig::studio(font_size, word_wrap),
+                );
+            } else if tab.mode == DetachedViewMode::Preview
+                && tab.preview_state.uses_selectable_editor(tab.preview_raw_mode)
+            {
                 jump_editor_to_span(
                     &mut tab.preview_editor,
                     m.line_index,
                     m.col_start,
                     m.col_end,
                 );
+                return crate::views::code_editor::scroll_numbered_editor_to_line(
+                    &tab.preview_editor,
+                    &mut tab.preview_scroll,
+                    m.line_index,
+                    crate::views::code_editor::NumberedEditorConfig::preview(font_size, word_wrap),
+                );
             }
         }
+        Task::none()
     }
 
     pub(crate) fn remove_tab_at(&mut self, idx: usize) {

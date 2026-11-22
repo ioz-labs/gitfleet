@@ -470,7 +470,7 @@ impl GitFleetApp {
             jump_match: Option<(usize, usize, usize)>,
         }
 
-        let (file_load_info, diff_load_info) = {
+        let (file_load_info, diff_load_info, jump_scroll_task) = {
             let Some(v) = self.detached_viewers.get_mut(&win_id) else {
                 return Task::none();
             };
@@ -543,6 +543,7 @@ impl GitFleetApp {
                 }
             }
 
+            let mut jump_scroll_task = Task::none();
             if !opened_new {
                 v.recompute_in_file_matches(false);
                 if let Some((line_idx, col_start, col_end)) = jump_match {
@@ -553,12 +554,23 @@ impl GitFleetApp {
                     {
                         v.in_file_active_idx = Some(pos);
                     }
+                    let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                        v.editor_font_size,
+                        v.editor_word_wrap,
+                    );
                     if let Some(tab) = v.active_tab_mut()
                         && tab.is_editable()
                     {
                         tab.mode = DetachedViewMode::Edit;
                         tab.ensure_editor_hydrated();
                         jump_editor_to_span(&mut tab.editor_content, line_idx, col_start, col_end);
+                        jump_scroll_task =
+                            crate::views::code_editor::scroll_numbered_editor_to_line(
+                                &tab.editor_content,
+                                &mut tab.editor_scroll,
+                                line_idx,
+                                cfg,
+                            );
                     }
                     v.status_is_error = false;
                     v.status_note = format!("Line {}", line_idx + 1);
@@ -574,10 +586,11 @@ impl GitFleetApp {
                 v.status_note = format!("Opening {}…", file_display_name(&path));
             }
 
-            (file_load, diff_load)
+            (file_load, diff_load, jump_scroll_task)
         };
 
         let mut tasks = Vec::new();
+        tasks.push(jump_scroll_task);
         if let Some(load) = file_load_info {
             tasks.push(self.spawn_tab_file_load_task(
                 win_id,

@@ -1,4 +1,5 @@
 mod branches;
+pub(crate) mod code_editor;
 pub(crate) mod commit_files;
 mod conflict_solver;
 pub(crate) mod csv_diff;

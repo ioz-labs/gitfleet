@@ -604,6 +604,8 @@ pub(crate) fn render_side_by_side_diff_with<'a>(
 pub(crate) fn render_file_preview<'a>(
     state: &'a PreviewState,
     editor: &'a text_editor::Content,
+    scroll: &crate::views::code_editor::CodeScrollState,
+    config: crate::views::code_editor::NumberedEditorConfig,
     raw_mode: bool,
     theme_mode: ThemeMode,
     p: Palette,
@@ -668,13 +670,18 @@ pub(crate) fn render_file_preview<'a>(
                     color: Some(*color),
                     font: None,
                 }
-            })
-            .font(theme::CODE_FONT)
-            .size(type_scale::CODE)
-            .height(Length::Fill)
-            .style(theme::dark_editor(p));
+            });
 
-        return col.push(ed).into();
+        let numbered = crate::views::code_editor::numbered_code_editor(
+            editor,
+            ed,
+            scroll,
+            config,
+            p,
+            Message::PreviewScrolled,
+        );
+
+        return col.push(numbered).into();
     }
 
     let content = state.view(p, theme_mode, Message::PreviewLinkClicked);

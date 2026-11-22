@@ -147,6 +147,11 @@ pub(crate) fn render_editor_workbench<'a>(
             render_file_preview(
                 &tab.preview_state,
                 &tab.preview_editor,
+                &tab.preview_scroll,
+                crate::views::code_editor::NumberedEditorConfig::preview(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                ),
                 tab.preview_raw_mode,
                 theme_mode,
                 p,
@@ -644,20 +649,8 @@ fn render_studio_code_editor<'a>(
         active_match_cols: active_match.map(|m| (m.col_start, m.col_end)),
     };
 
-    let wrapping = if v.editor_word_wrap {
-        text::Wrapping::WordOrGlyph
-    } else {
-        text::Wrapping::None
-    };
-
-    text_editor(&tab.editor_content)
+    let ed = text_editor(&tab.editor_content)
         .on_action(move |a| Message::Detached(win_id, DetachedAction::EditorAction(a)))
-        .font(theme::CODE_FONT)
-        .size(v.editor_font_size)
-        .line_height(text::LineHeight::Relative(1.48))
-        .padding([12, 16])
-        .wrapping(wrapping)
-        .height(Length::Fill)
         .highlight_with::<CodeSyntaxHighlighter>(hl_settings, format_code_token)
         .key_binding(move |key_press| {
             // Let window-level shortcuts handle Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+W / Ctrl+O / Ctrl+B / Ctrl+Shift+E / Ctrl+=/- / Alt+Z cleanly once
@@ -705,9 +698,19 @@ fn render_studio_code_editor<'a>(
                 )));
             }
             text_editor::Binding::from_key_press(key_press)
-        })
-        .style(theme::studio_editor(p))
-        .into()
+        });
+
+    crate::views::code_editor::numbered_code_editor(
+        &tab.editor_content,
+        ed,
+        &tab.editor_scroll,
+        crate::views::code_editor::NumberedEditorConfig::studio(
+            v.editor_font_size,
+            v.editor_word_wrap,
+        ),
+        p,
+        move |vp| Message::Detached(win_id, DetachedAction::EditorScrolled(vp)),
+    )
 }
 
 fn render_welcome_canvas<'a>(

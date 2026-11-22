@@ -686,11 +686,14 @@ pub fn dark_editor(p: Palette) -> impl Fn(&Theme, text_editor::Status) -> text_e
     }
 }
 
-/// Borderless edge-to-edge code canvas for GitFleet Studio (feels like a real native code editor,
-/// not a boxed form textarea).
-pub fn studio_editor(p: Palette) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style {
+/// Transparent code-editor style used inside `NumberedCodeEditor` so the wrapper paints
+/// the surface background, active-line band, and sticky line-number gutter beneath the text.
+pub fn transparent_code_editor(
+    p: Palette,
+    is_studio: bool,
+) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style {
     move |_, _| text_editor::Style {
-        background: Background::Color(p.surface_input),
+        background: Background::Color(Color::TRANSPARENT),
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
@@ -699,9 +702,13 @@ pub fn studio_editor(p: Palette) -> impl Fn(&Theme, text_editor::Status) -> text
         icon: p.text_muted,
         placeholder: p.text_muted,
         value: p.text_primary,
-        selection: Color {
-            a: 0.40,
-            ..p.accent_primary
+        selection: if is_studio {
+            Color {
+                a: 0.40,
+                ..p.accent_primary
+            }
+        } else {
+            p.fill_active
         },
     }
 }
