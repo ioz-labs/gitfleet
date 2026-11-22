@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version label for manual build artifacts (e.g. 0.4.1)"
+        description: "Optional version label for manual build artifacts (e.g. 0.5.0)"
         required: false
         default: ""
 
