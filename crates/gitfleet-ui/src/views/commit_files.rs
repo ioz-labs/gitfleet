@@ -10,8 +10,13 @@ use iced::widget::{
     Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, text,
     text_editor, text_input, tooltip,
 };
-use iced::{Alignment, Color, Element, Length, keyboard, mouse};
+use iced::{Alignment, Color, Element, Font, Length, font, keyboard, mouse};
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+const MEDIUM_FONT: Font = Font {
+    weight: font::Weight::Medium,
+    ..Font::DEFAULT
+};
 
 fn file_state_colors(kind: FileChangeKind, p: Palette) -> (Color, Color) {
     match kind {
@@ -1634,8 +1639,8 @@ impl GitFleetApp {
                 max_name_w = nw;
             }
             let sw =
-                theme::estimate_text_width(f.kind.state_label(false), type_scale::BADGE, false)
-                    + 16.0;
+                theme::estimate_text_width(f.kind.state_label(false), type_scale::CAPTION, false)
+                    + 8.0;
             if sw > max_state_w {
                 max_state_w = sw;
             }
@@ -1655,7 +1660,7 @@ impl GitFleetApp {
         }
 
         let name_w = max_name_w.clamp(68.0, 260.0);
-        let state_w = max_state_w.clamp(54.0, 78.0);
+        let state_w = max_state_w.clamp(48.0, 72.0);
         let dir_min_w = max_dir_w.clamp(56.0, 300.0);
         let actions_w = if !is_wt {
             0.0_f32
@@ -1724,11 +1729,7 @@ impl GitFleetApp {
                 .contains(&(file.path.clone(), file.staged))
                 || (self.selected_changed_files.is_empty()
                     && self.selected_changed_file.as_ref() == Some(&file));
-            let (badge_color, badge_bg) = file_state_colors(file.kind, p);
-            let badge_border = Color {
-                a: 0.42,
-                ..badge_color
-            };
+            let (state_color, _) = file_state_colors(file.kind, p);
             let file_name = file.path.rsplit('/').next().unwrap_or(&file.path).to_string();
             let dir_display = if file_dir.is_empty() { "." } else { file_dir };
             // Show exact semantic change kind (`Added`, `Modified`, `Deleted`, `Renamed`, `Untracked`, `Conflict`)
@@ -1742,7 +1743,7 @@ impl GitFleetApp {
                 row![
                     theme::clipped_line(
                         row![
-                            icons::file_code(12.0, badge_color),
+                            icons::file_code(12.0, state_color),
                             text(file_name)
                                 .size(type_scale::BODY)
                                 .color(p.text_primary),
@@ -1751,18 +1752,14 @@ impl GitFleetApp {
                         .align_y(Alignment::Center),
                         Length::Fixed(name_w),
                     ),
-                    container(
-                        container(
-                            text(state_text)
-                                .size(type_scale::BADGE)
-                                .color(badge_color)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .padding([1, 6])
-                        .style(theme::pill_box(badge_bg, badge_color, badge_border)),
-                    )
-                    .width(Length::Fixed(state_w))
-                    .align_x(iced::alignment::Horizontal::Left),
+                    theme::clipped_line(
+                        text(state_text)
+                            .size(type_scale::CAPTION)
+                            .font(MEDIUM_FONT)
+                            .color(state_color)
+                            .wrapping(text::Wrapping::None),
+                        Length::Fixed(state_w),
+                    ),
                     theme::clipped_line(
                         text(dir_display.to_string())
                             .size(type_scale::CAPTION)
