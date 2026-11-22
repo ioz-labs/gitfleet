@@ -32,6 +32,7 @@ use crate::theme::{self, Palette, icon_size, layout, pad, space, type_scale};
 use crate::views::overlays::doc_format_modal::{
     build_encoding_menu_card, build_eol_menu_card, build_syntax_menu_card,
 };
+use crate::views::overlays::file_ops_modal::{build_add_gitignore_modal, build_rename_entry_modal};
 use crate::views::truncate_chars;
 use iced::widget::{
     Space, Stack, button, column, container, horizontal_rule, opaque, row, text, vertical_rule,
@@ -102,8 +103,11 @@ impl GitFleetApp {
         .style(theme::app_bg(p))
         .into();
 
-        let has_overlay =
-            v.status_menu.is_some() || v.explorer_menu.is_some() || v.pending_delete.is_some();
+        let has_overlay = v.status_menu.is_some()
+            || v.explorer_menu.is_some()
+            || v.pending_delete.is_some()
+            || v.rename_modal.is_some()
+            || v.gitignore_modal.is_some();
         let mut layers: Vec<Element<'_, Message>> = vec![theme::inert_when(base, has_overlay)];
 
         if let Some((menu_kind, anchor)) = v.status_menu
@@ -223,6 +227,24 @@ impl GitFleetApp {
                     DetachedAction::CopyExplorerPath(menu.rel_path.clone()),
                     false,
                 ))
+                .push(ctx_btn(
+                    icons::pencil(12.0, p.text_secondary).into(),
+                    "Rename…",
+                    DetachedAction::OpenExplorerRename {
+                        rel_path: menu.rel_path.clone(),
+                        is_dir: menu.is_dir,
+                    },
+                    false,
+                ))
+                .push(ctx_btn(
+                    icons::eye_off(12.0, p.text_secondary).into(),
+                    "Add to .gitignore…",
+                    DetachedAction::OpenExplorerGitignore {
+                        rel_path: menu.rel_path.clone(),
+                        is_dir: menu.is_dir,
+                    },
+                    false,
+                ))
                 .push(horizontal_rule(1).style(theme::subtle_rule(p)))
                 .push(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
@@ -332,6 +354,43 @@ impl GitFleetApp {
             layers.push(theme::overlay_backdrop(
                 centered,
                 Message::Detached(win_id, DetachedAction::CancelDeleteExplorerEntry),
+            ));
+        }
+
+        if let Some(modal) = &v.rename_modal {
+            layers.push(build_rename_entry_modal(
+                p,
+                modal,
+                v.rename_input_id.clone(),
+                move |s| Message::Detached(win_id, DetachedAction::ExplorerRenameInputChanged(s)),
+                Message::Detached(win_id, DetachedAction::SubmitExplorerRename),
+                Message::Detached(win_id, DetachedAction::CancelExplorerRename),
+            ));
+        }
+
+        if let Some(modal) = &v.gitignore_modal {
+            layers.push(build_add_gitignore_modal(
+                p,
+                modal,
+                v.gitignore_input_id.clone(),
+                move |use_re| {
+                    Message::Detached(win_id, DetachedAction::ExplorerGitignoreModeChanged(use_re))
+                },
+                move |s| Message::Detached(win_id, DetachedAction::ExplorerGitignoreGlobChanged(s)),
+                move |s| {
+                    Message::Detached(win_id, DetachedAction::ExplorerGitignoreRegexChanged(s))
+                },
+                move |exp| {
+                    Message::Detached(
+                        win_id,
+                        DetachedAction::ExplorerGitignoreExpandMatchesToggled(exp),
+                    )
+                },
+                move |layer| {
+                    Message::Detached(win_id, DetachedAction::ExplorerGitignoreLayerChanged(layer))
+                },
+                Message::Detached(win_id, DetachedAction::SubmitExplorerGitignore),
+                Message::Detached(win_id, DetachedAction::CancelExplorerGitignore),
             ));
         }
 

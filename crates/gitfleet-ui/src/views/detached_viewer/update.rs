@@ -6,6 +6,7 @@ use crate::app::{GitFleetApp, Message};
 use crate::preview::PreviewState;
 use crate::syntax::CodeLanguage;
 use crate::views::image_diff::ImageDiffZoom;
+use crate::views::overlays::file_ops_modal::{remap_rel_path, validate_rename_input};
 use gitfleet_search::{ReplaceReport, replace_in_file, replace_in_files};
 use iced::widget::text_editor;
 use iced::{Task, window};
@@ -438,6 +439,216 @@ impl GitFleetApp {
                         if let Some(v) = self.detached_viewers.get_mut(&win_id) {
                             v.status_is_error = true;
                             v.status_note = format!("Delete failed: {err}");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            DetachedAction::SubmitExplorerRename => {
+                let params = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    let root = v.search_root.clone()?;
+                    let modal = v.rename_modal.as_mut()?;
+                    match validate_rename_input(&modal.rel_path, &modal.new_name) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            v.rename_modal = None;
+                            return None;
+                        }
+                        Err(err) => {
+                            modal.error = Some(err);
+                            return None;
+                        }
+                    }
+                    let old_rel = modal.rel_path.clone();
+                    let new_name = modal.new_name.trim().to_string();
+                    let is_dir = modal.is_dir;
+                    v.status_is_error = false;
+                    v.status_note = format!(
+                        "Renaming {} '{}'…",
+                        if is_dir { "folder" } else { "file" },
+                        old_rel
+                    );
+                    Some((root, old_rel, new_name, is_dir))
+                });
+                let Some((root, old_rel, new_name, is_dir)) = params else {
+                    return Task::none();
+                };
+                let old_abs = root.join(&old_rel);
+                let rel_for_task = old_rel.clone();
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            gitfleet_git::rename_workspace_entry(&root, &rel_for_task, &new_name)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Rename task failed: {e}")));
+                        (old_rel, is_dir, old_abs, result)
+                    },
+                    move |(old_rel, is_dir, old_abs, result)| {
+                        Message::Detached(
+                            win_id,
+                            DetachedAction::ExplorerEntryRenamed {
+                                old_rel,
+                                is_dir,
+                                old_abs,
+                                result,
+                            },
+                        )
+                    },
+                )
+            }
+            DetachedAction::ExplorerEntryRenamed {
+                old_rel,
+                is_dir,
+                old_abs,
+                result,
+            } => {
+                let kind_label = if is_dir { "folder" } else { "file" };
+                let host_repo_path = self.current_repo().map(|r| r.path);
+                let docs = self.service.clone();
+                match result {
+                    Ok(new_rel) => {
+                        let new_abs = self
+                            .detached_viewers
+                            .get(&win_id)
+                            .and_then(|v| v.search_root.as_ref().map(|r| r.join(&new_rel)))
+                            .unwrap_or_else(|| {
+                                old_abs
+                                    .parent()
+                                    .map(|p| {
+                                        let leaf = new_rel.rsplit('/').next().unwrap_or(&new_rel);
+                                        p.join(leaf)
+                                    })
+                                    .unwrap_or_else(|| old_abs.clone())
+                            });
+
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            v.rename_modal = None;
+                            v.rename_tabs_under_path(&docs.docs, &old_abs, &new_abs, is_dir);
+                            v.explorer_expanded_dirs = v
+                                .explorer_expanded_dirs
+                                .iter()
+                                .map(|d| {
+                                    remap_rel_path(d, &old_rel, &new_rel, is_dir)
+                                        .unwrap_or_else(|| d.clone())
+                                })
+                                .collect();
+                            v.explorer_ignored_dir_children.clear();
+                            v.status_is_error = false;
+                            v.status_note =
+                                format!("Renamed {kind_label} '{old_rel}' → '{new_rel}'");
+                        }
+
+                        // Sync Host active document if the renamed file/folder was open in Host
+                        let host_updated_path = self.open_doc_path.as_deref().and_then(|open_p| {
+                            if open_p == old_abs {
+                                Some(new_abs.clone())
+                            } else if is_dir {
+                                open_p.strip_prefix(&old_abs).ok().map(|t| new_abs.join(t))
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(next_host_abs) = host_updated_path {
+                            self.open_doc_path = Some(next_host_abs.clone());
+                            self.open_doc_language = CodeLanguage::from_path(&next_host_abs);
+                            if let Some(rp) = host_repo_path.as_deref()
+                                && let Ok(rel) = next_host_abs.strip_prefix(rp)
+                            {
+                                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                                self.active_file_path = Some(rel_str.clone());
+                                self.diff_title = rel_str;
+                            }
+                            if let Ok(cap) = docs.docs.open_document(&next_host_abs) {
+                                self.open_doc_id = Some(cap.document_id);
+                                self.open_doc_version = Some(cap.version);
+                                if !self.editor_dirty {
+                                    self.open_doc_raw_text = Some(cap.content);
+                                }
+                            }
+                        }
+
+                        let mut tasks = vec![self.spawn_explorer_scan_task(win_id)];
+                        if host_repo_path
+                            .as_deref()
+                            .is_some_and(|rp| old_abs.starts_with(rp) || new_abs.starts_with(rp))
+                        {
+                            self.ignored_entries_stale = !self.show_ignored_files;
+                            tasks.push(self.update(Message::RefreshSelected));
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Err(err) => {
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            if let Some(m) = &mut v.rename_modal {
+                                m.error = Some(err.clone());
+                            }
+                            v.status_is_error = true;
+                            v.status_note = format!("Rename failed: {err}");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            DetachedAction::SubmitExplorerGitignore => {
+                let params = self.detached_viewers.get(&win_id).and_then(|v| {
+                    let root = v.search_root.clone()?;
+                    let modal = v.gitignore_modal.as_ref()?;
+                    let rules = modal.resolved_rules();
+                    Some((root, modal.layer, modal.target_file_label(), rules))
+                });
+                let Some((root, layer, target_label, rules)) = params else {
+                    return Task::none();
+                };
+                if rules.is_empty() {
+                    if let Some(v) = self.detached_viewers.get_mut(&win_id)
+                        && let Some(m) = &mut v.gitignore_modal
+                    {
+                        m.error = Some("No valid ignore pattern to append.".into());
+                    }
+                    return Task::none();
+                }
+
+                match self.service.security.append_ignore_rules(&root, layer, &rules) {
+                    Ok(res) => {
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            v.gitignore_modal = None;
+                            v.status_is_error = false;
+                            v.status_note = if res.added == 0 {
+                                format!("Pattern already exists in {target_label}")
+                            } else if res.skipped_existing > 0 {
+                                format!(
+                                    "Added {} rule(s) to {target_label} ({} already present)",
+                                    res.added, res.skipped_existing
+                                )
+                            } else {
+                                format!(
+                                    "Added {} rule{} to {target_label}",
+                                    res.added,
+                                    if res.added == 1 { "" } else { "s" }
+                                )
+                            };
+                        }
+
+                        let mut tasks = vec![self.spawn_explorer_scan_task(win_id)];
+                        if self
+                            .current_repo()
+                            .is_some_and(|rp| rp.path == root || root.starts_with(&rp.path))
+                        {
+                            self.refresh_vault_and_ignore();
+                            self.ignored_entries_stale = !self.show_ignored_files;
+                            tasks.push(self.update(Message::RefreshSelected));
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Err(err) => {
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            if let Some(m) = &mut v.gitignore_modal {
+                                m.error = Some(err.to_string());
+                            }
+                            v.status_is_error = true;
+                            v.status_note = format!("Failed to update {target_label}: {err}");
                         }
                     }
                 }

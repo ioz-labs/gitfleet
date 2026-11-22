@@ -1139,6 +1139,24 @@ impl GitFleetApp {
                     Message::CopyText("file path".into(), path.clone()),
                     false,
                 ));
+                items = items.push(ctx_btn(
+                    icons::pencil(12.0, p.text_secondary).into(),
+                    "Rename…".into(),
+                    Message::OpenRenameRepoEntry {
+                        rel_path: path.clone(),
+                        is_dir: false,
+                    },
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::eye_off(12.0, p.text_secondary).into(),
+                    "Add to .gitignore…".into(),
+                    Message::OpenAddGitignoreModal {
+                        rel_path: path.clone(),
+                        is_dir: false,
+                    },
+                    false,
+                ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::trash(12.0, p.danger_fg).into(),
@@ -1167,6 +1185,24 @@ impl GitFleetApp {
                     icons::copy(12.0, p.text_secondary).into(),
                     "Copy Relative Path".into(),
                     Message::CopyText("folder path".into(), path.clone()),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::pencil(12.0, p.text_secondary).into(),
+                    "Rename…".into(),
+                    Message::OpenRenameRepoEntry {
+                        rel_path: path.clone(),
+                        is_dir: true,
+                    },
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::eye_off(12.0, p.text_secondary).into(),
+                    "Add to .gitignore…".into(),
+                    Message::OpenAddGitignoreModal {
+                        rel_path: path.clone(),
+                        is_dir: true,
+                    },
                     false,
                 ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));

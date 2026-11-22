@@ -1086,6 +1086,82 @@ pub fn delete_workspace_entry(root: &Path, rel_path: &str) -> AppResult<bool> {
     }
 }
 
+/// Safely renames a file or directory in-place inside `root` (keeping the same parent directory).
+/// Rejects empty/unsafe source paths, invalid target names, path separators in `new_name`,
+/// `.git` metadata, and accidental overwrites of distinct existing entries.
+/// Supports case-only renames on case-insensitive filesystems (e.g. Windows NTFS).
+/// Returns the new normalized relative path (using `/` separators).
+pub fn rename_workspace_entry(root: &Path, rel_path: &str, new_name: &str) -> AppResult<String> {
+    let norm = rel_path.replace('\\', "/");
+    let trimmed = norm.trim_matches('/');
+    if trimmed.is_empty()
+        || !is_safe_rel_path(trimmed)
+        || trimmed == ".git"
+        || trimmed.starts_with(".git/")
+    {
+        return Err(AppError::Git(format!(
+            "Refusing to rename unsafe or protected path: '{rel_path}'"
+        )));
+    }
+
+    let cleaned_name = new_name.trim();
+    if cleaned_name.is_empty()
+        || cleaned_name == "."
+        || cleaned_name == ".."
+        || cleaned_name == ".git"
+        || cleaned_name.contains('/')
+        || cleaned_name.contains('\\')
+        || cleaned_name.contains('\0')
+    {
+        return Err(AppError::Git(format!(
+            "Invalid name: '{new_name}'. Provide a single file or folder name without path separators."
+        )));
+    }
+
+    #[cfg(target_os = "windows")]
+    if cleaned_name
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        || cleaned_name.ends_with('.')
+    {
+        return Err(AppError::Git(format!(
+            "Invalid Windows file or folder name: '{cleaned_name}'"
+        )));
+    }
+
+    let (parent, old_name) = match trimmed.rsplit_once('/') {
+        Some((p, n)) => (p, n),
+        None => ("", trimmed),
+    };
+    let new_rel = if parent.is_empty() {
+        cleaned_name.to_string()
+    } else {
+        format!("{parent}/{cleaned_name}")
+    };
+
+    let src = root.join(trimmed);
+    if std::fs::symlink_metadata(&src).is_err() {
+        return Err(AppError::Git(format!(
+            "Source path does not exist: '{trimmed}'"
+        )));
+    }
+
+    if new_rel == trimmed {
+        return Ok(new_rel);
+    }
+
+    let dst = root.join(&new_rel);
+    let case_only = old_name.eq_ignore_ascii_case(cleaned_name);
+    if !case_only && std::fs::symlink_metadata(&dst).is_ok() {
+        return Err(AppError::Git(format!(
+            "An entry named '{cleaned_name}' already exists here"
+        )));
+    }
+
+    std::fs::rename(&src, &dst)?;
+    Ok(new_rel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1505,6 +1581,51 @@ mod tests {
         assert!(delete_workspace_entry(&dir, ".git").is_err());
         assert!(delete_workspace_entry(&dir, ".git/HEAD").is_err());
         assert!(delete_workspace_entry(&dir, "../outside").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renames_files_and_folders_safely() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_rename_entry_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/nested")).unwrap();
+        std::fs::write(dir.join("src/nested/Alpha.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(dir.join("src/nested/existing.rs"), "pub fn b() {}\n").unwrap();
+
+        // File rename inside nested dir
+        let renamed_file =
+            rename_workspace_entry(&dir, "src/nested/Alpha.rs", "alpha_new.rs").unwrap();
+        assert_eq!(renamed_file, "src/nested/alpha_new.rs");
+        assert!(dir.join("src/nested/alpha_new.rs").is_file());
+        assert!(!dir.join("src/nested/Alpha.rs").exists());
+
+        // Case-only rename (especially important on Windows NTFS)
+        let cased =
+            rename_workspace_entry(&dir, "src/nested/alpha_new.rs", "Alpha_New.rs").unwrap();
+        assert_eq!(cased, "src/nested/Alpha_New.rs");
+        let entries: Vec<String> = std::fs::read_dir(dir.join("src/nested"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(entries.iter().any(|n| n == "Alpha_New.rs"));
+
+        // Folder rename preserves children
+        let renamed_dir = rename_workspace_entry(&dir, "src/nested", "sub").unwrap();
+        assert_eq!(renamed_dir, "src/sub");
+        assert!(dir.join("src/sub/Alpha_New.rs").is_file());
+
+        // Collision & unsafe name/path protections
+        assert!(rename_workspace_entry(&dir, "src/sub/Alpha_New.rs", "existing.rs").is_err());
+        assert!(rename_workspace_entry(&dir, "src/sub/Alpha_New.rs", "bad/name.rs").is_err());
+        assert!(rename_workspace_entry(&dir, "src/sub/Alpha_New.rs", "..").is_err());
+        assert!(rename_workspace_entry(&dir, "src/sub/Alpha_New.rs", ".git").is_err());
+        assert!(rename_workspace_entry(&dir, ".git", "nope").is_err());
+        assert!(rename_workspace_entry(&dir, "../outside", "x").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

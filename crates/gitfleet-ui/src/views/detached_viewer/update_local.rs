@@ -17,6 +17,9 @@ use crate::views::diff_viewer::{
     diff_line_text_at, diff_row_count, extract_selected_diff_text, map_scroll_y, word_bounds_at,
 };
 use crate::views::image_diff::ImageDiffMsg;
+use crate::views::overlays::file_ops_modal::{
+    AddGitignoreModalState, RenameEntryModalState, collect_workspace_ignore_candidates,
+};
 use gitfleet_search::{replace_all_in_text, replace_single_match_in_text};
 use iced::widget::{scrollable, text_editor, text_input};
 use iced::{Task, clipboard, window};
@@ -158,6 +161,92 @@ impl GitFleetApp {
             }
             DetachedAction::CancelDeleteExplorerEntry => {
                 v.pending_delete = None;
+                Task::none()
+            }
+            DetachedAction::OpenExplorerRename { rel_path, is_dir } => {
+                v.explorer_menu = None;
+                v.status_menu = None;
+                v.pending_delete = None;
+                v.gitignore_modal = None;
+                v.rename_modal = Some(RenameEntryModalState::new(rel_path, is_dir));
+                text_input::focus(v.rename_input_id.clone())
+            }
+            DetachedAction::ExplorerRenameInputChanged(val) => {
+                if let Some(m) = &mut v.rename_modal {
+                    m.new_name = val;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            DetachedAction::CancelExplorerRename => {
+                v.rename_modal = None;
+                Task::none()
+            }
+            DetachedAction::OpenExplorerGitignore { rel_path, is_dir } => {
+                v.explorer_menu = None;
+                v.status_menu = None;
+                v.pending_delete = None;
+                v.rename_modal = None;
+                let allow_personal = v
+                    .search_root
+                    .as_deref()
+                    .is_some_and(|r| r.join(".git").exists());
+                let candidates = collect_workspace_ignore_candidates(
+                    &v.explorer_files,
+                    &v.explorer_ignored_files,
+                    &v.explorer_ignored_dirs,
+                    &v.explorer_ignored_dir_children,
+                );
+                v.gitignore_modal = Some(AddGitignoreModalState::new(
+                    rel_path,
+                    is_dir,
+                    allow_personal,
+                    candidates,
+                ));
+                text_input::focus(v.gitignore_input_id.clone())
+            }
+            DetachedAction::ExplorerGitignoreModeChanged(use_regex) => {
+                if let Some(m) = &mut v.gitignore_modal {
+                    m.use_regex = use_regex;
+                    m.error = None;
+                    if use_regex {
+                        m.recompute_regex_preview();
+                    }
+                }
+                text_input::focus(v.gitignore_input_id.clone())
+            }
+            DetachedAction::ExplorerGitignoreGlobChanged(val) => {
+                if let Some(m) = &mut v.gitignore_modal {
+                    m.glob_pattern = val;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            DetachedAction::ExplorerGitignoreRegexChanged(val) => {
+                if let Some(m) = &mut v.gitignore_modal {
+                    m.regex_pattern = val;
+                    m.error = None;
+                    m.recompute_regex_preview();
+                }
+                Task::none()
+            }
+            DetachedAction::ExplorerGitignoreExpandMatchesToggled(expand) => {
+                if let Some(m) = &mut v.gitignore_modal {
+                    m.regex_expand_matches = expand;
+                    m.error = None;
+                    m.recompute_regex_preview();
+                }
+                Task::none()
+            }
+            DetachedAction::ExplorerGitignoreLayerChanged(layer) => {
+                if let Some(m) = &mut v.gitignore_modal {
+                    m.layer = layer;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            DetachedAction::CancelExplorerGitignore => {
+                v.gitignore_modal = None;
                 Task::none()
             }
 
@@ -1188,7 +1277,11 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::EscapePressed => {
-                if v.pending_delete.is_some() {
+                if v.rename_modal.is_some() {
+                    v.rename_modal = None;
+                } else if v.gitignore_modal.is_some() {
+                    v.gitignore_modal = None;
+                } else if v.pending_delete.is_some() {
                     v.pending_delete = None;
                 } else if v.explorer_menu.is_some() {
                     v.explorer_menu = None;
@@ -1219,6 +1312,9 @@ impl GitFleetApp {
             | DetachedAction::RevealExplorerEntry(_)
             | DetachedAction::ConfirmDeleteExplorerEntry
             | DetachedAction::ExplorerEntryDeleted { .. }
+            | DetachedAction::SubmitExplorerRename
+            | DetachedAction::ExplorerEntryRenamed { .. }
+            | DetachedAction::SubmitExplorerGitignore
             | DetachedAction::SingleFilePicked(Some(_))
             | DetachedAction::ReloadFiles
             | DetachedAction::OpenSearchFile(_)

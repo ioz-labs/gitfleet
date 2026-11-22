@@ -7,6 +7,7 @@ mod context_menu;
 mod discard_modal;
 pub(crate) mod doc_format_modal;
 mod error_modal;
+pub(crate) mod file_ops_modal;
 mod git_flow_modal;
 mod merge_modal;
 mod rename_branch_modal;

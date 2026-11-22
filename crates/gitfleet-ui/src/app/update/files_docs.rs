@@ -12,6 +12,10 @@ use crate::views::image_diff::{
     ImageDiffData, ImageDiffZoom, decode_image_diff_pair, is_image_diff_path,
     is_raster_image_path, is_svg_path,
 };
+use crate::views::overlays::file_ops_modal::{
+    AddGitignoreModalState, RenameEntryModalState, collect_workspace_ignore_candidates,
+    remap_rel_path, validate_rename_input,
+};
 use crate::{graph, preview};
 use gitfleet_git::{FileChangeKind, ParsedDiff};
 use iced::widget::{scrollable, text_editor, text_input};
@@ -627,6 +631,310 @@ impl GitFleetApp {
                             e,
                             false,
                         );
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenRenameRepoEntry { rel_path, is_dir } => {
+                self.context_menu = None;
+                self.show_palette = false;
+                self.add_gitignore_modal = None;
+                self.rename_entry_modal = Some(RenameEntryModalState::new(rel_path, is_dir));
+                text_input::focus(self.rename_entry_input_id.clone())
+            }
+            Message::RenameRepoEntryInputChanged(val) => {
+                if let Some(m) = &mut self.rename_entry_modal {
+                    m.new_name = val;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            Message::SubmitRenameRepoEntry => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                let Some(modal) = &mut self.rename_entry_modal else {
+                    return Task::none();
+                };
+                match validate_rename_input(&modal.rel_path, &modal.new_name) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.rename_entry_modal = None;
+                        return Task::none();
+                    }
+                    Err(err) => {
+                        modal.error = Some(err);
+                        return Task::none();
+                    }
+                }
+                let old_path = modal.rel_path.clone();
+                let new_name = modal.new_name.trim().to_string();
+                let is_dir = modal.is_dir;
+                self.busy_label = Some(format!(
+                    "Renaming {}…",
+                    if is_dir { "folder" } else { "file" }
+                ));
+                let repo_id = repo.id;
+                let repo_path = repo.path;
+                let rel_for_task = old_path.clone();
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            gitfleet_git::rename_workspace_entry(
+                                &repo_path,
+                                &rel_for_task,
+                                &new_name,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Rename task failed: {e}")));
+                        (repo_id, old_path, is_dir, result)
+                    },
+                    |(repo_id, old_path, is_dir, result)| Message::RepoEntryRenamed {
+                        repo_id,
+                        old_path,
+                        is_dir,
+                        result,
+                    },
+                )
+            }
+            Message::RepoEntryRenamed {
+                repo_id,
+                old_path,
+                is_dir,
+                result,
+            } => {
+                self.busy_label = None;
+                let kind_label = if is_dir { "folder" } else { "file" };
+                match result {
+                    Ok(new_rel) => {
+                        self.rename_entry_modal = None;
+                        let active_repo = self.current_repo().filter(|r| r.id == repo_id);
+
+                        if self.active_repo_key().as_ref() == Some(&repo_id) {
+                            if let Some(cur) = self.active_file_path.clone()
+                                && let Some(updated_rel) =
+                                    remap_rel_path(&cur, &old_path, &new_rel, is_dir)
+                            {
+                                self.active_file_path = Some(updated_rel.clone());
+                                self.diff_title = updated_rel.clone();
+                                if let Some(repo) = &active_repo {
+                                    let new_abs = repo.path.join(&updated_rel);
+                                    self.open_doc_path = Some(new_abs.clone());
+                                    self.open_doc_language =
+                                        crate::syntax::CodeLanguage::from_path(&new_abs);
+                                    if let Ok(cap) = self.service.docs.open_document(&new_abs) {
+                                        self.open_doc_id = Some(cap.document_id);
+                                        self.open_doc_version = Some(cap.version);
+                                        if !self.editor_dirty {
+                                            self.open_doc_raw_text = Some(cap.content);
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(updated_dir) =
+                                remap_rel_path(&self.selected_all_dir, &old_path, &new_rel, is_dir)
+                            {
+                                self.selected_all_dir = updated_dir;
+                            }
+                            self.expanded_all_dirs = self
+                                .expanded_all_dirs
+                                .iter()
+                                .map(|d| {
+                                    remap_rel_path(d, &old_path, &new_rel, is_dir)
+                                        .unwrap_or_else(|| d.clone())
+                                })
+                                .collect();
+                            self.ignored_dir_children.clear();
+                            self.ignored_entries_stale = !self.show_ignored_files;
+                        }
+
+                        // Sync any open GitFleet Studio windows rooted inside the same repository
+                        let mut studio_tasks = Vec::new();
+                        if let Some(repo) = active_repo {
+                            let old_abs = repo.path.join(&old_path);
+                            let new_abs = repo.path.join(&new_rel);
+                            let docs = self.service.clone();
+                            let affected_wins: Vec<iced::window::Id> = self
+                                .detached_viewers
+                                .iter_mut()
+                                .filter_map(|(wid, v)| {
+                                    let same_root = v.search_root.as_deref().is_some_and(|sr| {
+                                        sr == repo.path || old_abs.starts_with(sr)
+                                    });
+                                    if !same_root {
+                                        return None;
+                                    }
+                                    v.rename_tabs_under_path(
+                                        &docs.docs,
+                                        &old_abs,
+                                        &new_abs,
+                                        is_dir,
+                                    );
+                                    if v.search_root.as_deref() == Some(repo.path.as_path()) {
+                                        v.explorer_expanded_dirs = v
+                                            .explorer_expanded_dirs
+                                            .iter()
+                                            .map(|d| {
+                                                remap_rel_path(d, &old_path, &new_rel, is_dir)
+                                                    .unwrap_or_else(|| d.clone())
+                                            })
+                                            .collect();
+                                        v.explorer_ignored_dir_children.clear();
+                                    }
+                                    Some(*wid)
+                                })
+                                .collect();
+                            for wid in affected_wins {
+                                studio_tasks.push(self.spawn_explorer_scan_task(wid));
+                            }
+                        }
+
+                        self.toast_is_error = false;
+                        self.toast_message =
+                            format!("Renamed {kind_label} '{old_path}' → '{new_rel}'");
+                        let mut tasks = vec![self.update(Message::RefreshSelected)];
+                        tasks.extend(studio_tasks);
+                        return Task::batch(tasks);
+                    }
+                    Err(e) => {
+                        if let Some(m) = &mut self.rename_entry_modal {
+                            m.error = Some(e);
+                        } else {
+                            self.report_action_error(
+                                format!(
+                                    "Rename {} Failed",
+                                    if is_dir { "Folder" } else { "File" }
+                                ),
+                                e,
+                                false,
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenAddGitignoreModal { rel_path, is_dir } => {
+                self.context_menu = None;
+                self.show_palette = false;
+                self.rename_entry_modal = None;
+                let candidates = collect_workspace_ignore_candidates(
+                    &self.all_repo_files,
+                    &self.ignored_repo_files,
+                    &self.ignored_repo_dirs,
+                    &self.ignored_dir_children,
+                );
+                self.add_gitignore_modal = Some(AddGitignoreModalState::new(
+                    rel_path,
+                    is_dir,
+                    true,
+                    candidates,
+                ));
+                text_input::focus(self.add_gitignore_input_id.clone())
+            }
+            Message::AddGitignoreModeChanged(use_regex) => {
+                if let Some(m) = &mut self.add_gitignore_modal {
+                    m.use_regex = use_regex;
+                    m.error = None;
+                    if use_regex {
+                        m.recompute_regex_preview();
+                    }
+                }
+                text_input::focus(self.add_gitignore_input_id.clone())
+            }
+            Message::AddGitignoreGlobChanged(val) => {
+                if let Some(m) = &mut self.add_gitignore_modal {
+                    m.glob_pattern = val;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            Message::AddGitignoreRegexChanged(val) => {
+                if let Some(m) = &mut self.add_gitignore_modal {
+                    m.regex_pattern = val;
+                    m.error = None;
+                    m.recompute_regex_preview();
+                }
+                Task::none()
+            }
+            Message::AddGitignoreExpandMatchesToggled(expand) => {
+                if let Some(m) = &mut self.add_gitignore_modal {
+                    m.regex_expand_matches = expand;
+                    m.error = None;
+                    m.recompute_regex_preview();
+                }
+                Task::none()
+            }
+            Message::AddGitignoreLayerChanged(layer) => {
+                if let Some(m) = &mut self.add_gitignore_modal {
+                    m.layer = layer;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            Message::SubmitAddGitignore => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                let Some(modal) = self.add_gitignore_modal.as_ref() else {
+                    return Task::none();
+                };
+                let rules = modal.resolved_rules();
+                let layer = modal.layer;
+                let target_label = modal.target_file_label();
+                if rules.is_empty() {
+                    if let Some(m) = &mut self.add_gitignore_modal {
+                        m.error = Some("No valid ignore pattern to append.".into());
+                    }
+                    return Task::none();
+                }
+
+                match self
+                    .service
+                    .security
+                    .append_ignore_rules(&repo.path, layer, &rules)
+                {
+                    Ok(res) => {
+                        self.add_gitignore_modal = None;
+                        self.refresh_vault_and_ignore();
+                        self.ignored_entries_stale = !self.show_ignored_files;
+                        self.toast_is_error = false;
+                        self.toast_message = if res.added == 0 {
+                            format!("Pattern already exists in {target_label}")
+                        } else if res.skipped_existing > 0 {
+                            format!(
+                                "Added {} rule(s) to {target_label} ({} already present)",
+                                res.added, res.skipped_existing
+                            )
+                        } else {
+                            format!(
+                                "Added {} rule{} to {target_label}",
+                                res.added,
+                                if res.added == 1 { "" } else { "s" }
+                            )
+                        };
+
+                        let mut tasks = vec![self.update(Message::RefreshSelected)];
+                        let affected_wins: Vec<iced::window::Id> = self
+                            .detached_viewers
+                            .iter()
+                            .filter_map(|(wid, v)| {
+                                v.search_root
+                                    .as_deref()
+                                    .is_some_and(|sr| sr == repo.path || sr.starts_with(&repo.path))
+                                    .then_some(*wid)
+                            })
+                            .collect();
+                        for wid in affected_wins {
+                            tasks.push(self.spawn_explorer_scan_task(wid));
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Err(e) => {
+                        if let Some(m) = &mut self.add_gitignore_modal {
+                            m.error = Some(e.to_string());
+                        }
                     }
                 }
                 Task::none()

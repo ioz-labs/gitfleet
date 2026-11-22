@@ -6,6 +6,11 @@ mod scanner;
 mod vault;
 
 pub use formats::{normalize_repo_rel_path, parse_secret_entries};
+pub use ignore_layers::{
+    AppendIgnoreResult, GitignorePreset, RegexIgnorePreview, RegexRuleOrigin,
+    build_gitignore_presets, build_gitignore_regex_presets, default_regex_for_entry,
+    preview_regex_gitignore,
+};
 pub use manifest::{manifest_file_path, normalize_profile_name, vault_file_name_for_profile};
 pub use models::{
     DEFAULT_PROFILE, IgnoreLayer, IgnoreSnapshot, OversizedFile, SecretFileFormat, SecretFileSpec,
@@ -447,5 +452,125 @@ mod tests {
         assert!(!repo.join(".gitfleet").exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn builds_gitignore_presets_and_deduplicates_append_rules() {
+        let file_presets = build_gitignore_presets("src/logs/app.log", false);
+        let patterns: Vec<&str> = file_presets.iter().map(|p| p.pattern.as_str()).collect();
+        assert_eq!(
+            patterns,
+            vec!["/src/logs/app.log", "app.log", "/src/logs/*.log", "*.log"]
+        );
+
+        let env_presets = build_gitignore_presets(".env", false);
+        let env_patterns: Vec<&str> = env_presets.iter().map(|p| p.pattern.as_str()).collect();
+        assert_eq!(env_patterns, vec!["/.env", ".env", ".env.*"]);
+
+        let dir_presets = build_gitignore_presets("crates/cache", true);
+        let dir_patterns: Vec<&str> = dir_presets.iter().map(|p| p.pattern.as_str()).collect();
+        assert_eq!(dir_patterns, vec!["/crates/cache/", "cache/"]);
+
+        let repo = temp_dir("append_ignore");
+        let svc = SecurityService::new();
+        let first = svc
+            .append_ignore_rules(
+                &repo,
+                IgnoreLayer::RootGitignore,
+                &["*.log".into(), "/crates/cache/".into(), "*.log".into()],
+            )
+            .unwrap();
+        assert_eq!(first.added, 2);
+        assert_eq!(first.skipped_existing, 1);
+
+        let second = svc
+            .append_ignore_rules(
+                &repo,
+                IgnoreLayer::RootGitignore,
+                &["*.log".into(), ".env".into()],
+            )
+            .unwrap();
+        assert_eq!(second.added, 1);
+        assert_eq!(second.skipped_existing, 1);
+
+        let content = std::fs::read_to_string(repo.join(".gitignore")).unwrap();
+        assert_eq!(content, "*.log\n/crates/cache/\n.env\n");
+
+        // Personal exclude layer creates `.git/info/exclude`
+        let personal = svc
+            .append_ignore_rules(&repo, IgnoreLayer::PersonalExclude, &["/local.tmp".into()])
+            .unwrap();
+        assert_eq!(personal.added, 1);
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(),
+            "/local.tmp\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn previews_and_translates_regex_gitignore_patterns() {
+        let candidates = vec![
+            "src/app.log".to_string(),
+            "src/sub/debug.log".to_string(),
+            "dist/".to_string(),
+            "build/".to_string(),
+            "logs/report_2026.csv".to_string(),
+            "logs/report_2025.csv".to_string(),
+            "README.md".to_string(),
+        ];
+
+        // Exact glob translation for extension regex
+        let ext = preview_regex_gitignore(r".*\.log$", &candidates, false).unwrap();
+        assert_eq!(ext.origin, RegexRuleOrigin::ExactGlob);
+        assert_eq!(ext.rules, vec!["*.log"]);
+        assert_eq!(ext.total_matches, 2);
+
+        // Exact glob translation for alternation of folders
+        let dirs = preview_regex_gitignore(r"^(dist|build)/?$", &candidates, false).unwrap();
+        assert_eq!(dirs.origin, RegexRuleOrigin::ExactGlob);
+        assert_eq!(dirs.rules, vec!["/dist/", "/build/"]);
+        assert_eq!(dirs.total_matches, 2);
+
+        // Exact glob translation for nested directory extension
+        let nested = preview_regex_gitignore(r"^src/.*\.log$", &candidates, false).unwrap();
+        assert_eq!(nested.origin, RegexRuleOrigin::ExactGlob);
+        assert_eq!(nested.rules, vec!["/src/**/*.log"]);
+        assert_eq!(nested.total_matches, 2);
+
+        // Path boundary idiom `(^|/)`
+        let anywhere = preview_regex_gitignore(r"(^|/)app\.log$", &candidates, false).unwrap();
+        assert_eq!(anywhere.origin, RegexRuleOrigin::ExactGlob);
+        assert_eq!(anywhere.rules, vec!["app.log"]);
+        assert_eq!(anywhere.total_matches, 1);
+
+        // Approximate glob vs matched paths for `\d+`
+        let digits_glob =
+            preview_regex_gitignore(r"^logs/report_\d+\.csv$", &candidates, false).unwrap();
+        assert_eq!(digits_glob.origin, RegexRuleOrigin::ApproximateGlob);
+        assert_eq!(digits_glob.rules, vec!["/logs/report_[0-9]*.csv"]);
+        assert_eq!(digits_glob.total_matches, 2);
+
+        let digits_exact =
+            preview_regex_gitignore(r"^logs/report_\d+\.csv$", &candidates, true).unwrap();
+        assert_eq!(digits_exact.origin, RegexRuleOrigin::MatchedPaths);
+        assert_eq!(
+            digits_exact.rules,
+            vec!["/logs/report_2026.csv", "/logs/report_2025.csv"]
+        );
+
+        // Quantifier `{4}` is non-glob -> falls back to exact matched paths automatically
+        let quant =
+            preview_regex_gitignore(r"^logs/report_\d{4}\.csv$", &candidates, false).unwrap();
+        assert_eq!(quant.origin, RegexRuleOrigin::MatchedPaths);
+        assert!(!quant.can_translate_glob);
+        assert_eq!(
+            quant.rules,
+            vec!["/logs/report_2026.csv", "/logs/report_2025.csv"]
+        );
+
+        // Invalid regex produces clear error
+        assert!(preview_regex_gitignore(r"[unclosed", &candidates, false).is_err());
     }
 }

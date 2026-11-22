@@ -13,6 +13,7 @@ use crate::views::image_diff::{
     ImageDiffData, ImageDiffMode, ImageDiffMsg, ImageDiffViewState, ImageDiffZoom,
     is_image_diff_path,
 };
+use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
 use super::io::{editor_buffer_text, file_display_name, jump_editor_to_span};
 use super::sidebar_explorer::ExplorerDirNode;
 use gitfleet_core::DocumentId;
@@ -21,6 +22,7 @@ use gitfleet_git::{FileChange, IgnoredDirListing, IgnoredEntries, ParsedDiff};
 use gitfleet_search::{
     InFileMatch, ReplaceReport, ScopedSearchResult, SearchOptions, find_in_text,
 };
+use gitfleet_security::IgnoreLayer;
 use iced::widget::{scrollable, text_editor, text_input};
 use iced::{Point, Task};
 use std::collections::{HashMap, HashSet};
@@ -143,6 +145,30 @@ pub(crate) enum DetachedAction {
         abs_path: PathBuf,
         result: Result<bool, String>,
     },
+    OpenExplorerRename {
+        rel_path: String,
+        is_dir: bool,
+    },
+    ExplorerRenameInputChanged(String),
+    CancelExplorerRename,
+    SubmitExplorerRename,
+    ExplorerEntryRenamed {
+        old_rel: String,
+        is_dir: bool,
+        old_abs: PathBuf,
+        result: Result<String, String>,
+    },
+    OpenExplorerGitignore {
+        rel_path: String,
+        is_dir: bool,
+    },
+    ExplorerGitignoreModeChanged(bool),
+    ExplorerGitignoreGlobChanged(String),
+    ExplorerGitignoreRegexChanged(String),
+    ExplorerGitignoreExpandMatchesToggled(bool),
+    ExplorerGitignoreLayerChanged(IgnoreLayer),
+    CancelExplorerGitignore,
+    SubmitExplorerGitignore,
 
     // View Modes & Diff Controls
     SetMode(DetachedViewMode),
@@ -585,6 +611,10 @@ pub(crate) struct DetachedViewerState {
     pub(crate) explorer_expanded_dirs: HashSet<String>,
     pub(crate) explorer_menu: Option<StudioExplorerMenu>,
     pub(crate) pending_delete: Option<StudioPendingDelete>,
+    pub(crate) rename_modal: Option<RenameEntryModalState>,
+    pub(crate) rename_input_id: text_input::Id,
+    pub(crate) gitignore_modal: Option<AddGitignoreModalState>,
+    pub(crate) gitignore_input_id: text_input::Id,
 
     // Compare Panel (persisted left/right handles)
     pub(crate) compare_left: Option<PathBuf>,
@@ -661,6 +691,10 @@ impl DetachedViewerState {
             explorer_expanded_dirs: HashSet::new(),
             explorer_menu: None,
             pending_delete: None,
+            rename_modal: None,
+            rename_input_id: text_input::Id::unique(),
+            gitignore_modal: None,
+            gitignore_input_id: text_input::Id::unique(),
             compare_left: None,
             compare_right: None,
             in_file_find_open: false,
@@ -779,6 +813,43 @@ impl DetachedViewerState {
                 self.remove_tab_at(idx);
             } else {
                 idx += 1;
+            }
+        }
+    }
+
+    pub(crate) fn rename_tabs_under_path(
+        &mut self,
+        docs: &gitfleet_docs::DocsService,
+        old_abs: &Path,
+        new_abs: &Path,
+        is_dir: bool,
+    ) {
+        let root = self.search_root.clone();
+        for tab in &mut self.tabs {
+            let new_path = match tab.file_path.as_deref() {
+                Some(p) if p == old_abs => Some(new_abs.to_path_buf()),
+                Some(p) if is_dir => p.strip_prefix(old_abs).ok().map(|tail| new_abs.join(tail)),
+                _ => None,
+            };
+            let Some(updated_path) = new_path else {
+                continue;
+            };
+            tab.title = file_display_name(&updated_path);
+            tab.rel_path = root
+                .as_deref()
+                .and_then(|r| updated_path.strip_prefix(r).ok())
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+            tab.language = CodeLanguage::from_path(&updated_path);
+            tab.file_path = Some(updated_path.clone());
+            // Rebind DocsService capability handle to the new path so Ctrl+S saves to the new file.
+            if let Ok(cap) = docs.open_document(&updated_path) {
+                tab.doc_id = Some(cap.document_id);
+                tab.doc_version = Some(cap.version);
+                if !tab.dirty {
+                    tab.encoding = cap.encoding;
+                    tab.line_ending = cap.line_ending;
+                    tab.raw_text = Some(cap.content);
+                }
             }
         }
     }

@@ -13,6 +13,7 @@ use crate::terminal::TerminalFontCatalog;
 use crate::theme::ThemeMode;
 use crate::views::detached_viewer::DetachedViewerState;
 use crate::views::diff_viewer::{DiffLayoutCache, build_diff_layout_cache};
+use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
 use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
 use gitfleet_docs::{FileEncoding, LineEnding};
@@ -190,6 +191,12 @@ pub(crate) struct GitFleetApp {
     // Rename Workspace Modal
     pub(crate) rename_workspace_modal: Option<RenameWorkspaceModalState>,
     pub(crate) rename_workspace_input_id: text_input::Id,
+
+    // Rename File/Folder & Add to .gitignore Modals
+    pub(crate) rename_entry_modal: Option<RenameEntryModalState>,
+    pub(crate) rename_entry_input_id: text_input::Id,
+    pub(crate) add_gitignore_modal: Option<AddGitignoreModalState>,
+    pub(crate) add_gitignore_input_id: text_input::Id,
 
     // Commit Popup Modal (right-click Repo -> Commit...)
     pub(crate) commit_modal: Option<CommitModalState>,
@@ -478,6 +485,10 @@ impl GitFleetApp {
             rename_branch_input_id: text_input::Id::unique(),
             rename_workspace_modal: None,
             rename_workspace_input_id: text_input::Id::unique(),
+            rename_entry_modal: None,
+            rename_entry_input_id: text_input::Id::unique(),
+            add_gitignore_modal: None,
+            add_gitignore_input_id: text_input::Id::unique(),
             commit_modal: None,
             commit_modal_editor: text_editor::Content::new(),
             scan_modal: None,
@@ -752,6 +763,8 @@ impl GitFleetApp {
             || self.discard_modal.is_some()
             || self.rename_branch_modal.is_some()
             || self.rename_workspace_modal.is_some()
+            || self.rename_entry_modal.is_some()
+            || self.add_gitignore_modal.is_some()
             || self.commit_modal.is_some()
             || self.scan_modal.is_some()
     }

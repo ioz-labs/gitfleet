@@ -235,6 +235,28 @@ pub(crate) enum Message {
         is_dir: bool,
         result: Result<bool, String>,
     },
+    OpenRenameRepoEntry {
+        rel_path: String,
+        is_dir: bool,
+    },
+    RenameRepoEntryInputChanged(String),
+    SubmitRenameRepoEntry,
+    RepoEntryRenamed {
+        repo_id: RepoId,
+        old_path: String,
+        is_dir: bool,
+        result: Result<String, String>,
+    },
+    OpenAddGitignoreModal {
+        rel_path: String,
+        is_dir: bool,
+    },
+    AddGitignoreModeChanged(bool),
+    AddGitignoreGlobChanged(String),
+    AddGitignoreRegexChanged(String),
+    AddGitignoreExpandMatchesToggled(bool),
+    AddGitignoreLayerChanged(IgnoreLayer),
+    SubmitAddGitignore,
 
     // Git Status & Actions
     RefreshSelected,
