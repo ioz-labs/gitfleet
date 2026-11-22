@@ -225,8 +225,8 @@ cargo build --release --locked -p gitfleet-ui
 GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) runs strict checks (`-D warnings`), native unit tests, and packages all 5 platform/architecture targets automatically whenever a version tag matching `v*` is pushed (or when triggered manually via **Actions → Release → Run workflow**):
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 ---
