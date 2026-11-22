@@ -6,11 +6,12 @@ use crate::icons;
 use crate::syntax::CodeLanguage;
 use crate::theme::{self, Palette, ThemeMode, type_scale};
 use crate::views::{parent_dir, slim_scroll, tip};
+use gitfleet_git::IgnoredDirListing;
 use iced::widget::{
-    Space, button, column, container, horizontal_rule, row, text, text_input, tooltip,
+    Space, button, column, container, horizontal_rule, mouse_area, row, text, text_input, tooltip,
 };
-use iced::{Alignment, Element, Length, window};
-use std::collections::{BTreeMap, HashSet};
+use iced::{Alignment, Color, Element, Length, window};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 // ── Activity Rail (Far-Left Minimal Icon Strip) ──────────────────────────────
@@ -118,7 +119,20 @@ pub(crate) fn render_activity_rail<'a>(
 // ── Language File Tag Helper ─────────────────────────────────────────────────
 
 pub(crate) fn lang_tag<'a>(lang: CodeLanguage, theme_mode: ThemeMode) -> Element<'a, Message> {
-    let col = lang.badge_color(theme_mode);
+    lang_tag_styled(lang, theme_mode, false)
+}
+
+fn lang_tag_styled<'a>(
+    lang: CodeLanguage,
+    theme_mode: ThemeMode,
+    dimmed: bool,
+) -> Element<'a, Message> {
+    let base = lang.badge_color(theme_mode);
+    let col = if dimmed {
+        Color { a: 0.50, ..base }
+    } else {
+        base
+    };
     text(lang.short_badge())
         .size(10)
         .font(theme::CODE_FONT)
@@ -130,23 +144,111 @@ pub(crate) fn lang_tag<'a>(lang: CodeLanguage, theme_mode: ThemeMode) -> Element
 // ── Sidebar 1: Project Explorer Tree ─────────────────────────────────────────
 
 #[derive(Default)]
-struct ExplorerDirNode {
-    dirs: BTreeMap<String, ExplorerDirNode>,
-    files: Vec<(String, String)>, // (file_name, full_rel_path)
+pub(crate) struct ExplorerDirNode {
+    pub(crate) dirs: BTreeMap<String, ExplorerDirNode>,
+    pub(crate) files: Vec<(String, String, bool)>, // (file_name, full_rel_path, is_ignored)
+    pub(crate) has_non_ignored: bool,
+    pub(crate) has_ignored: bool,
+    pub(crate) lazy_ignored_dir: bool,
+    pub(crate) lazy_loaded: bool,
+    pub(crate) truncated: bool,
 }
 
 impl ExplorerDirNode {
-    fn insert(&mut self, rel: &str) {
+    pub(crate) fn is_ignored_only(&self) -> bool {
+        self.has_ignored && !self.has_non_ignored
+    }
+
+    pub(crate) fn insert(&mut self, rel: &str, is_ignored: bool) {
         let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
         if parts.is_empty() {
             return;
         }
+        if is_ignored {
+            self.has_ignored = true;
+        } else {
+            self.has_non_ignored = true;
+        }
         let mut cur = self;
         for dir in &parts[..parts.len() - 1] {
             cur = cur.dirs.entry((*dir).to_string()).or_default();
+            if is_ignored {
+                cur.has_ignored = true;
+            } else {
+                cur.has_non_ignored = true;
+            }
         }
         cur.files
-            .push((parts[parts.len() - 1].to_string(), rel.to_string()));
+            .push((parts[parts.len() - 1].to_string(), rel.to_string(), is_ignored));
+    }
+
+    pub(crate) fn insert_ignored_dir(
+        &mut self,
+        dir_path: &str,
+        cache: &HashMap<String, IgnoredDirListing>,
+    ) {
+        let trimmed = dir_path.trim_matches('/');
+        if trimmed.is_empty() {
+            return;
+        }
+        self.has_ignored = true;
+        let mut cur = self;
+        for seg in trimmed.split('/').filter(|s| !s.is_empty()) {
+            cur = cur.dirs.entry(seg.to_string()).or_default();
+            cur.has_ignored = true;
+        }
+        cur.lazy_ignored_dir = true;
+        cur.populate_lazy_dir(trimmed, cache);
+    }
+
+    fn populate_lazy_dir(&mut self, full_path: &str, cache: &HashMap<String, IgnoredDirListing>) {
+        let Some(listing) = cache.get(full_path) else {
+            return;
+        };
+        self.lazy_loaded = true;
+        self.truncated = listing.truncated;
+        for f in &listing.files {
+            let fname = f.rsplit('/').next().unwrap_or(f).to_string();
+            self.files.push((fname, f.clone(), true));
+        }
+        for child_dir in &listing.dirs {
+            let child_name = child_dir.rsplit('/').next().unwrap_or(child_dir);
+            let child = self.dirs.entry(child_name.to_string()).or_default();
+            child.has_ignored = true;
+            child.lazy_ignored_dir = true;
+            child.populate_lazy_dir(child_dir, cache);
+        }
+    }
+
+    fn sort_files_recursive(&mut self) {
+        self.files.sort_by(|a, b| a.0.cmp(&b.0));
+        self.files.dedup_by(|a, b| a.1 == b.1);
+        for child in self.dirs.values_mut() {
+            child.sort_files_recursive();
+        }
+    }
+
+    pub(crate) fn build(
+        files: &[String],
+        ignored_files: &[String],
+        ignored_dirs: &[String],
+        cache: &HashMap<String, IgnoredDirListing>,
+        show_ignored: bool,
+    ) -> Self {
+        let mut root = Self::default();
+        for rel in files {
+            root.insert(rel, false);
+        }
+        if show_ignored {
+            for rel in ignored_files {
+                root.insert(rel, true);
+            }
+            for dir in ignored_dirs {
+                root.insert_ignored_dir(dir, cache);
+            }
+        }
+        root.sort_files_recursive();
+        root
     }
 }
 
@@ -168,6 +270,26 @@ pub(crate) fn render_explorer_sidebar<'a>(
                 .color(p.text_primary)
                 .wrapping(text::Wrapping::None),
             Length::Fill,
+        ),
+        tip(
+            button(if v.explorer_show_ignored {
+                icons::eye(12.0, p.accent_fg)
+            } else {
+                icons::eye_off(12.0, p.text_muted)
+            })
+            .padding([3, 5])
+            .style(theme::vscode_icon_btn(p, v.explorer_show_ignored))
+            .on_press(Message::Detached(
+                win_id,
+                DetachedAction::ToggleExplorerShowIgnored,
+            )),
+            if v.explorer_show_ignored {
+                "Showing gitignored files & folders (dimmed like VS Code) — click to hide"
+            } else {
+                "Gitignored files & folders hidden — click to show (e.g. .env)"
+            },
+            tooltip::Position::Bottom,
+            p,
         ),
         tip(
             button(icons::refresh(12.0, p.text_muted))
@@ -223,7 +345,11 @@ pub(crate) fn render_explorer_sidebar<'a>(
             )
             .padding([12, 6]),
         );
-    } else if v.explorer_loading && v.explorer_files.is_empty() {
+    } else if v.explorer_loading
+        && v.explorer_files.is_empty()
+        && v.explorer_ignored_files.is_empty()
+        && v.explorer_ignored_dirs.is_empty()
+    {
         list_col = list_col.push(
             container(
                 text("Scanning folder…")
@@ -235,22 +361,51 @@ pub(crate) fn render_explorer_sidebar<'a>(
     } else {
         let q = v.explorer_filter.trim().to_lowercase();
         if !q.is_empty() {
-            // Flat filtered results for instant jumping
-            let mut shown = 0usize;
+            // Flat filtered results for instant jumping (includes gitignored files dimmed)
+            let mut matched: Vec<(&str, bool)> = Vec::new();
+            let mut seen: HashSet<&str> = HashSet::new();
             for rel in &v.explorer_files {
-                if !rel.to_lowercase().contains(&q) {
-                    continue;
+                if rel.to_lowercase().contains(&q) && seen.insert(rel.as_str()) {
+                    matched.push((rel.as_str(), false));
                 }
+            }
+            if v.explorer_show_ignored {
+                for rel in &v.explorer_ignored_files {
+                    if rel.to_lowercase().contains(&q) && seen.insert(rel.as_str()) {
+                        matched.push((rel.as_str(), true));
+                    }
+                }
+                for listing in v.explorer_ignored_dir_children.values() {
+                    for rel in &listing.files {
+                        if rel.to_lowercase().contains(&q) && seen.insert(rel.as_str()) {
+                            matched.push((rel.as_str(), true));
+                        }
+                    }
+                }
+            }
+            matched.sort_by(|a, b| a.0.cmp(b.0));
+
+            let mut shown = 0usize;
+            for (rel, is_ignored) in matched {
                 let fname = rel.rsplit('/').next().unwrap_or(rel);
                 let dir = parent_dir(rel);
-                let is_active = active_rel == Some(rel.as_str());
+                let is_active = active_rel == Some(rel);
                 let lang = CodeLanguage::from_path(Path::new(rel));
 
+                let name_color = if is_active {
+                    p.accent_fg
+                } else if is_ignored {
+                    Color { a: 0.68, ..p.text_muted }
+                } else {
+                    p.text_primary
+                };
+
                 let mut inner = row![
-                    container(lang_tag(lang, theme_mode)).width(Length::Fixed(20.0)),
+                    container(lang_tag_styled(lang, theme_mode, is_ignored))
+                        .width(Length::Fixed(20.0)),
                     text(fname)
                         .size(type_scale::CAPTION)
-                        .color(if is_active { p.accent_fg } else { p.text_primary })
+                        .color(name_color)
                         .wrapping(text::Wrapping::None),
                 ]
                 .spacing(4)
@@ -260,21 +415,31 @@ pub(crate) fn render_explorer_sidebar<'a>(
                     inner = inner.push(
                         text(dir)
                             .size(type_scale::BADGE)
-                            .color(p.text_muted)
+                            .color(if is_ignored {
+                                Color { a: 0.56, ..p.text_muted }
+                            } else {
+                                p.text_muted
+                            })
                             .wrapping(text::Wrapping::None),
                     );
                 }
 
-                list_col = list_col.push(
-                    button(theme::clipped_line(inner, Length::Fill))
-                        .padding([3, 6])
-                        .width(Length::Fill)
-                        .style(theme::repo_row_btn(p, is_active))
-                        .on_press(Message::Detached(
-                            win_id,
-                            DetachedAction::OpenExplorerFile(rel.clone()),
-                        )),
-                );
+                let btn = button(theme::clipped_line(inner, Length::Fill))
+                    .padding([3, 6])
+                    .width(Length::Fill)
+                    .style(theme::repo_row_btn(p, is_active))
+                    .on_press(Message::Detached(
+                        win_id,
+                        DetachedAction::OpenExplorerFile(rel.to_string()),
+                    ));
+
+                list_col = list_col.push(mouse_area(btn).on_right_press(Message::Detached(
+                    win_id,
+                    DetachedAction::OpenExplorerMenu {
+                        rel_path: rel.to_string(),
+                        is_dir: false,
+                    },
+                )));
                 shown += 1;
                 if shown >= 200 {
                     break;
@@ -291,14 +456,10 @@ pub(crate) fn render_explorer_sidebar<'a>(
                 );
             }
         } else {
-            let mut root_node = ExplorerDirNode::default();
-            for rel in &v.explorer_files {
-                root_node.insert(rel);
-            }
             let mut rows = Vec::new();
             render_explorer_node(
                 win_id,
-                &root_node,
+                &v.explorer_tree,
                 "",
                 0,
                 &v.explorer_expanded_dirs,
@@ -350,15 +511,28 @@ fn render_explorer_node<'a>(
             format!("{parent_path}/{dir_name}")
         };
         let is_open = expanded.contains(&full);
-        let chev: Element<'a, Message> = if is_open {
-            icons::chevron_down(11.0, p.text_muted).into()
+        let dimmed = child.is_ignored_only();
+        let chev_color = if dimmed {
+            Color { a: 0.52, ..p.text_muted }
         } else {
-            icons::chevron_right(11.0, p.text_muted).into()
+            p.text_muted
+        };
+        let chev: Element<'a, Message> = if is_open {
+            icons::chevron_down(11.0, chev_color).into()
+        } else {
+            icons::chevron_right(11.0, chev_color).into()
+        };
+        let folder_color = if dimmed {
+            Color { a: 0.56, ..p.text_muted }
+        } else if is_open {
+            p.accent_fg
+        } else {
+            p.text_secondary
         };
         let folder_ic: Element<'a, Message> = if is_open {
-            icons::folder_open(12.0, p.accent_fg).into()
+            icons::folder_open(12.0, folder_color).into()
         } else {
-            icons::folder(12.0, p.text_secondary).into()
+            icons::folder(12.0, folder_color).into()
         };
 
         let label = row![
@@ -367,61 +541,128 @@ fn render_explorer_node<'a>(
             folder_ic,
             text(dir_name.clone())
                 .size(type_scale::CAPTION)
-                .color(p.text_primary)
+                .color(if dimmed {
+                    Color { a: 0.70, ..p.text_muted }
+                } else {
+                    p.text_primary
+                })
                 .wrapping(text::Wrapping::None),
         ]
         .spacing(4)
         .align_y(Alignment::Center);
 
+        let dir_btn = button(theme::clipped_line(label, Length::Fill))
+            .padding([3, 5])
+            .width(Length::Fill)
+            .style(theme::repo_row_btn(p, false))
+            .on_press(Message::Detached(
+                win_id,
+                DetachedAction::ToggleExplorerDir(full.clone()),
+            ));
+
         out.push(
-            button(theme::clipped_line(label, Length::Fill))
-                .padding([3, 5])
-                .width(Length::Fill)
-                .style(theme::repo_row_btn(p, false))
-                .on_press(Message::Detached(
+            mouse_area(dir_btn)
+                .on_right_press(Message::Detached(
                     win_id,
-                    DetachedAction::ToggleExplorerDir(full.clone()),
+                    DetachedAction::OpenExplorerMenu {
+                        rel_path: full.clone(),
+                        is_dir: true,
+                    },
                 ))
                 .into(),
         );
 
         if is_open {
-            render_explorer_node(
-                win_id,
-                child,
-                &full,
-                depth + 1,
-                expanded,
-                active_rel,
-                theme_mode,
-                p,
-                out,
-            );
+            if child.lazy_ignored_dir && !child.lazy_loaded {
+                out.push(
+                    row![
+                        Space::with_width(Length::Fixed(indent + 24.0)),
+                        text("Loading…")
+                            .size(type_scale::BADGE)
+                            .color(p.text_muted)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .padding([2, 5])
+                    .into(),
+                );
+            } else if child.dirs.is_empty() && child.files.is_empty() {
+                out.push(
+                    row![
+                        Space::with_width(Length::Fixed(indent + 24.0)),
+                        text("(empty)")
+                            .size(type_scale::BADGE)
+                            .color(Color { a: 0.60, ..p.text_muted })
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .padding([2, 5])
+                    .into(),
+                );
+            } else {
+                render_explorer_node(
+                    win_id,
+                    child,
+                    &full,
+                    depth + 1,
+                    expanded,
+                    active_rel,
+                    theme_mode,
+                    p,
+                    out,
+                );
+                if child.truncated {
+                    out.push(
+                        row![
+                            Space::with_width(Length::Fixed(indent + 24.0)),
+                            text("Showing first 500 entries…")
+                                .size(type_scale::BADGE)
+                                .color(Color { a: 0.65, ..p.text_muted })
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .padding([2, 5])
+                        .into(),
+                    );
+                }
+            }
         }
     }
 
-    for (fname, full_rel) in &node.files {
+    for (fname, full_rel, is_ignored) in &node.files {
         let is_active = active_rel == Some(full_rel.as_str());
         let lang = CodeLanguage::from_path(Path::new(full_rel));
         let label = row![
             Space::with_width(Length::Fixed(indent + 12.0)),
-            container(lang_tag(lang, theme_mode)).width(Length::Fixed(20.0)),
+            container(lang_tag_styled(lang, theme_mode, *is_ignored)).width(Length::Fixed(20.0)),
             text(fname.clone())
                 .size(type_scale::CAPTION)
-                .color(if is_active { p.accent_fg } else { p.text_secondary })
+                .color(if is_active {
+                    p.accent_fg
+                } else if *is_ignored {
+                    Color { a: 0.68, ..p.text_muted }
+                } else {
+                    p.text_secondary
+                })
                 .wrapping(text::Wrapping::None),
         ]
         .spacing(3)
         .align_y(Alignment::Center);
 
+        let file_btn = button(theme::clipped_line(label, Length::Fill))
+            .padding([3, 5])
+            .width(Length::Fill)
+            .style(theme::repo_row_btn(p, is_active))
+            .on_press(Message::Detached(
+                win_id,
+                DetachedAction::OpenExplorerFile(full_rel.clone()),
+            ));
+
         out.push(
-            button(theme::clipped_line(label, Length::Fill))
-                .padding([3, 5])
-                .width(Length::Fill)
-                .style(theme::repo_row_btn(p, is_active))
-                .on_press(Message::Detached(
+            mouse_area(file_btn)
+                .on_right_press(Message::Detached(
                     win_id,
-                    DetachedAction::OpenExplorerFile(full_rel.clone()),
+                    DetachedAction::OpenExplorerMenu {
+                        rel_path: full_rel.clone(),
+                        is_dir: false,
+                    },
                 ))
                 .into(),
         );

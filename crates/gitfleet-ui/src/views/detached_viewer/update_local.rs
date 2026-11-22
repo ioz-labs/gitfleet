@@ -2,10 +2,11 @@
 //! editor actions, in-file find/replace, search filters, and status menus).
 
 use super::io::{
-    editor_buffer_text, file_display_name, spawn_compare_task, spawn_single_file_task,
+    editor_buffer_text, file_display_name, jump_editor_to_span, spawn_compare_task,
 };
 use super::state::{
-    DetachedAction, DetachedViewMode, StudioSidebarPanel, StudioStatusMenu,
+    DetachedAction, DetachedViewMode, StudioExplorerMenu, StudioPendingDelete, StudioSidebarPanel,
+    StudioStatusMenu,
 };
 use crate::app::{
     DiffGapExpandMode, DiffSelectionSide, DiffTextPos, DiffTextSelection, EncodingModalMode,
@@ -40,6 +41,12 @@ impl GitFleetApp {
                     v.active_tab = Some(idx);
                     v.pending_close_tab = None;
                     v.status_menu = None;
+                    v.explorer_menu = None;
+                    if let Some(tab) = v.tabs.get_mut(idx)
+                        && !tab.loading_file
+                    {
+                        tab.hydrate_active_mode();
+                    }
                     v.recompute_in_file_matches(false);
                 }
                 Task::none()
@@ -115,17 +122,42 @@ impl GitFleetApp {
                 v.explorer_filter = q;
                 Task::none()
             }
-            DetachedAction::ToggleExplorerDir(dir) => {
-                if !v.explorer_expanded_dirs.remove(&dir) {
-                    v.explorer_expanded_dirs.insert(dir);
+            DetachedAction::ExplorerIgnoredDirLoaded(rid, rel_dir, listing) => {
+                if rid == v.explorer_request_id {
+                    v.explorer_ignored_dir_children.insert(rel_dir, listing);
+                    v.rebuild_explorer_tree();
                 }
                 Task::none()
             }
-            DetachedAction::ExplorerFilesLoaded(rid, files) => {
-                if rid == v.explorer_request_id {
-                    v.explorer_loading = false;
-                    v.explorer_files = files;
-                }
+            DetachedAction::OpenExplorerMenu { rel_path, is_dir } => {
+                v.status_menu = None;
+                let pos = crate::app::subscription::latest_cursor_pos(win_id)
+                    .unwrap_or(v.cursor_pos);
+                v.explorer_menu = Some(StudioExplorerMenu {
+                    rel_path,
+                    is_dir,
+                    position: pos,
+                });
+                Task::none()
+            }
+            DetachedAction::CloseExplorerMenu => {
+                v.explorer_menu = None;
+                Task::none()
+            }
+            DetachedAction::CopyExplorerPath(rel_path) => {
+                v.explorer_menu = None;
+                v.status_is_error = false;
+                v.status_note = format!("Copied path '{rel_path}'");
+                clipboard::write(rel_path)
+            }
+            DetachedAction::RequestDeleteExplorerEntry { rel_path, is_dir } => {
+                v.explorer_menu = None;
+                v.status_menu = None;
+                v.pending_delete = Some(StudioPendingDelete { rel_path, is_dir });
+                Task::none()
+            }
+            DetachedAction::CancelDeleteExplorerEntry => {
+                v.pending_delete = None;
                 Task::none()
             }
 
@@ -138,9 +170,17 @@ impl GitFleetApp {
                         DetachedViewMode::UnifiedDiff | DetachedViewMode::SideBySideDiff
                     ) {
                         tab.last_text_diff_mode = mode;
+                    } else if mode == DetachedViewMode::Edit && !tab.loading_file {
+                        tab.ensure_editor_hydrated();
+                    } else if mode == DetachedViewMode::Preview && !tab.loading_file {
+                        if tab.dirty {
+                            tab.preview_hydrated = false;
+                        }
+                        tab.ensure_preview_hydrated();
                     }
                     tab.diff_selection = None;
                 }
+                v.recompute_in_file_matches(false);
                 Task::none()
             }
             DetachedAction::ToggleCompact => {
@@ -576,15 +616,55 @@ impl GitFleetApp {
                     move |p| Message::Detached(win_id, DetachedAction::RightFilePicked(p)),
                 )
             }
-            DetachedAction::SingleFilePicked(Some(path)) => {
-                v.request_id = v.request_id.wrapping_add(1);
-                let req_id = v.request_id;
-                v.loading = true;
-                v.status_is_error = false;
-                v.status_note = format!("Opening {}…", file_display_name(&path));
-                spawn_single_file_task(win_id, req_id, path)
-            }
             DetachedAction::SingleFilePicked(None) => Task::none(),
+            DetachedAction::TabFileLoaded(tab_id, req_id, payload) => {
+                let root = v.search_root.clone();
+                let tab_idx = v
+                    .tabs
+                    .iter()
+                    .position(|t| t.id == tab_id && t.file_load_req_id == req_id);
+                let Some(idx) = tab_idx else {
+                    return Task::none();
+                };
+                let is_active = v.active_tab == Some(idx);
+                let editable = {
+                    let tab = &mut v.tabs[idx];
+                    let ok = tab.apply_loaded_doc(&payload.path, root.as_deref(), payload.doc);
+                    if !ok && tab.mode == DetachedViewMode::Edit {
+                        tab.mode = DetachedViewMode::Preview;
+                    }
+                    if payload.jump_match.is_some() && ok {
+                        tab.mode = DetachedViewMode::Edit;
+                    }
+                    tab.hydrate_active_mode();
+                    if let Some((line_idx, col_start, col_end)) = payload.jump_match
+                        && ok
+                    {
+                        jump_editor_to_span(&mut tab.editor_content, line_idx, col_start, col_end);
+                    }
+                    ok
+                };
+                if is_active {
+                    v.recompute_in_file_matches(false);
+                    if let Some((line_idx, col_start, _)) = payload.jump_match
+                        && editable
+                    {
+                        if let Some(pos) = v
+                            .in_file_matches
+                            .iter()
+                            .position(|m| m.line_index == line_idx && m.col_start == col_start)
+                        {
+                            v.in_file_active_idx = Some(pos);
+                        }
+                        v.status_is_error = false;
+                        v.status_note = format!("Line {}", line_idx + 1);
+                    } else if let Some(tab) = v.tabs.get(idx) {
+                        v.status_is_error = false;
+                        v.status_note = tab.rel_path.clone().unwrap_or_else(|| tab.title.clone());
+                    }
+                }
+                Task::none()
+            }
             DetachedAction::LeftFilePicked(Some(left)) => {
                 v.compare_left = Some(left.clone());
                 if let Some(right) = v.compare_right.clone() {
@@ -661,33 +741,6 @@ impl GitFleetApp {
                     Task::none()
                 }
             }
-            DetachedAction::ReloadFiles => {
-                let target = v.active_tab().map(|tab| {
-                    (
-                        tab.left_path.clone(),
-                        tab.right_path.clone(),
-                        tab.file_path.clone(),
-                        tab.last_text_diff_mode,
-                    )
-                });
-                if let Some((Some(left), Some(right), _, pref)) = target {
-                    v.request_id = v.request_id.wrapping_add(1);
-                    let req_id = v.request_id;
-                    v.loading = true;
-                    v.status_is_error = false;
-                    v.status_note = "Reloading comparison…".into();
-                    spawn_compare_task(win_id, req_id, left, right, pref)
-                } else if let Some((_, _, Some(path), _)) = target {
-                    v.request_id = v.request_id.wrapping_add(1);
-                    let req_id = v.request_id;
-                    v.loading = true;
-                    v.status_is_error = false;
-                    v.status_note = format!("Reloading {}…", file_display_name(&path));
-                    spawn_single_file_task(win_id, req_id, path)
-                } else {
-                    Task::none()
-                }
-            }
             DetachedAction::LoadFailed(req_id, err) => {
                 if req_id == v.request_id {
                     v.loading = false;
@@ -744,6 +797,7 @@ impl GitFleetApp {
                     tab.editor_content.perform(action);
                     if is_edit {
                         tab.dirty = true;
+                        tab.preview_hydrated = false;
                     }
                 }
                 if is_edit && v.in_file_find_open && !v.in_file_query.is_empty() {
@@ -756,12 +810,14 @@ impl GitFleetApp {
                     && tab.mode == DetachedViewMode::Edit
                     && tab.is_editable()
                 {
+                    tab.ensure_editor_hydrated();
                     let spaces = " ".repeat(tab.language.default_indent_spaces());
                     tab.editor_content
                         .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
                             Arc::new(spaces),
                         )));
                     tab.dirty = true;
+                    tab.preview_hydrated = false;
                 }
                 if v.in_file_find_open && !v.in_file_query.is_empty() {
                     v.recompute_in_file_matches(true);
@@ -826,7 +882,7 @@ impl GitFleetApp {
             DetachedAction::OpenInFileFind { show_replace } => {
                 let can_find = v
                     .active_tab()
-                    .is_some_and(|t| t.is_editable() || t.preview_state.copyable_text().is_some());
+                    .is_some_and(|t| t.is_editable() || t.has_preview_available());
                 if !can_find {
                     v.status_is_error = false;
                     v.status_note = "Open a text file to search inside it".into();
@@ -843,6 +899,9 @@ impl GitFleetApp {
                     ) && tab.is_editable()
                     {
                         tab.mode = DetachedViewMode::Edit;
+                        tab.ensure_editor_hydrated();
+                    } else if tab.mode == DetachedViewMode::Preview {
+                        tab.ensure_preview_hydrated();
                     }
                     if let Some(sel) = tab
                         .editor_content
@@ -931,6 +990,7 @@ impl GitFleetApp {
                         && tab.is_editable()
                     {
                         tab.mode = DetachedViewMode::Edit;
+                        tab.ensure_editor_hydrated();
                     }
                     v.jump_active_editor_to_match();
                 }
@@ -952,6 +1012,7 @@ impl GitFleetApp {
                         return None;
                     }
                     tab.mode = DetachedViewMode::Edit;
+                    tab.ensure_editor_hydrated();
                     let cur = editor_buffer_text(&tab.editor_content);
                     Some(replace_single_match_in_text(&cur, &target, &query, &repl, opts))
                 });
@@ -959,7 +1020,9 @@ impl GitFleetApp {
                     Some(Ok(updated)) => {
                         if let Some(tab) = v.active_tab_mut() {
                             tab.editor_content = text_editor::Content::with_text(&updated);
+                            tab.editor_hydrated = true;
                             tab.dirty = true;
+                            tab.preview_hydrated = false;
                         }
                         v.recompute_in_file_matches(true);
                         v.jump_active_editor_to_match();
@@ -986,6 +1049,7 @@ impl GitFleetApp {
                         return None;
                     }
                     tab.mode = DetachedViewMode::Edit;
+                    tab.ensure_editor_hydrated();
                     let cur = editor_buffer_text(&tab.editor_content);
                     Some(replace_all_in_text(&cur, &query, &repl, opts))
                 });
@@ -994,7 +1058,9 @@ impl GitFleetApp {
                         if count > 0 {
                             if let Some(tab) = v.active_tab_mut() {
                                 tab.editor_content = text_editor::Content::with_text(&updated);
+                                tab.editor_hydrated = true;
                                 tab.dirty = true;
+                                tab.preview_hydrated = false;
                             }
                             v.recompute_in_file_matches(false);
                             v.status_is_error = false;
@@ -1122,7 +1188,11 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::EscapePressed => {
-                if v.status_menu.is_some() {
+                if v.pending_delete.is_some() {
+                    v.pending_delete = None;
+                } else if v.explorer_menu.is_some() {
+                    v.explorer_menu = None;
+                } else if v.status_menu.is_some() {
                     v.status_menu = None;
                 } else if v.pending_close_tab.is_some() {
                     v.pending_close_tab = None;
@@ -1142,7 +1212,15 @@ impl GitFleetApp {
             | DetachedAction::SaveEditorWithEncoding(_)
             | DetachedAction::ReopenEditorWithEncoding(_)
             | DetachedAction::RefreshExplorer
+            | DetachedAction::ToggleExplorerShowIgnored
+            | DetachedAction::ToggleExplorerDir(_)
+            | DetachedAction::ExplorerFilesLoaded(_, _, _)
             | DetachedAction::OpenExplorerFile(_)
+            | DetachedAction::RevealExplorerEntry(_)
+            | DetachedAction::ConfirmDeleteExplorerEntry
+            | DetachedAction::ExplorerEntryDeleted { .. }
+            | DetachedAction::SingleFilePicked(Some(_))
+            | DetachedAction::ReloadFiles
             | DetachedAction::OpenSearchFile(_)
             | DetachedAction::OpenSearchMatch { .. }
             | DetachedAction::RunSearch

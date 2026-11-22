@@ -2,10 +2,9 @@
 
 use super::io::{file_display_name, format_editor_text_for_save, jump_editor_to_span};
 use super::state::{
-    DetachedAction, DetachedGitDiffTarget, DetachedViewMode, StudioTab,
+    DetachedAction, DetachedGitDiffTarget, DetachedViewMode, LoadedTabFile, StudioTab,
 };
 use crate::app::{GitFleetApp, Message};
-use crate::preview::PreviewState;
 use crate::syntax::CodeLanguage;
 use crate::views::csv_diff::{compute_csv_diff, is_csv_diff_path};
 use crate::views::diff_viewer::parse_and_cache_diff;
@@ -23,7 +22,7 @@ use std::path::PathBuf;
 impl GitFleetApp {
     pub(crate) fn on_detached_viewer_opened(&mut self, win_id: window::Id) -> Task<Message> {
         let mut tasks = Vec::new();
-        let (focus_id, diff_init, req_id, has_root) = {
+        let (focus_id, diff_init, req_id, file_init, has_root) = {
             let Some(v) = self.detached_viewers.get_mut(&win_id) else {
                 return Task::none();
             };
@@ -40,11 +39,23 @@ impl GitFleetApp {
             } else {
                 v.request_id
             };
-            (fid, target, rid, v.search_root.is_some())
+            let file_load = v.initial_file_load.take().map(|(tid, path)| {
+                let f_req = if let Some(t) = v.tabs.iter_mut().find(|t| t.id == tid) {
+                    t.file_load_req_id = t.file_load_req_id.wrapping_add(1);
+                    t.file_load_req_id
+                } else {
+                    1
+                };
+                (tid, f_req, path)
+            });
+            (fid, target, rid, file_load, v.search_root.is_some())
         };
 
         if let Some(fid) = focus_id {
             tasks.push(text_input::focus(fid));
+        }
+        if let Some((tab_id, f_req, path)) = file_init {
+            tasks.push(self.spawn_tab_file_load_task(win_id, tab_id, f_req, path, None));
         }
         if let Some((tab_id, target)) = diff_init {
             tasks.push(self.spawn_detached_git_diff_task(win_id, tab_id, req_id, target));
@@ -55,6 +66,34 @@ impl GitFleetApp {
         Task::batch(tasks)
     }
 
+    pub(crate) fn spawn_tab_file_load_task(
+        &self,
+        win_id: window::Id,
+        tab_id: u64,
+        req_id: u64,
+        path: PathBuf,
+        jump_match: Option<(usize, usize, usize)>,
+    ) -> Task<Message> {
+        let svc = self.service.clone();
+        Task::perform(
+            async move {
+                let p_clone = path.clone();
+                let doc = tokio::task::spawn_blocking(move || svc.docs.open_document(&p_clone).ok())
+                    .await
+                    .ok()
+                    .flatten();
+                Box::new(LoadedTabFile {
+                    path,
+                    doc,
+                    jump_match,
+                })
+            },
+            move |payload| {
+                Message::Detached(win_id, DetachedAction::TabFileLoaded(tab_id, req_id, payload))
+            },
+        )
+    }
+
     pub(crate) fn spawn_explorer_scan_task(&mut self, win_id: window::Id) -> Task<Message> {
         let params = {
             let Some(v) = self.detached_viewers.get_mut(&win_id) else {
@@ -62,26 +101,75 @@ impl GitFleetApp {
             };
             let Some(root) = v.search_root.clone() else {
                 v.explorer_files.clear();
+                v.clear_explorer_ignored_cache();
                 v.explorer_loading = false;
                 return Task::none();
             };
             v.explorer_request_id = v.explorer_request_id.wrapping_add(1);
             v.explorer_loading = true;
-            Some((v.explorer_request_id, root, v.search_use_gitignore))
+            Some((v.explorer_request_id, root, v.explorer_show_ignored))
         };
-        let Some((rid, root, use_gi)) = params else {
+        let Some((rid, root, show_ignored)) = params else {
             return Task::none();
         };
+        let svc = self.service.clone();
         Task::perform(
             async move {
-                let files =
-                    tokio::task::spawn_blocking(move || list_directory_files(&root, use_gi, 4000))
+                match svc.git.list_repo_files(&root).await {
+                    Ok(files) => {
+                        let ignored = if show_ignored {
+                            svc.git
+                                .list_ignored_entries(&root)
+                                .await
+                                .unwrap_or_default()
+                        } else {
+                            gitfleet_git::IgnoredEntries::default()
+                        };
+                        (rid, files, ignored)
+                    }
+                    Err(_) => {
+                        // Plain non-Git folder: list all files on disk (skipping `.git`).
+                        let files = tokio::task::spawn_blocking(move || {
+                            list_directory_files(&root, false, 4000)
+                        })
                         .await
                         .unwrap_or_default();
-                (rid, files)
+                        (rid, files, gitfleet_git::IgnoredEntries::default())
+                    }
+                }
             },
-            move |(id, files)| {
-                Message::Detached(win_id, DetachedAction::ExplorerFilesLoaded(id, files))
+            move |(id, files, ignored)| {
+                Message::Detached(
+                    win_id,
+                    DetachedAction::ExplorerFilesLoaded(id, files, ignored),
+                )
+            },
+        )
+    }
+
+    pub(crate) fn spawn_explorer_ignored_dir_task(
+        &self,
+        win_id: window::Id,
+        req_id: u64,
+        root: PathBuf,
+        rel_dir: String,
+    ) -> Task<Message> {
+        Task::perform(
+            async move {
+                let dir_clone = rel_dir.clone();
+                let listing = tokio::task::spawn_blocking(move || {
+                    gitfleet_git::list_ignored_dir_children(&root, &dir_clone, 500)
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default();
+                (req_id, rel_dir, listing)
+            },
+            move |(id, dir, listing)| {
+                Message::Detached(
+                    win_id,
+                    DetachedAction::ExplorerIgnoredDirLoaded(id, dir, listing),
+                )
             },
         )
     }
@@ -349,7 +437,7 @@ impl GitFleetApp {
         Task::batch(tasks)
     }
 
-    /// Opens a file into a tab (or focuses its existing tab without losing unsaved edits),
+    /// Opens a file into a tab asynchronously (or focuses its existing tab without losing unsaved edits),
     /// optionally syncing in-file find and jumping straight to a search match line/column.
     pub(crate) fn open_or_focus_file_tab(
         &mut self,
@@ -358,12 +446,31 @@ impl GitFleetApp {
         jump_match: Option<(usize, usize, usize)>,
         sync_in_file_find: bool,
     ) -> Task<Message> {
-        let svc = self.service.clone();
-        let docs = &svc.docs;
-        let active_repo = self.current_repo();
-        let active_status = self.active_status().cloned();
+        let active_repo_path = self.current_repo().map(|r| r.path);
+        let matching_git_change = active_repo_path.as_ref().and_then(|rp| {
+            let rel = path.strip_prefix(rp).ok()?;
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let st = self.active_status()?;
+            let fc = st
+                .unstaged_files
+                .iter()
+                .chain(st.staged_files.iter())
+                .find(|f| f.path == rel_str)?
+                .clone();
+            Some(DetachedGitDiffTarget::WorkingFile {
+                repo_path: rp.clone(),
+                file: fc,
+            })
+        });
 
-        let (diff_load_info,) = {
+        struct PendingTabFileLoad {
+            tab_id: u64,
+            req_id: u64,
+            path: PathBuf,
+            jump_match: Option<(usize, usize, usize)>,
+        }
+
+        let (file_load_info, diff_load_info) = {
             let Some(v) = self.detached_viewers.get_mut(&win_id) else {
                 return Task::none();
             };
@@ -373,51 +480,55 @@ impl GitFleetApp {
                 .iter()
                 .position(|t| t.file_path.as_ref() == Some(&path) && t.left_path.is_none());
 
+            let mut file_load: Option<PendingTabFileLoad> = None;
             let mut diff_load: Option<(u64, u64, DetachedGitDiffTarget)> = None;
+            let mut opened_new = false;
 
             if let Some(idx) = existing_idx {
                 v.active_tab = Some(idx);
-                if let Some(tab) = v.tabs.get_mut(idx)
-                    && jump_match.is_some()
-                    && tab.is_editable()
-                {
-                    tab.mode = DetachedViewMode::Edit;
+                if let Some(tab) = v.tabs.get_mut(idx) {
+                    if jump_match.is_some() && tab.is_editable() {
+                        tab.mode = DetachedViewMode::Edit;
+                    }
+                    if !tab.loading_file {
+                        tab.hydrate_active_mode();
+                    }
                 }
             } else {
+                opened_new = true;
                 let tab_id = v.alloc_tab_id();
                 let mut tab = StudioTab::new_empty(tab_id, file_display_name(&path));
-                let opened_editable = tab.load_local_file(docs, &path, v.search_root.as_deref());
-                tab.mode = if opened_editable {
-                    DetachedViewMode::Edit
-                } else {
+                tab.file_path = Some(path.clone());
+                tab.rel_path = v
+                    .search_root
+                    .as_deref()
+                    .and_then(|r| path.strip_prefix(r).ok())
+                    .map(|p| p.to_string_lossy().replace('\\', "/"));
+                tab.language = CodeLanguage::from_path(&path);
+                tab.mode = if is_raster_image_path(&tab.title) {
                     DetachedViewMode::Preview
+                } else {
+                    DetachedViewMode::Edit
                 };
+                tab.loading_file = true;
+                tab.file_load_req_id = 1;
+
                 if let Some(rel) = tab.rel_path.clone() {
                     v.expand_ancestors_for_rel(&rel);
                 }
 
-                // Attach working-tree Git diff if file has changes in active repo
-                let diff_target = active_repo.as_ref().and_then(|repo| {
-                    let rel = path.strip_prefix(&repo.path).ok()?;
-                    let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    let st = active_status.as_ref()?;
-                    let fc = st
-                        .unstaged_files
-                        .iter()
-                        .chain(st.staged_files.iter())
-                        .find(|f| f.path == rel_str)?
-                        .clone();
-                    Some(DetachedGitDiffTarget::WorkingFile {
-                        repo_path: repo.path.clone(),
-                        file: fc,
-                    })
-                });
-                tab.git_diff_target = diff_target.clone();
-                if let Some(t) = diff_target {
+                tab.git_diff_target = matching_git_change.clone();
+                if let Some(t) = matching_git_change {
                     v.request_id = v.request_id.wrapping_add(1);
                     diff_load = Some((tab_id, v.request_id, t));
                 }
 
+                file_load = Some(PendingTabFileLoad {
+                    tab_id,
+                    req_id: tab.file_load_req_id,
+                    path: path.clone(),
+                    jump_match,
+                });
                 v.tabs.push(tab);
                 v.active_tab = Some(v.tabs.len() - 1);
             }
@@ -431,40 +542,55 @@ impl GitFleetApp {
                     v.in_file_replace = v.search_replace_text.clone();
                 }
             }
-            v.recompute_in_file_matches(false);
 
-            if let Some((line_idx, col_start, col_end)) = jump_match {
-                if let Some(pos) = v
-                    .in_file_matches
-                    .iter()
-                    .position(|m| m.line_index == line_idx && m.col_start == col_start)
+            if !opened_new {
+                v.recompute_in_file_matches(false);
+                if let Some((line_idx, col_start, col_end)) = jump_match {
+                    if let Some(pos) = v
+                        .in_file_matches
+                        .iter()
+                        .position(|m| m.line_index == line_idx && m.col_start == col_start)
+                    {
+                        v.in_file_active_idx = Some(pos);
+                    }
+                    if let Some(tab) = v.active_tab_mut()
+                        && tab.is_editable()
+                    {
+                        tab.mode = DetachedViewMode::Edit;
+                        tab.ensure_editor_hydrated();
+                        jump_editor_to_span(&mut tab.editor_content, line_idx, col_start, col_end);
+                    }
+                    v.status_is_error = false;
+                    v.status_note = format!("Line {}", line_idx + 1);
+                } else if let Some(note) = v
+                    .active_tab()
+                    .map(|tab| tab.rel_path.clone().unwrap_or_else(|| tab.title.clone()))
                 {
-                    v.in_file_active_idx = Some(pos);
+                    v.status_is_error = false;
+                    v.status_note = note;
                 }
-                if let Some(tab) = v.active_tab_mut()
-                    && tab.is_editable()
-                {
-                    tab.mode = DetachedViewMode::Edit;
-                    jump_editor_to_span(&mut tab.editor_content, line_idx, col_start, col_end);
-                }
+            } else {
                 v.status_is_error = false;
-                v.status_note = format!("Line {}", line_idx + 1);
-            } else if let Some(note) = v
-                .active_tab()
-                .map(|tab| tab.rel_path.clone().unwrap_or_else(|| tab.title.clone()))
-            {
-                v.status_is_error = false;
-                v.status_note = note;
+                v.status_note = format!("Opening {}…", file_display_name(&path));
             }
 
-            (diff_load,)
+            (file_load, diff_load)
         };
 
-        if let Some((tid, rid, target)) = diff_load_info {
-            self.spawn_detached_git_diff_task(win_id, tid, rid, target)
-        } else {
-            Task::none()
+        let mut tasks = Vec::new();
+        if let Some(load) = file_load_info {
+            tasks.push(self.spawn_tab_file_load_task(
+                win_id,
+                load.tab_id,
+                load.req_id,
+                load.path,
+                load.jump_match,
+            ));
         }
+        if let Some((tid, rid, target)) = diff_load_info {
+            tasks.push(self.spawn_detached_git_diff_task(win_id, tid, rid, target));
+        }
+        Task::batch(tasks)
     }
 
     pub(crate) fn save_tab_by_index(&mut self, win_id: window::Id, tab_idx: usize) -> (bool, Task<Message>) {
@@ -487,7 +613,11 @@ impl GitFleetApp {
                 return (false, Task::none());
             };
 
-            let content = format_editor_text_for_save(&tab.editor_content, tab.trailing_newline);
+            let content = if tab.editor_hydrated {
+                format_editor_text_for_save(&tab.editor_content, tab.trailing_newline)
+            } else {
+                tab.raw_text.clone().unwrap_or_default()
+            };
             match docs.save_document_detailed(
                 &doc_id,
                 &content,
@@ -499,9 +629,12 @@ impl GitFleetApp {
                     tab.doc_version = Some(res.version.clone());
                     tab.line_ending = res.line_ending;
                     tab.encoding = res.encoding;
+                    tab.raw_text = Some(res.content.clone());
                     tab.dirty = false;
-                    tab.preview_state = PreviewState::from_file(&path, Some(&res.content));
-                    tab.sync_preview_editor();
+                    tab.preview_hydrated = false;
+                    if tab.mode == DetachedViewMode::Preview {
+                        tab.ensure_preview_hydrated();
+                    }
                     let tid = tab.id;
                     let name = tab.title.clone();
                     let target_opt = tab.git_diff_target.clone();

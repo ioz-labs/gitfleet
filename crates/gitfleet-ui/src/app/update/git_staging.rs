@@ -22,6 +22,10 @@ impl GitFleetApp {
                         self.load_worktrees_task(repo.clone()),
                         self.load_all_files_task(repo.clone()),
                     ];
+                    if self.show_ignored_files {
+                        self.ignored_entries_stale = false;
+                        tasks.push(self.load_ignored_entries_task(repo.clone()));
+                    }
                     if self.graph_tab == GraphTab::Reflog {
                         tasks.push(self.load_reflog_task(repo.clone()));
                     }

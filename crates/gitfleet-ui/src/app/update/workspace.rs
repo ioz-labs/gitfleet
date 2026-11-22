@@ -32,6 +32,7 @@ impl GitFleetApp {
         self.worktrees.clear();
         self.commit_files.clear();
         self.all_repo_files.clear();
+        self.clear_ignored_repo_cache();
         self.selected_dir_filter = None;
         self.selected_all_dir.clear();
         self.expanded_all_dirs.clear();
@@ -412,6 +413,9 @@ impl GitFleetApp {
                         self.load_worktrees_task(repo.clone()),
                         self.load_all_files_task(repo.clone()),
                     ];
+                    if self.show_ignored_files {
+                        tasks.push(self.load_ignored_entries_task(repo.clone()));
+                    }
                     if self.graph_tab == GraphTab::Reflog {
                         tasks.push(self.load_reflog_task(repo));
                     }
@@ -459,6 +463,9 @@ impl GitFleetApp {
                         self.load_worktrees_task(repo.clone()),
                         self.load_all_files_task(repo.clone()),
                     ];
+                    if self.show_ignored_files {
+                        tasks.push(self.load_ignored_entries_task(repo.clone()));
+                    }
                     if self.graph_tab == GraphTab::Reflog {
                         tasks.push(self.load_reflog_task(repo));
                     }
@@ -610,6 +617,7 @@ impl GitFleetApp {
                         self.commits.clear();
                         self.commit_files.clear();
                         self.all_repo_files.clear();
+                        self.clear_ignored_repo_cache();
                         self.diff_title = "No repository selected".into();
                         self.clear_diff_parsed_and_cache();
                         self.open_doc_raw_text = None;
@@ -657,6 +665,7 @@ impl GitFleetApp {
                         self.commits.clear();
                         self.commit_files.clear();
                         self.all_repo_files.clear();
+                        self.clear_ignored_repo_cache();
                         self.diff_title = "No repository selected".into();
                         self.clear_diff_parsed_and_cache();
                         self.persist_ui_prefs();

@@ -29,6 +29,7 @@ pub use diff::{
 pub use git_flow::{GitFlowKind, GitFlowPrefixes, GitFlowState, normalize_flow_prefix};
 pub use models::*;
 pub use remotes::RemoteInfo;
+pub use status::{delete_workspace_entry, list_ignored_dir_children};
 pub use submodules::SubmoduleInfo;
 pub use tags::{ReleaseTrigger, TagInfo};
 pub use worktrees::WorktreeInfo;

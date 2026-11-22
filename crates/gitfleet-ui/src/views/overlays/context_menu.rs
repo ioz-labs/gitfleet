@@ -1118,7 +1118,13 @@ impl GitFleetApp {
                 items = items.push(ctx_btn(
                     icons::file_code(12.0, p.accent_fg).into(),
                     "Open Preview".into(),
-                    Message::SelectRepoFile(path.clone()),
+                    Message::OpenRepoFileInMode(path.clone(), BottomViewMode::Preview),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::pencil(12.0, p.text_secondary).into(),
+                    "Open in Editor".into(),
+                    Message::OpenRepoFileInMode(path.clone(), BottomViewMode::Edit),
                     false,
                 ));
                 items = items.push(ctx_btn(
@@ -1132,6 +1138,43 @@ impl GitFleetApp {
                     "Copy Relative Path".into(),
                     Message::CopyText("file path".into(), path.clone()),
                     false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::trash(12.0, p.danger_fg).into(),
+                    "Delete File…".into(),
+                    Message::RequestConfirm(PendingConfirm::delete_repo_entry(path.clone(), false)),
+                    true,
+                ));
+            }
+            ContextMenuTarget::RepoDir { path } => {
+                let dname = path.rsplit('/').next().unwrap_or(path);
+                items = items.push(
+                    container(
+                        text(truncate_chars(dname, 26))
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([2, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::folder_open(12.0, p.accent_fg).into(),
+                    "Open in Explorer".into(),
+                    Message::RevealRepoFileInExplorer(path.clone()),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::copy(12.0, p.text_secondary).into(),
+                    "Copy Relative Path".into(),
+                    Message::CopyText("folder path".into(), path.clone()),
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::trash(12.0, p.danger_fg).into(),
+                    "Delete Folder…".into(),
+                    Message::RequestConfirm(PendingConfirm::delete_repo_entry(path.clone(), true)),
+                    true,
                 ));
             }
         }

@@ -80,6 +80,41 @@ impl GitFleetApp {
         )
     }
 
+    pub(crate) fn load_ignored_entries_task(&self, repo: RepoEntry) -> Task<Message> {
+        let svc = self.service.clone();
+        Task::perform(
+            async move {
+                let res = svc
+                    .git
+                    .list_ignored_entries(&repo.path)
+                    .await
+                    .map_err(|e| e.to_string());
+                (repo.id, res)
+            },
+            |(id, res)| Message::IgnoredEntriesLoaded(id, res),
+        )
+    }
+
+    pub(crate) fn load_ignored_dir_children_task(
+        &self,
+        repo: RepoEntry,
+        rel_dir: String,
+    ) -> Task<Message> {
+        Task::perform(
+            async move {
+                let dir_clone = rel_dir.clone();
+                let res = tokio::task::spawn_blocking(move || {
+                    gitfleet_git::list_ignored_dir_children(&repo.path, &dir_clone, 500)
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("Failed to list directory: {e}")));
+                (repo.id, rel_dir, res)
+            },
+            |(id, dir, res)| Message::IgnoredDirChildrenLoaded(id, dir, res),
+        )
+    }
+
     pub(crate) fn load_stashes_task(&self, repo: RepoEntry) -> Task<Message> {
         let svc = self.service.clone();
         Task::perform(

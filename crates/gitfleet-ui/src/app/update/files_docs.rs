@@ -120,10 +120,39 @@ impl GitFleetApp {
             Message::SetFilesViewMode(mode) => {
                 self.files_mode = mode;
                 if mode == FilesViewMode::AllFiles
-                    && self.all_repo_files.is_empty()
                     && let Some(repo) = self.current_repo()
                 {
-                    return self.load_all_files_task(repo);
+                    let mut tasks = Vec::new();
+                    if self.all_repo_files.is_empty() || self.ignored_entries_stale {
+                        tasks.push(self.load_all_files_task(repo.clone()));
+                    }
+                    if self.show_ignored_files
+                        && (!self.ignored_entries_loaded || self.ignored_entries_stale)
+                    {
+                        self.ignored_entries_stale = false;
+                        tasks.push(self.load_ignored_entries_task(repo));
+                    }
+                    if !tasks.is_empty() {
+                        return Task::batch(tasks);
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleShowIgnoredFiles => {
+                self.show_ignored_files = !self.show_ignored_files;
+                self.persist_ui_prefs();
+                if self.show_ignored_files {
+                    if let Some(repo) = self.current_repo() {
+                        self.ignored_entries_stale = false;
+                        return self.load_ignored_entries_task(repo);
+                    }
+                } else if self.is_path_in_ignored_dir(&self.selected_all_dir)
+                    || (!self.selected_all_dir.is_empty() && {
+                        let prefix = format!("{}/", self.selected_all_dir);
+                        !self.all_repo_files.iter().any(|f| f.starts_with(&prefix))
+                    })
+                {
+                    self.selected_all_dir.clear();
                 }
                 Task::none()
             }
@@ -140,18 +169,78 @@ impl GitFleetApp {
                 if !dir.is_empty() {
                     self.expanded_all_dirs.insert(dir.clone());
                 }
-                self.selected_all_dir = dir;
+                self.selected_all_dir = dir.clone();
+                if self.show_ignored_files
+                    && !dir.is_empty()
+                    && self.is_path_in_ignored_dir(&dir)
+                    && !self.ignored_dir_children.contains_key(&dir)
+                    && let Some(repo) = self.current_repo()
+                {
+                    return self.load_ignored_dir_children_task(repo, dir);
+                }
                 Task::none()
             }
             Message::ToggleAllFilesDirNode(dir) => {
-                if !self.expanded_all_dirs.remove(&dir) {
-                    self.expanded_all_dirs.insert(dir);
+                let expanded = if self.expanded_all_dirs.remove(&dir) {
+                    false
+                } else {
+                    self.expanded_all_dirs.insert(dir.clone());
+                    true
+                };
+                if expanded
+                    && self.show_ignored_files
+                    && !dir.is_empty()
+                    && self.is_path_in_ignored_dir(&dir)
+                    && !self.ignored_dir_children.contains_key(&dir)
+                    && let Some(repo) = self.current_repo()
+                {
+                    return self.load_ignored_dir_children_task(repo, dir);
                 }
                 Task::none()
             }
             Message::AllFilesLoaded(id, res) => {
                 if self.active_repo_key().as_ref() == Some(&id) {
                     self.all_repo_files = res.unwrap_or_default();
+                }
+                Task::none()
+            }
+            Message::IgnoredEntriesLoaded(id, res) => {
+                if self.active_repo_key().as_ref() == Some(&id) {
+                    self.ignored_entries_loaded = true;
+                    self.ignored_entries_stale = false;
+                    let entries = res.unwrap_or_default();
+                    self.ignored_repo_files = entries.files;
+                    self.ignored_repo_dirs = entries.dirs;
+
+                    let mut dirs_to_reload: Vec<String> = self
+                        .ignored_dir_children
+                        .keys()
+                        .filter(|d| self.is_path_in_ignored_dir(d))
+                        .cloned()
+                        .collect();
+                    if !self.selected_all_dir.is_empty()
+                        && self.is_path_in_ignored_dir(&self.selected_all_dir)
+                        && !dirs_to_reload.contains(&self.selected_all_dir)
+                    {
+                        dirs_to_reload.push(self.selected_all_dir.clone());
+                    }
+                    self.ignored_dir_children.clear();
+
+                    if !dirs_to_reload.is_empty()
+                        && let Some(repo) = self.current_repo()
+                    {
+                        let tasks = dirs_to_reload
+                            .into_iter()
+                            .map(|d| self.load_ignored_dir_children_task(repo.clone(), d));
+                        return Task::batch(tasks);
+                    }
+                }
+                Task::none()
+            }
+            Message::IgnoredDirChildrenLoaded(id, rel_dir, res) => {
+                if self.active_repo_key().as_ref() == Some(&id) {
+                    self.ignored_dir_children
+                        .insert(rel_dir, res.unwrap_or_default());
                 }
                 Task::none()
             }
@@ -410,7 +499,143 @@ impl GitFleetApp {
                     }
                 }
             }
+            Message::OpenRepoFileInMode(rel_path, mode) => {
+                self.bottom_mode = mode;
+                self.update(Message::SelectRepoFile(rel_path))
+            }
+            Message::DeleteRepoEntry { rel_path, is_dir } => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.busy_label = Some(format!(
+                    "Deleting {}…",
+                    if is_dir { "folder" } else { "file" }
+                ));
+                let repo_id = repo.id;
+                let repo_path = repo.path;
+                let rel_for_task = rel_path.clone();
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            gitfleet_git::delete_workspace_entry(&repo_path, &rel_for_task)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Delete task failed: {e}")));
+                        (repo_id, rel_path, is_dir, result)
+                    },
+                    |(repo_id, rel_path, is_dir, result)| Message::RepoEntryDeleted {
+                        repo_id,
+                        rel_path,
+                        is_dir,
+                        result,
+                    },
+                )
+            }
+            Message::RepoEntryDeleted {
+                repo_id,
+                rel_path,
+                is_dir,
+                result,
+            } => {
+                self.busy_label = None;
+                let kind_label = if is_dir { "folder" } else { "file" };
+                match result {
+                    Ok(removed) => {
+                        let matches_deleted = |candidate: &str| -> bool {
+                            candidate == rel_path
+                                || (is_dir
+                                    && candidate
+                                        .strip_prefix(rel_path.as_str())
+                                        .is_some_and(|rest| rest.starts_with('/')))
+                        };
+
+                        if self.active_repo_key().as_ref() == Some(&repo_id) {
+                            if self
+                                .active_file_path
+                                .as_deref()
+                                .is_some_and(&matches_deleted)
+                            {
+                                self.active_file_path = None;
+                                self.selected_changed_file = None;
+                                self.selected_changed_files.clear();
+                                self.file_selection_anchor = None;
+                                self.open_doc_raw_text = None;
+                                self.open_doc_id = None;
+                                self.open_doc_version = None;
+                                self.open_doc_path = None;
+                                self.editor_dirty = false;
+                                self.preview_hydrated = false;
+                                self.editor_hydrated = false;
+                                self.preview_state = preview::PreviewState::Empty;
+                                self.editor_content = text_editor::Content::new();
+                                self.diff_title = "No file selected".into();
+                                self.clear_diff_parsed_and_cache();
+                                self.diff_image = None;
+                                self.diff_csv = None;
+                            }
+                            if matches_deleted(&self.selected_all_dir) {
+                                self.selected_all_dir =
+                                    crate::views::parent_dir(&rel_path).to_string();
+                            }
+                            self.expanded_all_dirs.retain(|d| !matches_deleted(d));
+                            self.ignored_dir_children.retain(|d, _| !matches_deleted(d));
+                        }
+
+                        // Sync any open GitFleet Studio windows rooted inside the same repository
+                        let mut studio_tasks = Vec::new();
+                        if let Some(repo) = self.current_repo().filter(|r| r.id == repo_id) {
+                            let abs_deleted = repo.path.join(&rel_path);
+                            let affected_wins: Vec<iced::window::Id> = self
+                                .detached_viewers
+                                .iter_mut()
+                                .filter_map(|(wid, v)| {
+                                    let same_root = v
+                                        .search_root
+                                        .as_deref()
+                                        .is_some_and(|sr| {
+                                            sr == repo.path || abs_deleted.starts_with(sr)
+                                        });
+                                    if !same_root {
+                                        return None;
+                                    }
+                                    v.close_tabs_under_path(&abs_deleted, is_dir);
+                                    Some(*wid)
+                                })
+                                .collect();
+                            for wid in affected_wins {
+                                studio_tasks.push(self.spawn_explorer_scan_task(wid));
+                            }
+                        }
+
+                        self.toast_is_error = false;
+                        self.toast_message = if removed {
+                            format!("Deleted {kind_label} '{rel_path}'")
+                        } else {
+                            format!("'{rel_path}' was already removed")
+                        };
+                        let mut tasks = vec![self.update(Message::RefreshSelected)];
+                        tasks.extend(studio_tasks);
+                        return Task::batch(tasks);
+                    }
+                    Err(e) => {
+                        self.report_action_error(
+                            format!(
+                                "Delete {} Failed",
+                                if is_dir { "Folder" } else { "File" }
+                            ),
+                            e,
+                            false,
+                        );
+                    }
+                }
+                Task::none()
+            }
             Message::SelectRepoFile(rel_path) => {
+                self.terminal_focused = false;
+                self.selected_changed_file = None;
+                self.selected_changed_files.clear();
+                self.file_selection_anchor = None;
                 let doc_task = self.open_file_for_preview_and_edit_async(&rel_path);
                 let Some(repo) = self.current_repo() else {
                     return doc_task;
@@ -424,6 +649,7 @@ impl GitFleetApp {
                         st.staged_files.iter().any(|f| f.path == rel_path)
                             || st.unstaged_files.iter().any(|f| f.path == rel_path)
                     });
+                let is_ignored = !is_dirty && self.is_ignored_repo_file(&rel_path);
 
                 let is_img = is_image_diff_path(&rel_path);
                 let is_raster = is_raster_image_path(&rel_path);
@@ -441,6 +667,7 @@ impl GitFleetApp {
                             | BottomViewMode::SideBySideDiff
                             | BottomViewMode::ImageDiff
                             | BottomViewMode::CsvDiff
+                            | BottomViewMode::ResolveConflicts
                     )
                 {
                     self.bottom_mode = BottomViewMode::Preview;
@@ -477,6 +704,11 @@ impl GitFleetApp {
 
                 self.diff_is_working_file = is_dirty;
                 self.diff_is_staged = false;
+                if is_ignored {
+                    self.diff_title = format!("{rel_path} (Ignored)");
+                    self.clear_diff_parsed_and_cache();
+                    return doc_task;
+                }
                 let title = rel_path.clone();
                 let mut tasks = vec![doc_task];
 

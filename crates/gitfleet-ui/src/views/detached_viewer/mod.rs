@@ -28,12 +28,15 @@ use self::workbench::render_editor_workbench;
 use crate::app::{GitFleetApp, Message};
 use crate::icons;
 use crate::syntax::CodeLanguage;
-use crate::theme::{self, Palette, icon_size};
+use crate::theme::{self, Palette, icon_size, layout, pad, space, type_scale};
 use crate::views::overlays::doc_format_modal::{
     build_encoding_menu_card, build_eol_menu_card, build_syntax_menu_card,
 };
-use iced::widget::{Stack, column, container, horizontal_rule, row, vertical_rule};
-use iced::{Element, Length, window};
+use crate::views::truncate_chars;
+use iced::widget::{
+    Space, Stack, button, column, container, horizontal_rule, opaque, row, text, vertical_rule,
+};
+use iced::{Alignment, Element, Length, window};
 use std::path::Path;
 
 impl GitFleetApp {
@@ -99,8 +102,9 @@ impl GitFleetApp {
         .style(theme::app_bg(p))
         .into();
 
-        let has_menu = v.status_menu.is_some();
-        let mut layers: Vec<Element<'_, Message>> = vec![theme::inert_when(base, has_menu)];
+        let has_overlay =
+            v.status_menu.is_some() || v.explorer_menu.is_some() || v.pending_delete.is_some();
+        let mut layers: Vec<Element<'_, Message>> = vec![theme::inert_when(base, has_overlay)];
 
         if let Some((menu_kind, anchor)) = v.status_menu
             && let Some(tab) = v.active_tab()
@@ -149,6 +153,185 @@ impl GitFleetApp {
             layers.push(theme::overlay_backdrop(
                 theme::popup_at(anchor, card),
                 Message::Detached(win_id, DetachedAction::CloseStatusMenu),
+            ));
+        }
+
+        if let Some(menu) = &v.explorer_menu {
+            let name = menu
+                .rel_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&menu.rel_path);
+            let ctx_btn = |icon: Element<'static, Message>,
+                           label: &'static str,
+                           act: DetachedAction,
+                           danger: bool|
+             -> Element<'_, Message> {
+                button(
+                    row![
+                        icon,
+                        text(label)
+                            .size(type_scale::BODY)
+                            .color(if danger { p.danger_fg } else { p.text_primary }),
+                    ]
+                    .spacing(space::SM)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([6, 10])
+                .style(theme::context_menu_item(p, danger))
+                .on_press(Message::Detached(win_id, act))
+                .into()
+            };
+
+            let mut items = column![
+                container(
+                    text(truncate_chars(name, 28))
+                        .size(type_scale::CAPTION)
+                        .color(p.text_muted),
+                )
+                .padding([2, 10]),
+            ]
+            .spacing(2);
+
+            if menu.is_dir {
+                items = items.push(ctx_btn(
+                    icons::folder_open(12.0, p.accent_fg).into(),
+                    "Toggle Expand / Collapse",
+                    DetachedAction::ToggleExplorerDir(menu.rel_path.clone()),
+                    false,
+                ));
+            } else {
+                items = items.push(ctx_btn(
+                    icons::file_code(12.0, p.accent_fg).into(),
+                    "Open in Editor",
+                    DetachedAction::OpenExplorerFile(menu.rel_path.clone()),
+                    false,
+                ));
+            }
+
+            items = items
+                .push(ctx_btn(
+                    icons::folder_open(12.0, p.text_secondary).into(),
+                    "Open in System Explorer",
+                    DetachedAction::RevealExplorerEntry(menu.rel_path.clone()),
+                    false,
+                ))
+                .push(ctx_btn(
+                    icons::copy(12.0, p.text_secondary).into(),
+                    "Copy Relative Path",
+                    DetachedAction::CopyExplorerPath(menu.rel_path.clone()),
+                    false,
+                ))
+                .push(horizontal_rule(1).style(theme::subtle_rule(p)))
+                .push(ctx_btn(
+                    icons::trash(12.0, p.danger_fg).into(),
+                    if menu.is_dir {
+                        "Delete Folder…"
+                    } else {
+                        "Delete File…"
+                    },
+                    DetachedAction::RequestDeleteExplorerEntry {
+                        rel_path: menu.rel_path.clone(),
+                        is_dir: menu.is_dir,
+                    },
+                    true,
+                ));
+
+            let card = opaque(
+                container(items)
+                    .padding(6)
+                    .width(Length::Fixed(236.0))
+                    .style(theme::context_menu_box(p)),
+            );
+            layers.push(theme::overlay_backdrop(
+                theme::popup_at(menu.position, card),
+                Message::Detached(win_id, DetachedAction::CloseExplorerMenu),
+            ));
+        }
+
+        if let Some(pending) = &v.pending_delete {
+            let title = if pending.is_dir {
+                "Delete Folder Permanently?"
+            } else {
+                "Delete File Permanently?"
+            };
+            let body = if pending.is_dir {
+                "Permanently deletes this folder and all files inside it from disk. This action cannot be undone."
+            } else {
+                "Permanently deletes this file from disk. This action cannot be undone."
+            };
+            let detail = if pending.is_dir {
+                format!("{}/", pending.rel_path)
+            } else {
+                pending.rel_path.clone()
+            };
+            let confirm_lbl = if pending.is_dir {
+                "Delete Folder"
+            } else {
+                "Delete File"
+            };
+
+            let modal = opaque(
+                container(
+                    column![
+                        row![
+                            icons::alert_triangle(icon_size::MD, p.danger_fg),
+                            text(title)
+                                .size(type_scale::HEADING)
+                                .color(p.text_primary),
+                        ]
+                        .spacing(space::SM)
+                        .align_y(Alignment::Center),
+                        text(body)
+                            .size(type_scale::BODY)
+                            .color(p.text_secondary),
+                        container(
+                            text(detail)
+                                .size(type_scale::CAPTION)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_primary),
+                        )
+                        .padding([6, 10])
+                        .width(Length::Fill)
+                        .style(theme::section_panel_box(p)),
+                        row![
+                            Space::with_width(Length::Fill),
+                            button(text("Cancel").size(type_scale::BODY))
+                                .padding([6, 14])
+                                .style(theme::subtle_btn(p))
+                                .on_press(Message::Detached(
+                                    win_id,
+                                    DetachedAction::CancelDeleteExplorerEntry,
+                                )),
+                            button(text(confirm_lbl).size(type_scale::BODY))
+                                .padding([6, 16])
+                                .style(theme::danger_btn(p))
+                                .on_press(Message::Detached(
+                                    win_id,
+                                    DetachedAction::ConfirmDeleteExplorerEntry,
+                                )),
+                        ]
+                        .spacing(space::SM)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(space::MD),
+                )
+                .padding(pad::CARD + 6)
+                .width(Length::Fixed(layout::MODAL_SM))
+                .style(theme::modal_box(p)),
+            );
+
+            let centered = container(modal)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .style(theme::backdrop_box);
+
+            layers.push(theme::overlay_backdrop(
+                centered,
+                Message::Detached(win_id, DetachedAction::CancelDeleteExplorerEntry),
             ));
         }
 

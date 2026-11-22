@@ -208,6 +208,10 @@ pub(crate) enum ConfirmAction {
         base_branch: String,
         force: bool,
     },
+    DeleteRepoEntry {
+        rel_path: String,
+        is_dir: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -735,6 +739,28 @@ impl PendingConfirm {
             },
         }
     }
+
+    pub(crate) fn delete_repo_entry(rel_path: String, is_dir: bool) -> Self {
+        if is_dir {
+            Self {
+                title: "Delete Folder Permanently?".into(),
+                message: "Permanently deletes this folder and all files inside it from disk. This action cannot be undone (Git-tracked files can still be restored from Git).".into(),
+                detail: Some(format!("{rel_path}/")),
+                confirm_label: "Delete Folder".into(),
+                is_danger: true,
+                action: ConfirmAction::DeleteRepoEntry { rel_path, is_dir: true },
+            }
+        } else {
+            Self {
+                title: "Delete File Permanently?".into(),
+                message: "Permanently deletes this file from disk. This action cannot be undone (Git-tracked files can still be restored from Git).".into(),
+                detail: Some(rel_path.clone()),
+                confirm_label: "Delete File".into(),
+                is_danger: true,
+                action: ConfirmAction::DeleteRepoEntry { rel_path, is_dir: false },
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -921,6 +947,9 @@ pub(crate) enum ContextMenuTarget {
         is_working_tree: bool,
     },
     RepoFile {
+        path: String,
+    },
+    RepoDir {
         path: String,
     },
 }

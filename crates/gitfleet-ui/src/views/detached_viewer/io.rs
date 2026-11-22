@@ -82,48 +82,6 @@ pub(crate) fn file_display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn load_single_file_payload(path: PathBuf) -> Result<DetachedComparePayload, String> {
-    let name = file_display_name(&path);
-    let is_raster = is_raster_image_path(&name);
-    let (preview_text, editable_source) = if is_raster {
-        (None, None)
-    } else {
-        let bytes =
-            std::fs::read(&path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-        match detect_and_decode(&bytes) {
-            Ok((encoding, decoded)) => {
-                let eol = detect_line_ending(&decoded);
-                let normalized = decoded.replace("\r\n", "\n");
-                (
-                    Some(normalized.clone()),
-                    Some((path.clone(), normalized, encoding, eol)),
-                )
-            }
-            Err(_) => (None, None),
-        }
-    };
-
-    let preferred_mode = if editable_source.is_some() {
-        DetachedViewMode::Edit
-    } else {
-        DetachedViewMode::Preview
-    };
-
-    Ok(DetachedComparePayload {
-        title: name,
-        left_path: None,
-        right_path: None,
-        single_file_path: Some(path.clone()),
-        parsed_diff: ParsedDiff::default(),
-        image_diff: None,
-        csv_diff: None,
-        preview_source: Some((path.clone(), preview_text)),
-        editable_source,
-        preferred_mode,
-        status_note: format!("Opened {}", path.display()),
-    })
-}
-
 pub(crate) fn compare_local_files_payload(
     left: PathBuf,
     right: PathBuf,
@@ -241,27 +199,6 @@ pub(crate) fn spawn_compare_task(
             })
             .await
             .unwrap_or_else(|e| Err(format!("Comparison task failed: {e}")));
-            (req_id, res)
-        },
-        move |(id, res)| match res {
-            Ok(payload) => {
-                Message::Detached(win_id, DetachedAction::PayloadLoaded(id, Box::new(payload)))
-            }
-            Err(err) => Message::Detached(win_id, DetachedAction::LoadFailed(id, err)),
-        },
-    )
-}
-
-pub(crate) fn spawn_single_file_task(
-    win_id: window::Id,
-    req_id: u64,
-    path: PathBuf,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let res = tokio::task::spawn_blocking(move || load_single_file_payload(path))
-                .await
-                .unwrap_or_else(|e| Err(format!("File load task failed: {e}")));
             (req_id, res)
         },
         move |(id, res)| match res {

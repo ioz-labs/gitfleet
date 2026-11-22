@@ -14,9 +14,10 @@ use crate::views::image_diff::{
     is_image_diff_path,
 };
 use super::io::{editor_buffer_text, file_display_name, jump_editor_to_span};
+use super::sidebar_explorer::ExplorerDirNode;
 use gitfleet_core::DocumentId;
-use gitfleet_docs::{FileEncoding, LineEnding};
-use gitfleet_git::{FileChange, ParsedDiff};
+use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
+use gitfleet_git::{FileChange, IgnoredDirListing, IgnoredEntries, ParsedDiff};
 use gitfleet_search::{
     InFileMatch, ReplaceReport, ScopedSearchResult, SearchOptions, find_in_text,
 };
@@ -80,6 +81,26 @@ pub(crate) struct DetachedComparePayload {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct StudioExplorerMenu {
+    pub(crate) rel_path: String,
+    pub(crate) is_dir: bool,
+    pub(crate) position: Point,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StudioPendingDelete {
+    pub(crate) rel_path: String,
+    pub(crate) is_dir: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedTabFile {
+    pub(crate) path: PathBuf,
+    pub(crate) doc: Option<OpenDocumentCapability>,
+    pub(crate) jump_match: Option<(usize, usize, usize)>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum DetachedAction {
     // Tabs & Navigation
     SelectTab(usize),
@@ -97,10 +118,31 @@ pub(crate) enum DetachedAction {
 
     // Explorer Tree
     ExplorerFilterChanged(String),
+    ToggleExplorerShowIgnored,
     ToggleExplorerDir(String),
     RefreshExplorer,
-    ExplorerFilesLoaded(u64, Vec<String>),
+    ExplorerFilesLoaded(u64, Vec<String>, IgnoredEntries),
+    ExplorerIgnoredDirLoaded(u64, String, IgnoredDirListing),
     OpenExplorerFile(String),
+    OpenExplorerMenu {
+        rel_path: String,
+        is_dir: bool,
+    },
+    CloseExplorerMenu,
+    RevealExplorerEntry(String),
+    CopyExplorerPath(String),
+    RequestDeleteExplorerEntry {
+        rel_path: String,
+        is_dir: bool,
+    },
+    CancelDeleteExplorerEntry,
+    ConfirmDeleteExplorerEntry,
+    ExplorerEntryDeleted {
+        rel_path: String,
+        is_dir: bool,
+        abs_path: PathBuf,
+        result: Result<bool, String>,
+    },
 
     // View Modes & Diff Controls
     SetMode(DetachedViewMode),
@@ -142,6 +184,7 @@ pub(crate) enum DetachedAction {
     LeftFilePicked(Option<PathBuf>),
     RightFilePicked(Option<PathBuf>),
     PayloadLoaded(u64, Box<DetachedComparePayload>),
+    TabFileLoaded(u64, u64, Box<LoadedTabFile>),
     LoadFailed(u64, String),
     GitDiffLoaded(u64, u64, Result<(ParsedDiff, Arc<DiffLayoutCache>), String>),
     GitImageDiffLoaded(u64, u64, ImageDiffData),
@@ -233,8 +276,12 @@ pub(crate) struct StudioTab {
     pub(crate) encoding: FileEncoding,
     pub(crate) line_ending: LineEnding,
     pub(crate) trailing_newline: bool,
+    pub(crate) raw_text: Option<String>,
+    pub(crate) editor_hydrated: bool,
     pub(crate) editor_content: text_editor::Content,
     pub(crate) dirty: bool,
+    pub(crate) loading_file: bool,
+    pub(crate) file_load_req_id: u64,
 
     // Standalone compare / Git diff
     pub(crate) left_path: Option<PathBuf>,
@@ -266,6 +313,7 @@ pub(crate) struct StudioTab {
     pub(crate) csv_filter: String,
 
     // Preview
+    pub(crate) preview_hydrated: bool,
     pub(crate) preview_state: PreviewState,
     pub(crate) preview_editor: text_editor::Content,
     pub(crate) preview_raw_mode: bool,
@@ -286,8 +334,12 @@ impl StudioTab {
             encoding: FileEncoding::Utf8,
             line_ending: LineEnding::Lf,
             trailing_newline: true,
+            raw_text: None,
+            editor_hydrated: false,
             editor_content: text_editor::Content::new(),
             dirty: false,
+            loading_file: false,
+            file_load_req_id: 0,
             left_path: None,
             right_path: None,
             git_diff_target: None,
@@ -323,6 +375,7 @@ impl StudioTab {
             csv_changes_only: false,
             csv_ignore_format: false,
             csv_filter: String::new(),
+            preview_hydrated: false,
             preview_state: PreviewState::Empty,
             preview_editor: text_editor::Content::new(),
             preview_raw_mode: false,
@@ -331,6 +384,10 @@ impl StudioTab {
 
     pub(crate) fn is_editable(&self) -> bool {
         self.file_path.is_some() && self.doc_id.is_some()
+    }
+
+    pub(crate) fn has_preview_available(&self) -> bool {
+        self.file_path.is_some() || !matches!(self.preview_state, PreviewState::Empty)
     }
 
     pub(crate) fn rebuild_diff_cache(&mut self, theme_mode: ThemeMode) {
@@ -350,11 +407,95 @@ impl StudioTab {
         };
     }
 
+    /// Lazily shapes `editor_content` only when entering Code/Edit view (avoids redundant cosmic_text work).
+    pub(crate) fn ensure_editor_hydrated(&mut self) {
+        if self.editor_hydrated {
+            return;
+        }
+        if let Some(raw) = &self.raw_text {
+            self.editor_content = text_editor::Content::with_text(raw);
+        } else {
+            self.editor_content = text_editor::Content::new();
+        }
+        self.editor_hydrated = true;
+    }
+
+    /// Lazily parses `PreviewState` and shapes `preview_editor` only when viewing Preview mode.
+    pub(crate) fn ensure_preview_hydrated(&mut self) {
+        if self.preview_hydrated {
+            return;
+        }
+        if let Some(path) = self.file_path.as_deref() {
+            let live_text = if self.editor_hydrated && self.dirty {
+                Some(editor_buffer_text(&self.editor_content))
+            } else {
+                self.raw_text.clone()
+            };
+            self.preview_state = PreviewState::from_file(path, live_text.as_deref());
+            self.sync_preview_editor();
+        }
+        self.preview_hydrated = true;
+    }
+
+    pub(crate) fn hydrate_active_mode(&mut self) {
+        match self.mode {
+            DetachedViewMode::Edit => self.ensure_editor_hydrated(),
+            DetachedViewMode::Preview => self.ensure_preview_hydrated(),
+            _ => {}
+        }
+    }
+
     pub(crate) fn current_searchable_text(&self) -> Option<String> {
         if self.is_editable() {
-            Some(editor_buffer_text(&self.editor_content))
+            if self.editor_hydrated {
+                Some(editor_buffer_text(&self.editor_content))
+            } else {
+                self.raw_text.clone()
+            }
         } else {
             self.preview_state.copyable_text().map(str::to_string)
+        }
+    }
+
+    /// Applies an asynchronously loaded `OpenDocumentCapability` to this tab and hydrates ONLY
+    /// the active view mode (`Edit` or `Preview`), avoiding double `cosmic_text` shaping.
+    pub(crate) fn apply_loaded_doc(
+        &mut self,
+        path: &Path,
+        root: Option<&Path>,
+        doc: Option<OpenDocumentCapability>,
+    ) -> bool {
+        self.title = file_display_name(path);
+        self.rel_path = root
+            .and_then(|r| path.strip_prefix(r).ok())
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        self.language = CodeLanguage::from_path(path);
+        self.file_path = Some(path.to_path_buf());
+        self.loading_file = false;
+        self.dirty = false;
+        self.editor_hydrated = false;
+        self.preview_hydrated = false;
+
+        match doc {
+            Some(cap) => {
+                self.doc_id = Some(cap.document_id);
+                self.doc_version = Some(cap.version);
+                self.encoding = cap.encoding;
+                self.line_ending = cap.line_ending;
+                self.trailing_newline = cap.content.ends_with('\n');
+                self.raw_text = Some(cap.content);
+                self.preview_state = PreviewState::Empty;
+                self.preview_editor = text_editor::Content::new();
+                true
+            }
+            None => {
+                self.doc_id = None;
+                self.doc_version = None;
+                self.raw_text = None;
+                self.editor_content = text_editor::Content::new();
+                self.editor_hydrated = true;
+                false
+            }
         }
     }
 
@@ -367,36 +508,10 @@ impl StudioTab {
         if !path.is_file() {
             return false;
         }
-        self.title = file_display_name(path);
-        self.rel_path = root
-            .and_then(|r| path.strip_prefix(r).ok())
-            .map(|p| p.to_string_lossy().replace('\\', "/"));
-        self.language = CodeLanguage::from_path(path);
-        self.file_path = Some(path.to_path_buf());
-
-        match docs.open_document(path) {
-            Ok(cap) => {
-                self.doc_id = Some(cap.document_id);
-                self.doc_version = Some(cap.version);
-                self.encoding = cap.encoding;
-                self.line_ending = cap.line_ending;
-                self.trailing_newline = cap.content.ends_with('\n');
-                self.editor_content = text_editor::Content::with_text(&cap.content);
-                self.dirty = false;
-                self.preview_state = PreviewState::from_file(path, Some(&cap.content));
-                self.sync_preview_editor();
-                true
-            }
-            Err(_) => {
-                self.doc_id = None;
-                self.doc_version = None;
-                self.editor_content = text_editor::Content::new();
-                self.dirty = false;
-                self.preview_state = PreviewState::from_file(path, None);
-                self.sync_preview_editor();
-                false
-            }
-        }
+        let doc = docs.open_document(path).ok();
+        let editable = self.apply_loaded_doc(path, root, doc);
+        self.hydrate_active_mode();
+        editable
     }
 
     pub(crate) fn reset_scroll_state(&mut self) {
@@ -443,6 +558,7 @@ pub(crate) struct DetachedViewerState {
 
     // Deferred open tasks
     pub(crate) initial_diff: Option<(u64, DetachedGitDiffTarget)>,
+    pub(crate) initial_file_load: Option<(u64, PathBuf)>,
     pub(crate) focus_search_on_open: bool,
 
     // Editor Preferences (shared across all tabs in this window)
@@ -457,11 +573,18 @@ pub(crate) struct DetachedViewerState {
 
     // Explorer Panel
     pub(crate) explorer_files: Vec<String>,
+    pub(crate) explorer_ignored_files: Vec<String>,
+    pub(crate) explorer_ignored_dirs: Vec<String>,
+    pub(crate) explorer_ignored_dir_children: HashMap<String, IgnoredDirListing>,
+    pub(crate) explorer_tree: ExplorerDirNode,
+    pub(crate) explorer_show_ignored: bool,
     pub(crate) explorer_loading: bool,
     pub(crate) explorer_request_id: u64,
     pub(crate) explorer_filter: String,
     pub(crate) explorer_filter_id: text_input::Id,
     pub(crate) explorer_expanded_dirs: HashSet<String>,
+    pub(crate) explorer_menu: Option<StudioExplorerMenu>,
+    pub(crate) pending_delete: Option<StudioPendingDelete>,
 
     // Compare Panel (persisted left/right handles)
     pub(crate) compare_left: Option<PathBuf>,
@@ -517,6 +640,7 @@ impl DetachedViewerState {
             status_note: "Ready".into(),
             status_is_error: false,
             initial_diff: None,
+            initial_file_load: None,
             focus_search_on_open: false,
             editor_word_wrap: false,
             editor_font_size: 13.5,
@@ -525,11 +649,18 @@ impl DetachedViewerState {
             search_root: None,
             search_root_name: None,
             explorer_files: Vec::new(),
+            explorer_ignored_files: Vec::new(),
+            explorer_ignored_dirs: Vec::new(),
+            explorer_ignored_dir_children: HashMap::new(),
+            explorer_tree: ExplorerDirNode::default(),
+            explorer_show_ignored: true,
             explorer_loading: false,
             explorer_request_id: 0,
             explorer_filter: String::new(),
             explorer_filter_id: text_input::Id::unique(),
             explorer_expanded_dirs: HashSet::new(),
+            explorer_menu: None,
+            pending_delete: None,
             compare_left: None,
             compare_right: None,
             in_file_find_open: false,
@@ -610,8 +741,51 @@ impl DetachedViewerState {
         }
     }
 
+    pub(crate) fn is_explorer_path_in_ignored_dir(&self, path: &str) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+        self.explorer_ignored_dirs.iter().any(|d| {
+            path == d
+                || path
+                    .strip_prefix(d.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
+    pub(crate) fn clear_explorer_ignored_cache(&mut self) {
+        self.explorer_ignored_files.clear();
+        self.explorer_ignored_dirs.clear();
+        self.explorer_ignored_dir_children.clear();
+    }
+
+    pub(crate) fn rebuild_explorer_tree(&mut self) {
+        self.explorer_tree = ExplorerDirNode::build(
+            &self.explorer_files,
+            &self.explorer_ignored_files,
+            &self.explorer_ignored_dirs,
+            &self.explorer_ignored_dir_children,
+            self.explorer_show_ignored,
+        );
+    }
+
+    pub(crate) fn close_tabs_under_path(&mut self, abs_path: &Path, is_dir: bool) {
+        let mut idx = 0;
+        while idx < self.tabs.len() {
+            let matches = self.tabs[idx].file_path.as_deref().is_some_and(|p| {
+                p == abs_path || (is_dir && p.starts_with(abs_path))
+            });
+            if matches {
+                self.remove_tab_at(idx);
+            } else {
+                idx += 1;
+            }
+        }
+    }
+
     pub(crate) fn from_host(app: &GitFleetApp) -> Self {
         let mut state = Self::empty();
+        state.explorer_show_ignored = app.show_ignored_files;
         if let Some(repo) = app.current_repo() {
             state.search_root = Some(repo.path.clone());
             state.search_root_name = Some(repo.name.clone());
@@ -621,7 +795,8 @@ impl DetachedViewerState {
             || app.diff_image.is_some()
             || app.diff_csv.is_some()
             || !matches!(app.preview_state, PreviewState::Empty)
-            || app.open_doc_path.is_some();
+            || app.open_doc_path.is_some()
+            || app.active_file_path.is_some();
 
         if !has_content {
             state.sidebar_open = true;
@@ -653,8 +828,6 @@ impl DetachedViewerState {
         tab.csv_changes_only = app.csv_diff_changes_only;
         tab.csv_ignore_format = app.csv_diff_ignore_format;
         tab.csv_filter = app.csv_diff_filter.clone();
-        tab.preview_state = app.preview_state.clone_snapshot();
-        tab.sync_preview_editor();
         tab.preview_raw_mode = app.preview_raw_mode;
 
         let local_path = app.open_doc_path.clone().or_else(|| {
@@ -665,9 +838,38 @@ impl DetachedViewerState {
                     .filter(|p| p.is_file())
             })
         });
-        let can_edit = local_path
-            .as_deref()
-            .is_some_and(|p| tab.load_local_file(&app.service.docs, p, state.search_root.as_deref()));
+
+        let mut can_edit = false;
+        if let Some(p) = local_path {
+            tab.title = file_display_name(&p);
+            tab.rel_path = state
+                .search_root
+                .as_deref()
+                .and_then(|r| p.strip_prefix(r).ok())
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+            tab.language = CodeLanguage::from_path(&p);
+            tab.file_path = Some(p.clone());
+
+            // Reuse Host's already-loaded document when available (zero redundant disk I/O!)
+            if app.open_doc_path.as_ref() == Some(&p)
+                && let (Some(doc_id), Some(ver), Some(raw)) = (
+                    app.open_doc_id.clone(),
+                    app.open_doc_version.clone(),
+                    app.open_doc_raw_text.clone(),
+                )
+            {
+                tab.doc_id = Some(doc_id);
+                tab.doc_version = Some(ver);
+                tab.encoding = app.open_doc_encoding;
+                tab.line_ending = app.open_doc_line_ending;
+                tab.trailing_newline = raw.ends_with('\n');
+                tab.raw_text = Some(raw);
+                can_edit = true;
+            } else {
+                tab.loading_file = true;
+                state.initial_file_load = Some((tab_id, p));
+            }
+        }
 
         if tab.title == "Untitled" {
             tab.title = if app.diff_title.is_empty()
@@ -693,7 +895,7 @@ impl DetachedViewerState {
         }
 
         tab.mode = match app.bottom_mode {
-            BottomViewMode::Edit if can_edit => DetachedViewMode::Edit,
+            BottomViewMode::Edit if can_edit || tab.loading_file => DetachedViewMode::Edit,
             BottomViewMode::Preview => DetachedViewMode::Preview,
             BottomViewMode::UnifiedDiff if !tab.diff_parsed.raw.is_empty() => {
                 DetachedViewMode::UnifiedDiff
@@ -710,13 +912,25 @@ impl DetachedViewerState {
                     DetachedViewMode::CsvDiff
                 } else if !tab.diff_parsed.raw.is_empty() {
                     tab.last_text_diff_mode
-                } else if can_edit {
+                } else if can_edit || tab.loading_file {
                     DetachedViewMode::Edit
                 } else {
                     DetachedViewMode::Preview
                 }
             }
         };
+
+        // Hydrate ONLY the active mode (avoids 3x cosmic_text shaping when opening Studio!)
+        if tab.mode == DetachedViewMode::Preview
+            && tab.file_path.is_none()
+            && !matches!(app.preview_state, PreviewState::Empty)
+        {
+            tab.preview_state = app.preview_state.clone_snapshot();
+            tab.sync_preview_editor();
+            tab.preview_hydrated = true;
+        } else if !tab.loading_file {
+            tab.hydrate_active_mode();
+        }
 
         if let (Some(repo), Some(file)) = (app.current_repo(), app.selected_changed_file.clone())
             && app.active_file_path.as_deref() == Some(file.path.as_str())
@@ -748,6 +962,7 @@ impl DetachedViewerState {
         prefer_edit: bool,
     ) -> Self {
         let mut state = Self::empty();
+        state.explorer_show_ignored = app.show_ignored_files;
         state.sidebar_open = false;
         state.sidebar_panel = StudioSidebarPanel::Explorer;
 
@@ -770,7 +985,30 @@ impl DetachedViewerState {
         };
 
         let full_path = repo.path.join(rel_path);
-        let can_edit = tab.load_local_file(&app.service.docs, &full_path, Some(&repo.path));
+        tab.language = CodeLanguage::from_path(&full_path);
+        let mut can_edit = false;
+        if full_path.is_file() {
+            tab.file_path = Some(full_path.clone());
+            // Reuse Host's already-decoded document if it matches, otherwise load asynchronously on open
+            if app.open_doc_path.as_ref() == Some(&full_path)
+                && let (Some(doc_id), Some(ver), Some(raw)) = (
+                    app.open_doc_id.clone(),
+                    app.open_doc_version.clone(),
+                    app.open_doc_raw_text.clone(),
+                )
+            {
+                tab.doc_id = Some(doc_id);
+                tab.doc_version = Some(ver);
+                tab.encoding = app.open_doc_encoding;
+                tab.line_ending = app.open_doc_line_ending;
+                tab.trailing_newline = raw.ends_with('\n');
+                tab.raw_text = Some(raw);
+                can_edit = true;
+            } else {
+                tab.loading_file = true;
+                state.initial_file_load = Some((tab_id, full_path));
+            }
+        }
 
         if app.active_file_path.as_deref() == Some(rel_path) {
             tab.language = app.open_doc_language;
@@ -830,14 +1068,14 @@ impl DetachedViewerState {
         let has_diff = !tab.diff_parsed.raw.is_empty() || state.initial_diff.is_some();
 
         tab.mode = if prefer_edit {
-            if can_edit {
+            if can_edit || tab.loading_file {
                 DetachedViewMode::Edit
             } else {
                 DetachedViewMode::Preview
             }
         } else {
             match app.bottom_mode {
-                BottomViewMode::Edit if can_edit => DetachedViewMode::Edit,
+                BottomViewMode::Edit if can_edit || tab.loading_file => DetachedViewMode::Edit,
                 BottomViewMode::Preview => DetachedViewMode::Preview,
                 BottomViewMode::ImageDiff
                     if is_img && (tab.diff_image.is_some() || state.initial_diff.is_some()) =>
@@ -852,7 +1090,7 @@ impl DetachedViewerState {
                 BottomViewMode::UnifiedDiff if has_diff => DetachedViewMode::UnifiedDiff,
                 BottomViewMode::SideBySideDiff if has_diff => DetachedViewMode::SideBySideDiff,
                 _ => {
-                    if can_edit {
+                    if can_edit || tab.loading_file {
                         DetachedViewMode::Edit
                     } else if has_diff {
                         tab.last_text_diff_mode
@@ -863,9 +1101,17 @@ impl DetachedViewerState {
             }
         };
 
+        if !tab.loading_file {
+            tab.hydrate_active_mode();
+        }
+
         state.tabs.push(tab);
         state.active_tab = Some(0);
-        state.status_note = format!("Opened {rel_path}");
+        state.status_note = if state.initial_file_load.is_some() {
+            format!("Opening {rel_path}…")
+        } else {
+            format!("Opened {rel_path}")
+        };
         state
     }
 
@@ -896,7 +1142,7 @@ impl DetachedViewerState {
     }
 
     pub(crate) fn recompute_in_file_matches(&mut self, preserve_active: bool) {
-        if self.in_file_query.is_empty() {
+        if !self.in_file_find_open || self.in_file_query.is_empty() {
             self.in_file_matches.clear();
             self.in_file_active_idx = None;
             self.in_file_error = None;

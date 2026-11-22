@@ -60,6 +60,25 @@ pub struct FileChange {
     pub staged: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IgnoredEntries {
+    /// Gitignored regular files (relative forward-slash paths, sorted), e.g. `.env`, `apps/web/.env`.
+    pub files: Vec<String>,
+    /// Collapsed gitignored directories (relative forward-slash paths without trailing `/`, sorted),
+    /// e.g. `.vscode`, `target`.
+    pub dirs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IgnoredDirListing {
+    /// Direct child regular files relative to repo root (sorted, forward-slash).
+    pub files: Vec<String>,
+    /// Direct child directories relative to repo root (sorted, forward-slash, no trailing `/`).
+    pub dirs: Vec<String>,
+    /// True if the directory contained more entries than the listing cap.
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoStatusSummary {
     pub branch: Option<String>,

@@ -10,7 +10,6 @@ use super::state::{
 use super::status_bar::render_mode_subbar;
 use crate::app::Message;
 use crate::icons;
-use crate::preview::PreviewState;
 use crate::syntax::{CodeHighlightSettings, CodeSyntaxHighlighter, format_code_token};
 use crate::theme::{self, Palette, ThemeMode, icon_size, type_scale};
 use crate::views::csv_diff::render_csv_diff;
@@ -336,7 +335,7 @@ fn render_tab_bar<'a>(
             ));
         }
 
-        if tab.is_editable() || tab.preview_state.copyable_text().is_some() {
+        if tab.is_editable() || tab.has_preview_available() {
             right_actions = right_actions.push(tip(
                 button(icons::search(
                     13.0,
@@ -443,7 +442,7 @@ fn render_breadcrumb_bar<'a>(
         );
     }
 
-    if !matches!(tab.preview_state, PreviewState::Empty) {
+    if tab.has_preview_available() {
         let active = tab.mode == DetachedViewMode::Preview;
         modes = modes.push(
             button(
@@ -559,6 +558,27 @@ fn render_breadcrumb_bar<'a>(
         ));
     }
 
+    if let Some(rel) = tab.rel_path.clone()
+        && v.search_root.is_some()
+        && tab.left_path.is_none()
+    {
+        modes = modes.push(tip(
+            button(icons::trash(11.0, p.danger_fg))
+                .padding([2, 5])
+                .style(theme::vscode_icon_btn(p, false))
+                .on_press(Message::Detached(
+                    win_id,
+                    DetachedAction::RequestDeleteExplorerEntry {
+                        rel_path: rel,
+                        is_dir: false,
+                    },
+                )),
+            "Delete this file from disk…",
+            tooltip::Position::Bottom,
+            p,
+        ));
+    }
+
     let _ = v;
     container(
         row![
@@ -582,6 +602,19 @@ fn render_studio_code_editor<'a>(
     theme_mode: ThemeMode,
     p: Palette,
 ) -> Element<'a, Message> {
+    if tab.loading_file {
+        return container(
+            text(format!("Opening {}…", tab.title))
+                .size(type_scale::CAPTION)
+                .color(p.text_muted),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into();
+    }
+
     if !tab.is_editable() {
         return theme::empty_state(
             p,
@@ -592,9 +625,12 @@ fn render_studio_code_editor<'a>(
         );
     }
 
-    let active_match = v
-        .in_file_active_idx
-        .and_then(|i| v.in_file_matches.get(i));
+    let active_match = if v.in_file_find_open {
+        v.in_file_active_idx
+            .and_then(|i| v.in_file_matches.get(i))
+    } else {
+        None
+    };
     let hl_settings = CodeHighlightSettings {
         language: tab.language,
         theme_mode,

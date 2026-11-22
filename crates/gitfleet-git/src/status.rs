@@ -1,4 +1,7 @@
-use crate::models::{AmendTarget, DiscardTarget, FileChange, FileChangeKind, RepoStatusSummary};
+use crate::models::{
+    AmendTarget, DiscardTarget, FileChange, FileChangeKind, IgnoredDirListing, IgnoredEntries,
+    RepoStatusSummary,
+};
 use crate::{GitService, runner};
 use gitfleet_core::{AppError, AppResult};
 use std::collections::{HashMap, HashSet};
@@ -89,6 +92,75 @@ impl GitService {
             .collect();
         files.sort();
         Ok(files)
+    }
+
+    /// Lists gitignored files and collapsed gitignored directories (`--ignored=matching`) without
+    /// eagerly recursing into massive ignored build/dependency trees like `target/` or `node_modules/`.
+    /// Works both at a repository root and inside any subdirectory of a Git repository.
+    pub async fn list_ignored_entries(&self, repo_path: &Path) -> AppResult<IgnoredEntries> {
+        let subdir_prefix = if repo_path.join(".git").exists() {
+            String::new()
+        } else {
+            runner::run_git_ok(
+                repo_path,
+                &["rev-parse", "--show-prefix"],
+                None,
+                None,
+                false,
+            )
+            .await?
+            .trim()
+            .replace('\\', "/")
+        };
+
+        let out = runner::run_git(
+            repo_path,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "-c",
+                "status.relativePaths=false",
+                "status",
+                "--porcelain=v2",
+                "--ignored=matching",
+                "-uall",
+                "-z",
+                "--",
+                ".",
+            ],
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        if out.exit_code == 0 {
+            let mut entries = parse_ignored_entries_v2_z(&out.stdout);
+            if !subdir_prefix.is_empty() {
+                entries = strip_ignored_prefix(entries, &subdir_prefix);
+            }
+            return Ok(entries);
+        }
+
+        // Fallback for older Git (< 2.16) that lacks `--ignored=matching`.
+        // `ls-files` already outputs paths relative to `repo_path`.
+        let fallback = runner::run_git_ok(
+            repo_path,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "ls-files",
+                "-z",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--directory",
+            ],
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        Ok(parse_ls_files_ignored_directory_z(&fallback))
     }
 
     pub async fn stage(&self, repo_path: &Path, paths: &[String]) -> AppResult<()> {
@@ -836,6 +908,184 @@ fn parse_porcelain_v2_z(output: &str) -> (RepoStatusSummary, HashMap<String, Liv
     (s, live)
 }
 
+/// Parses `git status --porcelain=v2 --ignored=matching -uall -z` output for `! ` ignored entries.
+pub(crate) fn parse_ignored_entries_v2_z(output: &str) -> IgnoredEntries {
+    let mut entries = IgnoredEntries::default();
+    let mut records = output.split('\0');
+
+    while let Some(rec) = records.next() {
+        if rec.is_empty() {
+            continue;
+        }
+        if rec.starts_with("2 ") {
+            // In `-z` mode, rename/copy records are immediately followed by `<origPath>\0`.
+            let _ = records.next();
+            continue;
+        }
+        if let Some(raw) = rec.strip_prefix("! ") {
+            let norm = raw.replace('\\', "/");
+            if let Some(dir_raw) = norm.strip_suffix('/') {
+                let dir = dir_raw.trim_end_matches('/');
+                if !dir.is_empty() && dir != ".git" && !dir.starts_with(".git/") {
+                    entries.dirs.push(dir.to_string());
+                }
+            } else if !norm.is_empty() && norm != ".git" && !norm.starts_with(".git/") {
+                entries.files.push(norm);
+            }
+        }
+    }
+
+    entries.files.sort();
+    entries.files.dedup();
+    entries.dirs.sort();
+    entries.dirs.dedup();
+    entries
+}
+
+fn strip_ignored_prefix(entries: IgnoredEntries, prefix: &str) -> IgnoredEntries {
+    let norm_prefix = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/")
+    };
+    let files = entries
+        .files
+        .into_iter()
+        .filter_map(|p| p.strip_prefix(&norm_prefix).map(str::to_string))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let dirs = entries
+        .dirs
+        .into_iter()
+        .filter_map(|p| p.strip_prefix(&norm_prefix).map(str::to_string))
+        .filter(|p| !p.is_empty())
+        .collect();
+    IgnoredEntries { files, dirs }
+}
+
+/// Fallback parser for `git ls-files -z --others --ignored --exclude-standard --directory`.
+fn parse_ls_files_ignored_directory_z(output: &str) -> IgnoredEntries {
+    let mut files = Vec::new();
+    let mut raw_dirs = Vec::new();
+
+    for rec in output.split('\0') {
+        if rec.is_empty() {
+            continue;
+        }
+        let norm = rec.replace('\\', "/");
+        if let Some(dir_raw) = norm.strip_suffix('/') {
+            let dir = dir_raw.trim_end_matches('/');
+            if !dir.is_empty() && dir != ".git" && !dir.starts_with(".git/") {
+                raw_dirs.push(dir.to_string());
+            }
+        } else if norm != ".git" && !norm.starts_with(".git/") {
+            files.push(norm);
+        }
+    }
+
+    files.sort();
+    files.dedup();
+    let mut dirs: Vec<String> = raw_dirs
+        .into_iter()
+        .filter(|d| {
+            let prefix = format!("{d}/");
+            !files.iter().any(|f| f.starts_with(&prefix))
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    IgnoredEntries { files, dirs }
+}
+
+/// Lists direct children (one directory level, non-recursive) inside a gitignored directory
+/// so `All Files` can lazily explore folders like `.vscode/` or `target/` without walking
+/// tens of thousands of build/dependency files upfront.
+pub fn list_ignored_dir_children(
+    repo_path: &Path,
+    rel_dir: &str,
+    max_entries: usize,
+) -> AppResult<IgnoredDirListing> {
+    let norm = rel_dir.replace('\\', "/");
+    let trimmed = norm.trim_matches('/');
+    if !is_safe_rel_path(trimmed) || trimmed == ".git" || trimmed.starts_with(".git/") {
+        return Err(AppError::Git(format!(
+            "Invalid relative directory path: {rel_dir}"
+        )));
+    }
+
+    let full_dir = repo_path.join(trimmed);
+    let read_dir = match std::fs::read_dir(&full_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(IgnoredDirListing::default());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let limit = max_entries.max(1);
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    let mut truncated = false;
+
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.is_empty() || name == ".git" {
+            continue;
+        }
+        if files.len() + dirs.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        let child_rel = format!("{trimmed}/{name}");
+        if ft.is_dir() {
+            dirs.push(child_rel);
+        } else if ft.is_file() || (ft.is_symlink() && entry.path().is_file()) {
+            files.push(child_rel);
+        }
+    }
+
+    files.sort();
+    dirs.sort();
+    Ok(IgnoredDirListing {
+        files,
+        dirs,
+        truncated,
+    })
+}
+
+/// Safely deletes a file or directory (recursively) inside `root` by relative path.
+/// Rejects empty paths, path traversal (`..`), absolute paths, and `.git` metadata.
+/// Returns `Ok(true)` if an entry was removed, or `Ok(false)` if it was already absent.
+pub fn delete_workspace_entry(root: &Path, rel_path: &str) -> AppResult<bool> {
+    let norm = rel_path.replace('\\', "/");
+    let trimmed = norm.trim_matches('/');
+    if trimmed.is_empty()
+        || !is_safe_rel_path(trimmed)
+        || trimmed == ".git"
+        || trimmed.starts_with(".git/")
+    {
+        return Err(AppError::Git(format!(
+            "Refusing to delete unsafe or protected path: '{rel_path}'"
+        )));
+    }
+    let full = root.join(trimmed);
+    match std::fs::symlink_metadata(&full) {
+        Ok(meta) => {
+            if meta.is_dir() && !meta.file_type().is_symlink() {
+                std::fs::remove_dir_all(&full)?;
+            } else {
+                std::fs::remove_file(&full)?;
+            }
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,6 +1404,107 @@ mod tests {
         .unwrap();
         assert!(!dir.join("hardware/PCB/old-bom.csv").exists());
         assert!(svc.get_status(&dir).await.unwrap().is_clean);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_porcelain_v2_ignored_entries_and_skips_rename_orig_paths() {
+        let raw = concat!(
+            "2 R. N... 100644 100644 100644 aaa bbb R100 new.txt\0",
+            "! fake_orig_starting_with_bang.txt\0",
+            "? untracked.rs\0",
+            "! .env\0",
+            "! apps/web/.env.local\0",
+            "! .vscode/\0",
+            "! target/\0",
+            "! .git/\0",
+        );
+        let entries = parse_ignored_entries_v2_z(raw);
+        assert_eq!(entries.files, vec![".env", "apps/web/.env.local"]);
+        assert_eq!(entries.dirs, vec![".vscode", "target"]);
+    }
+
+    #[tokio::test]
+    async fn lists_gitignored_files_collapsed_dirs_and_lazy_dir_children() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_ignored_entries_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+        std::fs::create_dir_all(dir.join("local_only/nested")).unwrap();
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        std::fs::create_dir_all(dir.join("target/debug/deps")).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Tester"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(
+            dir.join(".gitignore"),
+            ".env\n.env.*\n!.env.example\n.vscode/\n/target/\n*.log\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("apps/web/index.ts"), "export {};\n").unwrap();
+        std::fs::write(dir.join(".env.example"), "API_KEY=\n").unwrap();
+        svc.stage_all(&dir).await.unwrap();
+        svc.commit(&dir, "init", false).await.unwrap();
+
+        std::fs::write(dir.join(".env"), "API_KEY=secret\n").unwrap();
+        std::fs::write(dir.join("apps/web/.env.local"), "PORT=3000\n").unwrap();
+        std::fs::write(dir.join("local_only/nested/app.log"), "ok\n").unwrap();
+        std::fs::write(dir.join(".vscode/settings.json"), "{}\n").unwrap();
+        std::fs::write(dir.join("target/CACHEDIR.TAG"), "sig\n").unwrap();
+        std::fs::write(dir.join("target/debug/deps/huge.o"), "bin\n").unwrap();
+
+        let ignored = svc.list_ignored_entries(&dir).await.unwrap();
+        assert_eq!(
+            ignored.files,
+            vec![".env", "apps/web/.env.local", "local_only/nested/app.log"]
+        );
+        assert_eq!(ignored.dirs, vec![".vscode", "target"]);
+
+        // Subdirectory inside a git repo should return paths relative to that subdirectory
+        let sub_ignored = svc.list_ignored_entries(&dir.join("apps/web")).await.unwrap();
+        assert_eq!(sub_ignored.files, vec![".env.local"]);
+        assert!(sub_ignored.dirs.is_empty());
+
+        // Lazy single-level inspection of ignored directories
+        let vscode = list_ignored_dir_children(&dir, ".vscode", 500).unwrap();
+        assert_eq!(vscode.files, vec![".vscode/settings.json"]);
+        assert!(vscode.dirs.is_empty());
+        assert!(!vscode.truncated);
+
+        let target_lvl1 = list_ignored_dir_children(&dir, "target", 500).unwrap();
+        assert_eq!(target_lvl1.files, vec!["target/CACHEDIR.TAG"]);
+        assert_eq!(target_lvl1.dirs, vec!["target/debug"]);
+        assert!(!target_lvl1.truncated);
+
+        // Cap truncation & path traversal protection
+        let capped = list_ignored_dir_children(&dir, "target", 1).unwrap();
+        assert_eq!(capped.files.len() + capped.dirs.len(), 1);
+        assert!(capped.truncated);
+        assert!(list_ignored_dir_children(&dir, "../outside", 10).is_err());
+        assert!(list_ignored_dir_children(&dir, ".git", 10).is_err());
+
+        // Safe file and folder deletion + protection of .git / traversal / root
+        assert!(delete_workspace_entry(&dir, ".env").unwrap());
+        assert!(!dir.join(".env").exists());
+        assert!(!delete_workspace_entry(&dir, ".env").unwrap()); // already absent
+        assert!(delete_workspace_entry(&dir, "local_only").unwrap());
+        assert!(!dir.join("local_only").exists());
+        assert!(delete_workspace_entry(&dir, "").is_err());
+        assert!(delete_workspace_entry(&dir, ".git").is_err());
+        assert!(delete_workspace_entry(&dir, ".git/HEAD").is_err());
+        assert!(delete_workspace_entry(&dir, "../outside").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

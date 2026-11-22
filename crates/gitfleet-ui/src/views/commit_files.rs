@@ -88,13 +88,26 @@ struct FolderTreeNode {
     children: BTreeMap<String, FolderTreeNode>,
     total_files: usize,
     has_dirty: bool,
+    has_non_ignored: bool,
+    has_ignored: bool,
+    lazy_ignored_dir: bool,
+    lazy_loaded: bool,
 }
 
 impl FolderTreeNode {
-    fn insert_file(&mut self, file_path: &str, dirty: bool) {
+    fn is_ignored_only(&self) -> bool {
+        self.has_ignored && !self.has_non_ignored
+    }
+
+    fn insert_file(&mut self, file_path: &str, dirty: bool, ignored: bool) {
         self.total_files += 1;
         if dirty {
             self.has_dirty = true;
+        }
+        if ignored {
+            self.has_ignored = true;
+        } else {
+            self.has_non_ignored = true;
         }
         let dir = parent_dir(file_path);
         if dir.is_empty() {
@@ -107,6 +120,49 @@ impl FolderTreeNode {
             if dirty {
                 cursor.has_dirty = true;
             }
+            if ignored {
+                cursor.has_ignored = true;
+            } else {
+                cursor.has_non_ignored = true;
+            }
+        }
+    }
+
+    fn insert_ignored_dir(
+        &mut self,
+        dir_path: &str,
+        cache: &HashMap<String, gitfleet_git::IgnoredDirListing>,
+    ) {
+        let trimmed = dir_path.trim_matches('/');
+        if trimmed.is_empty() {
+            return;
+        }
+        self.has_ignored = true;
+        let mut cursor = self;
+        for seg in trimmed.split('/').filter(|s| !s.is_empty()) {
+            cursor = cursor.children.entry(seg.to_string()).or_default();
+            cursor.has_ignored = true;
+        }
+        cursor.lazy_ignored_dir = true;
+        Self::populate_lazy_dir(cursor, trimmed, cache);
+    }
+
+    fn populate_lazy_dir(
+        node: &mut FolderTreeNode,
+        full_path: &str,
+        cache: &HashMap<String, gitfleet_git::IgnoredDirListing>,
+    ) {
+        let Some(listing) = cache.get(full_path) else {
+            return;
+        };
+        node.lazy_loaded = true;
+        node.total_files += listing.files.len();
+        for child_dir in &listing.dirs {
+            let child_name = child_dir.rsplit('/').next().unwrap_or(child_dir);
+            let child = node.children.entry(child_name.to_string()).or_default();
+            child.has_ignored = true;
+            child.lazy_ignored_dir = true;
+            Self::populate_lazy_dir(child, child_dir, cache);
         }
     }
 }
@@ -135,11 +191,23 @@ fn render_folder_tree<'a>(
     max_tree_w: &mut f32,
 ) {
     let p = ctx.p;
-    let has_children = !node.children.is_empty();
+    let dimmed = depth > 0 && node.is_ignored_only();
+    let has_children = !node.children.is_empty() || (node.lazy_ignored_dir && !node.lazy_loaded);
     let expanded = has_children && is_folder_expanded(full_path, ctx.expanded_dirs);
     let is_sel = ctx.selected_dir == full_path;
     let indent = (depth as f32) * 12.0;
-    let count_str = format!("({})", node.total_files);
+    let hide_count = node.lazy_ignored_dir
+        && (!node.lazy_loaded || (node.total_files == 0 && !node.children.is_empty()));
+    let count_str = if hide_count {
+        String::new()
+    } else {
+        format!("({})", node.total_files)
+    };
+    let count_w = if count_str.is_empty() {
+        0.0
+    } else {
+        5.0 + theme::estimate_text_width(&count_str, type_scale::BADGE, false)
+    };
     let est_w = indent
         + 15.0 // chevron slot
         + 2.0
@@ -147,8 +215,7 @@ fn render_folder_tree<'a>(
         + 12.0 // folder icon
         + 5.0
         + theme::estimate_text_width(label, type_scale::CAPTION, false)
-        + 5.0
-        + theme::estimate_text_width(&count_str, type_scale::BADGE, false)
+        + count_w
         + 6.0;
     if est_w > *max_tree_w {
         *max_tree_w = est_w;
@@ -156,9 +223,23 @@ fn render_folder_tree<'a>(
 
     let chevron: Element<'a, Message> = if has_children {
         button(if expanded {
-            icons::chevron_down(11.0, p.text_secondary)
+            icons::chevron_down(
+                11.0,
+                if dimmed {
+                    Color { a: 0.55, ..p.text_muted }
+                } else {
+                    p.text_secondary
+                },
+            )
         } else {
-            icons::chevron_right(11.0, p.text_muted)
+            icons::chevron_right(
+                11.0,
+                if dimmed {
+                    Color { a: 0.55, ..p.text_muted }
+                } else {
+                    p.text_muted
+                },
+            )
         })
         .padding([2, 2])
         .width(Length::Fixed(15.0))
@@ -169,7 +250,9 @@ fn render_folder_tree<'a>(
         Space::with_width(Length::Fixed(15.0)).into()
     };
 
-    let folder_color = if node.has_dirty {
+    let folder_color = if dimmed {
+        Color { a: 0.56, ..p.text_muted }
+    } else if node.has_dirty {
         p.warning_fg
     } else {
         p.accent_fg
@@ -180,47 +263,70 @@ fn render_folder_tree<'a>(
         icons::folder(12.0, folder_color).into()
     };
 
+    let label_color = if dimmed {
+        if is_sel {
+            p.text_secondary
+        } else {
+            Color { a: 0.72, ..p.text_muted }
+        }
+    } else if is_sel {
+        p.text_primary
+    } else if node.has_dirty {
+        p.warning_fg
+    } else {
+        p.text_primary
+    };
+
+    let mut label_row = row![
+        text(label.to_string())
+            .size(type_scale::CAPTION)
+            .color(label_color),
+    ]
+    .spacing(5)
+    .align_y(Alignment::Center);
+
+    if !count_str.is_empty() {
+        label_row = label_row.push(
+            text(count_str)
+                .size(type_scale::BADGE)
+                .color(if dimmed {
+                    Color { a: 0.58, ..p.text_muted }
+                } else {
+                    p.text_muted
+                }),
+        );
+    }
+
     let dir_btn = button(
-        row![
-            folder_icon,
-            theme::clipped_line(
-                row![
-                    text(label.to_string())
-                        .size(type_scale::CAPTION)
-                        .color(if is_sel {
-                            p.text_primary
-                        } else if node.has_dirty {
-                            p.warning_fg
-                        } else {
-                            p.text_primary
-                        }),
-                    text(count_str)
-                        .size(type_scale::BADGE)
-                        .color(p.text_muted),
-                ]
-                .spacing(5)
-                .align_y(Alignment::Center),
-                Length::Fill,
-            ),
-        ]
-        .spacing(5)
-        .align_y(Alignment::Center),
+        row![folder_icon, theme::clipped_line(label_row, Length::Fill)]
+            .spacing(5)
+            .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .padding([3, 6])
     .style(theme::repo_row_btn(p, is_sel))
     .on_press(Message::SelectAllFilesDir(full_path.to_string()));
 
-    out.push(
-        row![
-            Space::with_width(Length::Fixed(indent)),
-            chevron,
-            dir_btn,
-        ]
-        .spacing(2)
-        .align_y(Alignment::Center)
-        .into(),
-    );
+    let row_el: Element<'a, Message> = row![
+        Space::with_width(Length::Fixed(indent)),
+        chevron,
+        dir_btn,
+    ]
+    .spacing(2)
+    .align_y(Alignment::Center)
+    .into();
+
+    if depth > 0 {
+        out.push(
+            mouse_area(row_el)
+                .on_right_press(Message::OpenContextMenu(ContextMenuTarget::RepoDir {
+                    path: full_path.to_string(),
+                }))
+                .into(),
+        );
+    } else {
+        out.push(row_el);
+    }
 
     if expanded {
         for (child_name, child_node) in &node.children {
@@ -897,19 +1003,58 @@ impl GitFleetApp {
                     .into(),
                     "All",
                     FilesViewMode::AllFiles,
-                    "All Files — Browse repository folder tree (Diff / Preview / Edit)",
+                    "All Files — Browse all repository files & folders like VS Code (gitignored items dimmed)",
                 ),
             ]
             .spacing(space::XXS)
             .align_y(Alignment::Center),
-            row![
-                text_input("Filter files…", &self.file_filter)
-                    .on_input(Message::FileFilterChanged)
-                    .padding([4, 8])
-                    .size(type_scale::CAPTION)
-                    .width(Length::Fill)
-                    .style(theme::dark_input(p)),
-                tip(
+            {
+                let mut filter_row = row![
+                    text_input("Filter files…", &self.file_filter)
+                        .on_input(Message::FileFilterChanged)
+                        .padding([4, 8])
+                        .size(type_scale::CAPTION)
+                        .width(Length::Fill)
+                        .style(theme::dark_input(p)),
+                ]
+                .spacing(space::XS)
+                .align_y(Alignment::Center);
+
+                if self.files_mode == FilesViewMode::AllFiles {
+                    filter_row = filter_row.push(tip(
+                        button(
+                            row![
+                                if self.show_ignored_files {
+                                    icons::eye(12.0, p.accent_fg)
+                                } else {
+                                    icons::eye_off(12.0, p.text_muted)
+                                },
+                                text("Ignored")
+                                    .size(type_scale::CAPTION)
+                                    .color(if self.show_ignored_files {
+                                        p.accent_fg
+                                    } else {
+                                        p.text_muted
+                                    })
+                                    .wrapping(text::Wrapping::None),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([4, 8])
+                        .style(theme::filter_pill_btn(p, self.show_ignored_files))
+                        .on_press(Message::ToggleShowIgnoredFiles),
+                        if self.show_ignored_files {
+                            "Showing gitignored files & folders (dimmed like VS Code) — click to hide"
+                        } else {
+                            "Gitignored files & folders are hidden — click to show (e.g. .env)"
+                        },
+                        tooltip::Position::Bottom,
+                        p,
+                    ));
+                }
+
+                filter_row.push(tip(
                     button(
                         row![
                             icons::folder_search(12.0, p.accent_fg),
@@ -933,10 +1078,8 @@ impl GitFleetApp {
                     "VS Code-style Search & Replace in files (opens Independent Popup)",
                     tooltip::Position::Bottom,
                     p,
-                ),
-            ]
-            .spacing(space::XS)
-            .align_y(Alignment::Center),
+                ))
+            },
         ]
         .spacing(space::XS);
 
@@ -1502,6 +1645,7 @@ impl GitFleetApp {
     }
 
     /// All Files mode: Left = collapsible folder tree, Right = files in selected folder.
+    /// Shows all repository files & folders like VS Code, with gitignored items dimmed.
     pub(crate) fn view_all_files_explorer(&self, p: Palette) -> Element<'_, Message> {
         let q = self.file_filter.to_lowercase();
 
@@ -1520,7 +1664,15 @@ impl GitFleetApp {
 
         let mut root_tree = FolderTreeNode::default();
         for f in &self.all_repo_files {
-            root_tree.insert_file(f, dirty_map.contains_key(f.as_str()));
+            root_tree.insert_file(f, dirty_map.contains_key(f.as_str()), false);
+        }
+        if self.show_ignored_files {
+            for f in &self.ignored_repo_files {
+                root_tree.insert_file(f, false, true);
+            }
+            for d in &self.ignored_repo_dirs {
+                root_tree.insert_ignored_dir(d, &self.ignored_dir_children);
+            }
         }
 
         let root_label = self
@@ -1544,99 +1696,206 @@ impl GitFleetApp {
             &mut max_tree_w,
         );
 
-        let direct_files: Vec<&String> = if !q.is_empty() {
-            self.all_repo_files
+        let mut ignored_dir_loading = false;
+        let mut ignored_dir_truncated = false;
+        let mut ignored_dir_has_subdirs = false;
+
+        let (visible_files, recursive_prefix): (Vec<(&str, bool)>, Option<String>) = if !q.is_empty()
+        {
+            let mut matched: Vec<(&str, bool)> = self
+                .all_repo_files
                 .iter()
                 .filter(|f| f.to_lowercase().contains(&q))
-                .collect()
+                .map(|f| (f.as_str(), false))
+                .collect();
+            if self.show_ignored_files {
+                let mut seen: HashSet<&str> = matched.iter().map(|(f, _)| *f).collect();
+                for f in &self.ignored_repo_files {
+                    if f.to_lowercase().contains(&q) && seen.insert(f.as_str()) {
+                        matched.push((f.as_str(), true));
+                    }
+                }
+                for listing in self.ignored_dir_children.values() {
+                    for f in &listing.files {
+                        if f.to_lowercase().contains(&q) && seen.insert(f.as_str()) {
+                            matched.push((f.as_str(), true));
+                        }
+                    }
+                }
+            }
+            matched.sort_by(|a, b| a.0.cmp(b.0));
+            (matched, None)
+        } else if self.show_ignored_files && self.is_path_in_ignored_dir(&self.selected_all_dir) {
+            if let Some(listing) = self.ignored_dir_children.get(&self.selected_all_dir) {
+                ignored_dir_truncated = listing.truncated;
+                ignored_dir_has_subdirs = !listing.dirs.is_empty();
+                (
+                    listing.files.iter().map(|f| (f.as_str(), true)).collect(),
+                    None,
+                )
+            } else {
+                ignored_dir_loading = true;
+                (Vec::new(), None)
+            }
         } else {
-            self.all_repo_files
+            let mut direct: Vec<(&str, bool)> = self
+                .all_repo_files
                 .iter()
                 .filter(|f| parent_dir(f) == self.selected_all_dir)
-                .collect()
-        };
+                .map(|f| (f.as_str(), false))
+                .collect();
+            if self.show_ignored_files {
+                for f in &self.ignored_repo_files {
+                    if parent_dir(f) == self.selected_all_dir {
+                        direct.push((f.as_str(), true));
+                    }
+                }
+            }
+            direct.sort_by(|a, b| a.0.cmp(b.0));
 
-        let (visible_files, recursive_prefix): (Vec<&String>, Option<String>) =
-            if q.is_empty() && direct_files.is_empty() && !self.selected_all_dir.is_empty() {
+            if direct.is_empty() && !self.selected_all_dir.is_empty() {
                 let prefix = format!("{}/", self.selected_all_dir);
-                let nested: Vec<&String> = self
+                let mut nested: Vec<(&str, bool)> = self
                     .all_repo_files
                     .iter()
                     .filter(|f| f.starts_with(&prefix))
+                    .map(|f| (f.as_str(), false))
                     .collect();
+                if self.show_ignored_files {
+                    for f in &self.ignored_repo_files {
+                        if f.starts_with(&prefix) {
+                            nested.push((f.as_str(), true));
+                        }
+                    }
+                }
+                nested.sort_by(|a, b| a.0.cmp(b.0));
                 (nested, Some(prefix))
             } else {
-                (direct_files, None)
-            };
+                (direct, None)
+            }
+        };
 
         let mut files_col = column![].spacing(2);
         let mut max_file_w: f32 = 96.0;
-        for f in visible_files {
-            let active = self.active_file_path.as_deref() == Some(f.as_str());
-            let name = if !q.is_empty() {
-                f.clone()
-            } else if let Some(prefix) = &recursive_prefix {
-                f.strip_prefix(prefix).unwrap_or(f).to_string()
-            } else {
-                f.rsplit('/').next().unwrap_or(f).to_string()
-            };
-            let status_info = dirty_map.get(f.as_str()).copied().map(|(k, _staged)| {
-                let (fg, bg) = file_state_colors(k, p);
-                (k.short_code(), fg, bg)
-            });
-            let badge_w = status_info
-                .map(|(code, _, _)| {
-                    6.0 + theme::estimate_text_width(code, type_scale::BADGE, false) + 12.0
-                })
-                .unwrap_or(0.0);
-            let est_w = 14.0
-                + 12.0
-                + 5.0
-                + theme::estimate_text_width(&name, type_scale::BODY, false)
-                + badge_w
-                + 8.0;
-            if est_w > max_file_w {
-                max_file_w = est_w;
-            }
 
-            let mut file_inner = row![
-                icons::file_code(
-                    12.0,
-                    status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_muted),
-                ),
-                text(name).size(type_scale::BODY).color(
-                    status_info.map(|(_, fg, _)| fg).unwrap_or(p.text_primary)
-                ),
-            ]
-            .spacing(5)
-            .align_y(Alignment::Center);
-            if let Some((code, fg, bg)) = status_info {
-                let border = Color { a: 0.42, ..fg };
-                file_inner = file_inner.push(
-                    container(
-                        text(code)
-                            .size(type_scale::BADGE)
-                            .color(fg)
-                            .wrapping(text::Wrapping::None),
-                    )
-                    .padding([1, 5])
-                    .style(theme::pill_box(bg, fg, border)),
+        if ignored_dir_loading {
+            files_col = files_col.push(
+                container(
+                    text("Loading folder…")
+                        .size(type_scale::CAPTION)
+                        .color(p.text_muted),
+                )
+                .padding([8, 8]),
+            );
+        } else if visible_files.is_empty() {
+            let empty_msg = if ignored_dir_has_subdirs {
+                "Expand folder on the left to browse subfolders."
+            } else if !q.is_empty() {
+                "No matching files."
+            } else {
+                "Empty folder."
+            };
+            files_col = files_col.push(
+                container(
+                    text(empty_msg)
+                        .size(type_scale::CAPTION)
+                        .color(p.text_muted),
+                )
+                .padding([8, 8]),
+            );
+        } else {
+            for (f, is_ignored) in visible_files {
+                let active = self.active_file_path.as_deref() == Some(f);
+                let name = if !q.is_empty() {
+                    f.to_string()
+                } else if let Some(prefix) = &recursive_prefix {
+                    f.strip_prefix(prefix).unwrap_or(f).to_string()
+                } else {
+                    f.rsplit('/').next().unwrap_or(f).to_string()
+                };
+                let status_info = dirty_map.get(f).copied().map(|(k, _staged)| {
+                    let (fg, bg) = file_state_colors(k, p);
+                    (k.short_code(), fg, bg)
+                });
+                let badge_w = status_info
+                    .map(|(code, _, _)| {
+                        6.0 + theme::estimate_text_width(code, type_scale::BADGE, false) + 12.0
+                    })
+                    .unwrap_or(0.0);
+                let est_w = 14.0
+                    + 12.0
+                    + 5.0
+                    + theme::estimate_text_width(&name, type_scale::BODY, false)
+                    + badge_w
+                    + 8.0;
+                if est_w > max_file_w {
+                    max_file_w = est_w;
+                }
+
+                let icon_color = if let Some((_, fg, _)) = status_info {
+                    fg
+                } else if is_ignored {
+                    Color { a: 0.56, ..p.text_muted }
+                } else {
+                    p.text_muted
+                };
+                let name_color = if let Some((_, fg, _)) = status_info {
+                    fg
+                } else if is_ignored {
+                    if active {
+                        p.text_secondary
+                    } else {
+                        Color { a: 0.72, ..p.text_muted }
+                    }
+                } else {
+                    p.text_primary
+                };
+
+                let mut file_inner = row![
+                    icons::file_code(12.0, icon_color),
+                    text(name).size(type_scale::BODY).color(name_color),
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center);
+                if let Some((code, fg, bg)) = status_info {
+                    let border = Color { a: 0.42, ..fg };
+                    file_inner = file_inner.push(
+                        container(
+                            text(code)
+                                .size(type_scale::BADGE)
+                                .color(fg)
+                                .wrapping(text::Wrapping::None),
+                        )
+                        .padding([1, 5])
+                        .style(theme::pill_box(bg, fg, border)),
+                    );
+                }
+
+                let file_btn = theme::pressable_row(
+                    p,
+                    active,
+                    iced::Padding::from([4, 7]),
+                    theme::clipped_line(file_inner, Length::Fill),
+                    Message::ClickRepoFile(f.to_string()),
+                );
+
+                files_col = files_col.push(
+                    mouse_area(file_btn).on_right_press(Message::OpenContextMenu(
+                        ContextMenuTarget::RepoFile { path: f.to_string() },
+                    )),
                 );
             }
 
-            let file_btn = theme::pressable_row(
-                p,
-                active,
-                iced::Padding::from([4, 7]),
-                theme::clipped_line(file_inner, Length::Fill),
-                Message::ClickRepoFile(f.clone()),
-            );
-
-            files_col = files_col.push(
-                mouse_area(file_btn).on_right_press(Message::OpenContextMenu(
-                    ContextMenuTarget::RepoFile { path: f.clone() },
-                )),
-            );
+            if ignored_dir_truncated {
+                files_col = files_col.push(
+                    container(
+                        text("Showing first 500 entries in this ignored folder.")
+                            .size(type_scale::BADGE)
+                            .color(p.text_muted),
+                    )
+                    .padding([6, 7]),
+                );
+            }
         }
 
         let left_dirs = container(slim_scroll_h(
@@ -1667,17 +1926,19 @@ mod tests {
     #[test]
     fn builds_nested_all_files_folder_tree_with_counts_and_dirty_flags() {
         let mut root = FolderTreeNode::default();
-        root.insert_file("Cargo.toml", false);
-        root.insert_file("crates/gitfleet-ui/src/main.rs", false);
-        root.insert_file("crates/gitfleet-ui/src/views/commit_files.rs", true);
-        root.insert_file("crates/gitfleet-git/src/lib.rs", false);
+        root.insert_file("Cargo.toml", false, false);
+        root.insert_file("crates/gitfleet-ui/src/main.rs", false, false);
+        root.insert_file("crates/gitfleet-ui/src/views/commit_files.rs", true, false);
+        root.insert_file("crates/gitfleet-git/src/lib.rs", false, false);
 
         assert_eq!(root.total_files, 4);
         assert!(root.has_dirty);
+        assert!(!root.is_ignored_only());
 
         let crates = &root.children["crates"];
         assert_eq!(crates.total_files, 3);
         assert!(crates.has_dirty);
+        assert!(!crates.is_ignored_only());
 
         let ui = &crates.children["gitfleet-ui"];
         assert_eq!(ui.total_files, 2);
@@ -1696,6 +1957,46 @@ mod tests {
         expanded.insert("crates".to_string());
         assert!(!is_folder_expanded("", &expanded));
         assert!(is_folder_expanded("crates", &expanded));
+    }
+
+    #[test]
+    fn marks_ignored_only_and_lazy_ignored_folders_correctly_like_vscode() {
+        let mut root = FolderTreeNode::default();
+        root.insert_file("crates/app/main.rs", false, false);
+        // Ignored file inside tracked directory -> parent stays non-ignored
+        root.insert_file("crates/app/.env", false, true);
+        // Ignored file inside ignored-only directory -> folder is dimmed
+        root.insert_file("local_only/.env", false, true);
+
+        let mut cache = HashMap::new();
+        cache.insert(
+            "target".to_string(),
+            gitfleet_git::IgnoredDirListing {
+                files: vec!["target/CACHEDIR.TAG".into()],
+                dirs: vec!["target/debug".into()],
+                truncated: false,
+            },
+        );
+        root.insert_ignored_dir(".vscode", &cache);
+        root.insert_ignored_dir("target", &cache);
+
+        assert!(!root.children["crates"].is_ignored_only());
+        assert!(!root.children["crates"].children["app"].is_ignored_only());
+        assert!(root.children["local_only"].is_ignored_only());
+
+        let vscode = &root.children[".vscode"];
+        assert!(vscode.is_ignored_only());
+        assert!(vscode.lazy_ignored_dir);
+        assert!(!vscode.lazy_loaded);
+
+        let target = &root.children["target"];
+        assert!(target.is_ignored_only());
+        assert!(target.lazy_ignored_dir);
+        assert!(target.lazy_loaded);
+        assert_eq!(target.total_files, 1);
+        assert!(target.children["debug"].is_ignored_only());
+        assert!(target.children["debug"].lazy_ignored_dir);
+        assert!(!target.children["debug"].lazy_loaded);
     }
 
     #[test]

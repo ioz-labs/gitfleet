@@ -464,6 +464,18 @@ impl GitFleetApp {
                     && let Some(repo) = self.current_repo()
                 {
                     self.refresh_vault_summary();
+                    if self.files_mode == crate::app::FilesViewMode::AllFiles {
+                        let mut tasks = vec![
+                            self.load_status_task(repo.clone()),
+                            self.load_all_files_task(repo.clone()),
+                        ];
+                        if self.show_ignored_files {
+                            self.ignored_entries_stale = false;
+                            tasks.push(self.load_ignored_entries_task(repo));
+                        }
+                        return Task::batch(tasks);
+                    }
+                    self.ignored_entries_stale = true;
                     return self.load_status_task(repo);
                 }
                 if self.service.scheduler.take_scheduled_fetch_due() {
@@ -855,6 +867,9 @@ impl GitFleetApp {
                         base_branch,
                         force,
                     }),
+                    ConfirmAction::DeleteRepoEntry { rel_path, is_dir } => {
+                        self.update(Message::DeleteRepoEntry { rel_path, is_dir })
+                    }
                 }
             }
             Message::OpenCherryPickModal { revisions, detail } => {

@@ -19,7 +19,7 @@ pub struct RepoEntry {
     pub secret_key_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceUiState {
     pub selected_repo_id: Option<RepoId>,
     pub collapsed_groups: Vec<String>,
@@ -28,6 +28,25 @@ pub struct WorkspaceUiState {
     pub compact_density: bool,
     #[serde(default)]
     pub light_theme: bool,
+    #[serde(default = "default_show_ignored_files")]
+    pub show_ignored_files: bool,
+}
+
+fn default_show_ignored_files() -> bool {
+    true
+}
+
+impl Default for WorkspaceUiState {
+    fn default() -> Self {
+        Self {
+            selected_repo_id: None,
+            collapsed_groups: Vec::new(),
+            active_tab: None,
+            compact_density: false,
+            light_theme: false,
+            show_ignored_files: default_show_ignored_files(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

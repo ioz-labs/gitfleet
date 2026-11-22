@@ -86,12 +86,18 @@ pub(crate) struct GitFleetApp {
     pub(crate) amend_target: Option<AmendTarget>,
 
     pub(crate) files_mode: FilesViewMode,
+    pub(crate) show_ignored_files: bool,
     pub(crate) file_filter: String,
     pub(crate) selected_dir_filter: Option<String>,
     pub(crate) selected_all_dir: String,
     pub(crate) expanded_all_dirs: HashSet<String>,
     pub(crate) commit_files: Vec<FileChange>,
     pub(crate) all_repo_files: Vec<String>,
+    pub(crate) ignored_repo_files: Vec<String>,
+    pub(crate) ignored_repo_dirs: Vec<String>,
+    pub(crate) ignored_dir_children: HashMap<String, gitfleet_git::IgnoredDirListing>,
+    pub(crate) ignored_entries_loaded: bool,
+    pub(crate) ignored_entries_stale: bool,
 
     // Bottom: Diff / Preview / Edit Viewer
     pub(crate) bottom_mode: BottomViewMode,
@@ -375,12 +381,18 @@ impl GitFleetApp {
             amend_commit: false,
             amend_target: None,
             files_mode: FilesViewMode::Flat,
+            show_ignored_files: ws.ui.show_ignored_files,
             file_filter: String::new(),
             selected_dir_filter: None,
             selected_all_dir: String::new(),
             expanded_all_dirs: HashSet::new(),
             commit_files: Vec::new(),
             all_repo_files: Vec::new(),
+            ignored_repo_files: Vec::new(),
+            ignored_repo_dirs: Vec::new(),
+            ignored_dir_children: HashMap::new(),
+            ignored_entries_loaded: false,
+            ignored_entries_stale: false,
             bottom_mode: BottomViewMode::SideBySideDiff,
             last_text_diff_mode: BottomViewMode::SideBySideDiff,
             csv_prefer_table: true,
@@ -585,7 +597,10 @@ impl GitFleetApp {
             tasks.push(app.load_stashes_task(repo.clone()));
             tasks.push(app.load_tags_task(repo.clone()));
             tasks.push(app.load_worktrees_task(repo.clone()));
-            tasks.push(app.load_all_files_task(repo));
+            tasks.push(app.load_all_files_task(repo.clone()));
+            if app.show_ignored_files {
+                tasks.push(app.load_ignored_entries_task(repo));
+            }
         }
 
         (app, Task::batch(tasks))
@@ -595,6 +610,7 @@ impl GitFleetApp {
         let mut ui = self.service.workspace.current().ui;
         ui.selected_repo_id = self.selected_repo.clone();
         ui.light_theme = self.theme_mode == ThemeMode::Light;
+        ui.show_ignored_files = self.show_ignored_files;
         let _ = self.service.workspace.set_ui_state(ui);
     }
 
@@ -1225,6 +1241,33 @@ impl GitFleetApp {
         } else {
             None
         }
+    }
+
+    pub(crate) fn clear_ignored_repo_cache(&mut self) {
+        self.ignored_repo_files.clear();
+        self.ignored_repo_dirs.clear();
+        self.ignored_dir_children.clear();
+        self.ignored_entries_loaded = false;
+        self.ignored_entries_stale = false;
+    }
+
+    pub(crate) fn is_path_in_ignored_dir(&self, path: &str) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+        self.ignored_repo_dirs.iter().any(|d| {
+            path == d
+                || path
+                    .strip_prefix(d.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
+    pub(crate) fn is_ignored_repo_file(&self, path: &str) -> bool {
+        self.ignored_repo_files
+            .binary_search_by(|p| p.as_str().cmp(path))
+            .is_ok()
+            || self.is_path_in_ignored_dir(path)
     }
 
     pub(crate) fn selected_unstaged_paths(&self) -> Vec<String> {

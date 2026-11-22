@@ -15,9 +15,9 @@ use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{
     AmendTarget, BranchInfo, CommitSummary, ConflictStrategy, DiscardTarget, FileChange,
-    ForecastResult, GitFlowKind, GitFlowState, HunkChoice, MergeMode, OrphanGitlink,
-    ParsedConflictFile, ParsedDiff, ReflogEntry, RepoStatusSummary, ResetMode, StashEntry,
-    SubmoduleInfo, TagInfo, WorktreeInfo,
+    ForecastResult, GitFlowKind, GitFlowState, HunkChoice, IgnoredDirListing, IgnoredEntries,
+    MergeMode, OrphanGitlink, ParsedConflictFile, ParsedDiff, ReflogEntry, RepoStatusSummary,
+    ResetMode, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{IgnoreLayer, OversizedFile, SecretFinding};
@@ -212,15 +212,29 @@ pub(crate) enum Message {
 
     // Files Panel (Right-Top: Flat | Dir | All Files)
     SetFilesViewMode(FilesViewMode),
+    ToggleShowIgnoredFiles,
     FileFilterChanged(String),
     SelectDirFilter(Option<String>),
     SelectAllFilesDir(String),
     ToggleAllFilesDirNode(String),
     AllFilesLoaded(RepoId, Result<Vec<String>, String>),
+    IgnoredEntriesLoaded(RepoId, Result<IgnoredEntries, String>),
+    IgnoredDirChildrenLoaded(RepoId, String, Result<IgnoredDirListing, String>),
     ClickChangedFile(FileChange),
     ClickRepoFile(String),
     SelectChangedFile(FileChange),
     SelectRepoFile(String),
+    OpenRepoFileInMode(String, BottomViewMode),
+    DeleteRepoEntry {
+        rel_path: String,
+        is_dir: bool,
+    },
+    RepoEntryDeleted {
+        repo_id: RepoId,
+        rel_path: String,
+        is_dir: bool,
+        result: Result<bool, String>,
+    },
 
     // Git Status & Actions
     RefreshSelected,

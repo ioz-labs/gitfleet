@@ -67,6 +67,15 @@ impl GitFleetApp {
             ("Files: Flat Changed Mode", "", Message::SetFilesViewMode(FilesViewMode::Flat)),
             ("Files: Dir-Filtered Changes Mode", "", Message::SetFilesViewMode(FilesViewMode::Dir)),
             ("Files: All Files Explorer (VS Code)", "", Message::SetFilesViewMode(FilesViewMode::AllFiles)),
+            (
+                if self.show_ignored_files {
+                    "Files: Hide Gitignored Files in All Files"
+                } else {
+                    "Files: Show Gitignored Files in All Files (.env, etc.)"
+                },
+                "",
+                Message::ToggleShowIgnoredFiles,
+            ),
             ("Files: Search & Replace in Files (Independent Popup)", "", Message::OpenDetachedSearch(None)),
             ("Window: Open Independent File & Diff Studio", "", Message::OpenDetachedViewer),
             ("View: Side by Side Diff", "", Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),

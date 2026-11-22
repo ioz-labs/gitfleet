@@ -105,12 +105,11 @@ impl GitFleetApp {
                                         tab.line_ending = res.line_ending;
                                         tab.encoding = res.encoding;
                                         tab.trailing_newline = res.content.ends_with('\n');
-                                        tab.editor_content =
-                                            text_editor::Content::with_text(&res.content);
-                                        if let Some(p) = tab.file_path.clone() {
-                                            tab.preview_state =
-                                                PreviewState::from_file(&p, Some(&res.content));
-                                            tab.sync_preview_editor();
+                                        tab.raw_text = Some(res.content);
+                                        tab.editor_hydrated = false;
+                                        tab.preview_hydrated = false;
+                                        tab.hydrate_active_mode();
+                                        if let Some(p) = tab.file_path.as_deref() {
                                             should_refresh_host = host_repo_path
                                                 .as_ref()
                                                 .is_some_and(|rp| p.starts_with(rp));
@@ -145,10 +144,14 @@ impl GitFleetApp {
                             (tab.doc_id.clone(), tab.doc_version.clone())
                     {
                         let res = if tab.dirty {
-                            let content = format_editor_text_for_save(
-                                &tab.editor_content,
-                                tab.trailing_newline,
-                            );
+                            let content = if tab.editor_hydrated {
+                                format_editor_text_for_save(
+                                    &tab.editor_content,
+                                    tab.trailing_newline,
+                                )
+                            } else {
+                                tab.raw_text.clone().unwrap_or_default()
+                            };
                             docs.save_document_detailed(
                                 &doc_id,
                                 &content,
@@ -165,13 +168,12 @@ impl GitFleetApp {
                                 tab.line_ending = saved.line_ending;
                                 tab.encoding = saved.encoding;
                                 tab.trailing_newline = saved.content.ends_with('\n');
+                                tab.raw_text = Some(saved.content);
                                 tab.dirty = false;
-                                tab.editor_content =
-                                    text_editor::Content::with_text(&saved.content);
-                                if let Some(p) = tab.file_path.clone() {
-                                    tab.preview_state =
-                                        PreviewState::from_file(&p, Some(&saved.content));
-                                    tab.sync_preview_editor();
+                                tab.editor_hydrated = false;
+                                tab.preview_hydrated = false;
+                                tab.hydrate_active_mode();
+                                if let Some(p) = tab.file_path.as_deref() {
                                     should_refresh_host = host_repo_path
                                         .as_ref()
                                         .is_some_and(|rp| p.starts_with(rp));
@@ -215,12 +217,11 @@ impl GitFleetApp {
                                 tab.line_ending = cap.line_ending;
                                 tab.encoding = cap.encoding;
                                 tab.trailing_newline = cap.content.ends_with('\n');
+                                tab.raw_text = Some(cap.content);
                                 tab.dirty = false;
-                                tab.editor_content =
-                                    text_editor::Content::with_text(&cap.content);
-                                tab.preview_state =
-                                    PreviewState::from_file(&path, Some(&cap.content));
-                                tab.sync_preview_editor();
+                                tab.editor_hydrated = false;
+                                tab.preview_hydrated = false;
+                                tab.hydrate_active_mode();
                                 v.recompute_in_file_matches(false);
                                 v.status_is_error = false;
                                 v.status_note = format!("Reopened with {}", encoding.label());
@@ -235,13 +236,249 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::RefreshExplorer => self.spawn_explorer_scan_task(win_id),
+            DetachedAction::ToggleExplorerShowIgnored => {
+                let should_rescan = if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                    v.explorer_show_ignored = !v.explorer_show_ignored;
+                    if !v.explorer_show_ignored {
+                        v.rebuild_explorer_tree();
+                    }
+                    v.explorer_show_ignored
+                } else {
+                    false
+                };
+                if should_rescan {
+                    self.spawn_explorer_scan_task(win_id)
+                } else {
+                    Task::none()
+                }
+            }
+            DetachedAction::ToggleExplorerDir(dir) => {
+                let load_params = if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                    v.explorer_menu = None;
+                    let expanded = if v.explorer_expanded_dirs.remove(&dir) {
+                        false
+                    } else {
+                        v.explorer_expanded_dirs.insert(dir.clone());
+                        true
+                    };
+                    if expanded
+                        && v.explorer_show_ignored
+                        && v.is_explorer_path_in_ignored_dir(&dir)
+                        && !v.explorer_ignored_dir_children.contains_key(&dir)
+                    {
+                        v.search_root
+                            .clone()
+                            .map(|root| (v.explorer_request_id, root, dir))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((rid, root, rel_dir)) = load_params {
+                    self.spawn_explorer_ignored_dir_task(win_id, rid, root, rel_dir)
+                } else {
+                    Task::none()
+                }
+            }
+            DetachedAction::ExplorerFilesLoaded(rid, files, ignored) => {
+                let reload_params = if let Some(v) = self.detached_viewers.get_mut(&win_id)
+                    && rid == v.explorer_request_id
+                {
+                    v.explorer_loading = false;
+                    v.explorer_files = files;
+                    v.explorer_ignored_files = ignored.files;
+                    v.explorer_ignored_dirs = ignored.dirs;
+                    v.explorer_ignored_dir_children.clear();
+                    v.rebuild_explorer_tree();
+                    if v.explorer_show_ignored
+                        && let Some(root) = v.search_root.clone()
+                    {
+                        let dirs: Vec<String> = v
+                            .explorer_expanded_dirs
+                            .iter()
+                            .filter(|d| v.is_explorer_path_in_ignored_dir(d))
+                            .cloned()
+                            .collect();
+                        Some((rid, root, dirs))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((req_id, root, dirs)) = reload_params
+                    && !dirs.is_empty()
+                {
+                    let tasks = dirs.into_iter().map(|d| {
+                        self.spawn_explorer_ignored_dir_task(win_id, req_id, root.clone(), d)
+                    });
+                    return Task::batch(tasks);
+                }
+                Task::none()
+            }
             DetachedAction::OpenExplorerFile(rel) => {
-                let full = self
-                    .detached_viewers
-                    .get(&win_id)
-                    .and_then(|v| v.search_root.as_ref().map(|r| r.join(&rel)));
+                let full = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    v.explorer_menu = None;
+                    v.search_root.as_ref().map(|r| r.join(&rel))
+                });
                 if let Some(p) = full {
                     return self.open_or_focus_file_tab(win_id, p, None, false);
+                }
+                Task::none()
+            }
+            DetachedAction::RevealExplorerEntry(rel) => {
+                let abs = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    v.explorer_menu = None;
+                    v.search_root.as_ref().map(|r| r.join(&rel))
+                });
+                if let Some(p) = abs {
+                    return self.update(Message::RevealPathInExplorer(p));
+                }
+                Task::none()
+            }
+            DetachedAction::ConfirmDeleteExplorerEntry => {
+                let params = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    let pending = v.pending_delete.take()?;
+                    let root = v.search_root.clone()?;
+                    v.status_is_error = false;
+                    v.status_note = format!(
+                        "Deleting {} '{}'…",
+                        if pending.is_dir { "folder" } else { "file" },
+                        pending.rel_path
+                    );
+                    Some((root, pending.rel_path, pending.is_dir))
+                });
+                let Some((root, rel_path, is_dir)) = params else {
+                    return Task::none();
+                };
+                let abs_path = root.join(&rel_path);
+                let rel_for_task = rel_path.clone();
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            gitfleet_git::delete_workspace_entry(&root, &rel_for_task)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Delete task failed: {e}")));
+                        (rel_path, is_dir, abs_path, result)
+                    },
+                    move |(rel_path, is_dir, abs_path, result)| {
+                        Message::Detached(
+                            win_id,
+                            DetachedAction::ExplorerEntryDeleted {
+                                rel_path,
+                                is_dir,
+                                abs_path,
+                                result,
+                            },
+                        )
+                    },
+                )
+            }
+            DetachedAction::ExplorerEntryDeleted {
+                rel_path,
+                is_dir,
+                abs_path,
+                result,
+            } => {
+                let kind_label = if is_dir { "folder" } else { "file" };
+                let host_repo_path = self.current_repo().map(|r| r.path);
+                match result {
+                    Ok(removed) => {
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            v.close_tabs_under_path(&abs_path, is_dir);
+                            let matches_deleted = |candidate: &str| -> bool {
+                                candidate == rel_path
+                                    || (is_dir
+                                        && candidate
+                                            .strip_prefix(rel_path.as_str())
+                                            .is_some_and(|rest| rest.starts_with('/')))
+                            };
+                            v.explorer_expanded_dirs.retain(|d| !matches_deleted(d));
+                            v.explorer_ignored_dir_children
+                                .retain(|d, _| !matches_deleted(d));
+                            v.status_is_error = false;
+                            v.status_note = if removed {
+                                format!("Deleted {kind_label} '{rel_path}'")
+                            } else {
+                                format!("'{rel_path}' was already removed")
+                            };
+                        }
+
+                        // Clear Host active editor if the deleted entry was currently open there
+                        if let Some(open_p) = self.open_doc_path.as_deref()
+                            && (open_p == abs_path || (is_dir && open_p.starts_with(&abs_path)))
+                        {
+                            self.active_file_path = None;
+                            self.open_doc_raw_text = None;
+                            self.open_doc_id = None;
+                            self.open_doc_version = None;
+                            self.open_doc_path = None;
+                            self.editor_dirty = false;
+                            self.preview_hydrated = false;
+                            self.editor_hydrated = false;
+                            self.preview_state = PreviewState::Empty;
+                            self.editor_content = text_editor::Content::new();
+                            self.diff_title = "No file selected".into();
+                            self.clear_diff_parsed_and_cache();
+                        }
+
+                        let mut tasks = vec![self.spawn_explorer_scan_task(win_id)];
+                        if host_repo_path
+                            .as_deref()
+                            .is_some_and(|rp| abs_path.starts_with(rp))
+                        {
+                            tasks.push(self.update(Message::RefreshSelected));
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Err(err) => {
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            v.status_is_error = true;
+                            v.status_note = format!("Delete failed: {err}");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            DetachedAction::SingleFilePicked(Some(path)) => {
+                self.open_or_focus_file_tab(win_id, path, None, false)
+            }
+            DetachedAction::ReloadFiles => {
+                let target = self.detached_viewers.get(&win_id).and_then(|v| {
+                    v.active_tab().map(|tab| {
+                        (
+                            tab.id,
+                            tab.left_path.clone(),
+                            tab.right_path.clone(),
+                            tab.file_path.clone(),
+                            tab.last_text_diff_mode,
+                        )
+                    })
+                });
+                if let Some((_, Some(left), Some(right), _, pref)) = target {
+                    if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                        v.request_id = v.request_id.wrapping_add(1);
+                        let req_id = v.request_id;
+                        v.loading = true;
+                        v.status_is_error = false;
+                        v.status_note = "Reloading comparison…".into();
+                        return super::io::spawn_compare_task(win_id, req_id, left, right, pref);
+                    }
+                } else if let Some((tab_id, _, _, Some(path), _)) = target {
+                    let req = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                        v.status_is_error = false;
+                        v.status_note = format!("Reloading {}…", file_display_name(&path));
+                        let tab = v.tabs.iter_mut().find(|t| t.id == tab_id)?;
+                        tab.file_load_req_id = tab.file_load_req_id.wrapping_add(1);
+                        tab.loading_file = true;
+                        Some(tab.file_load_req_id)
+                    });
+                    if let Some(f_req) = req {
+                        return self.spawn_tab_file_load_task(win_id, tab_id, f_req, path, None);
+                    }
                 }
                 Task::none()
             }
@@ -310,11 +547,10 @@ impl GitFleetApp {
                 } else {
                     false
                 };
-                let exp_task = self.spawn_explorer_scan_task(win_id);
                 if rerun {
-                    Task::batch([exp_task, self.spawn_detached_search_task(win_id)])
+                    self.spawn_detached_search_task(win_id)
                 } else {
-                    exp_task
+                    Task::none()
                 }
             }
             DetachedAction::SearchRootPicked(Some(dir)) => {
@@ -322,6 +558,7 @@ impl GitFleetApp {
                     v.search_root_name = Some(file_display_name(&dir));
                     v.search_root = Some(dir);
                     v.explorer_expanded_dirs.clear();
+                    v.clear_explorer_ignored_cache();
                     v.search_confirm_replace_all = false;
                     v.search_has_run
                 } else {
@@ -526,9 +763,14 @@ impl GitFleetApp {
                     self.open_doc_version = Some(cap.version);
                     self.open_doc_encoding = cap.encoding;
                     self.open_doc_line_ending = cap.line_ending;
-                    self.editor_content = text_editor::Content::with_text(&cap.content);
-                    self.preview_state = PreviewState::from_file(&host_open, Some(&cap.content));
-                    self.sync_preview_editor();
+                    self.open_doc_raw_text = Some(cap.content);
+                    self.preview_hydrated = false;
+                    self.editor_hydrated = false;
+                    if self.bottom_mode == crate::app::BottomViewMode::Preview {
+                        self.ensure_preview_hydrated();
+                    } else if self.bottom_mode == crate::app::BottomViewMode::Edit {
+                        self.ensure_editor_hydrated();
+                    }
                 }
 
                 let mut tasks = Vec::new();
@@ -594,11 +836,11 @@ impl GitFleetApp {
                 tab.diff_image = payload.image_diff;
                 tab.diff_csv = payload.csv_diff;
                 tab.csv_filter.clear();
-                tab.preview_state = match payload.preview_source {
-                    Some((path, text_opt)) => PreviewState::from_file(&path, text_opt.as_deref()),
-                    None => PreviewState::Empty,
-                };
-                tab.sync_preview_editor();
+                tab.loading_file = false;
+                tab.editor_hydrated = false;
+                tab.preview_hydrated = false;
+                tab.preview_state = PreviewState::Empty;
+                tab.preview_editor = text_editor::Content::new();
 
                 if let Some((path, text_str, enc, eol)) = payload.editable_source {
                     tab.language = CodeLanguage::from_path(&path);
@@ -612,14 +854,14 @@ impl GitFleetApp {
                         tab.encoding = cap.encoding;
                         tab.line_ending = cap.line_ending;
                         tab.trailing_newline = cap.content.ends_with('\n');
-                        tab.editor_content = text_editor::Content::with_text(&cap.content);
+                        tab.raw_text = Some(cap.content);
                     } else {
                         tab.doc_id = None;
                         tab.doc_version = None;
                         tab.encoding = enc;
                         tab.line_ending = eol;
                         tab.trailing_newline = text_str.ends_with('\n');
-                        tab.editor_content = text_editor::Content::with_text(&text_str);
+                        tab.raw_text = Some(text_str);
                     }
                     tab.file_path = Some(path);
                     tab.dirty = false;
@@ -632,11 +874,13 @@ impl GitFleetApp {
                         .unwrap_or(CodeLanguage::PlainText);
                     tab.doc_id = None;
                     tab.doc_version = None;
+                    tab.raw_text = payload.preview_source.and_then(|(_, t)| t);
                     tab.editor_content = text_editor::Content::new();
                     tab.dirty = false;
                 }
 
                 tab.mode = payload.preferred_mode;
+                tab.hydrate_active_mode();
                 tab.reset_scroll_state();
                 tab.rebuild_diff_cache(theme_mode);
                 let scroll_task = tab.reset_scroll_task();
