@@ -1,12 +1,12 @@
 ; GitFleet Windows Installer Script (Inno Setup 6.3+)
 ;
 ; Build manually on Windows:
-;   iscc /DMyAppVersion=0.4.0 /DMyExePath=..\..\target\release\gitfleet.exe ^
+;   iscc /DMyAppVersion=0.4.1 /DMyExePath=..\..\target\release\gitfleet.exe ^
 ;        /DMyArch=x64compatible /DMyOutputDir=..\..\dist\out ^
 ;        /DMyOutputName=gitfleet-windows-x86_64-setup packaging\windows\gitfleet.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.0"
+  #define MyAppVersion "0.4.1"
 #endif
 #ifndef MyExePath
   #define MyExePath "..\..\target\release\gitfleet.exe"

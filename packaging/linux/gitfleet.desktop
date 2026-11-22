@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=GitFleet
+Comment=Pure-Rust multi-repository Git desktop workspace manager
+Exec=gitfleet
+Icon=gitfleet
+Terminal=false
+Type=Application
+Categories=Development;RevisionControl;
+Keywords=git;vcs;repository;workspace;

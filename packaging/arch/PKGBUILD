@@ -1,0 +1,75 @@
+# Maintainer: GitFleet Contributors <https://github.com/ioz-labs/gitfleet>
+pkgname=gitfleet
+pkgver=0.4.1
+pkgrel=1
+pkgdesc="Open-source, 100% pure-Rust multi-repository Git desktop workspace manager"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ioz-labs/gitfleet"
+license=('MIT')
+depends=(
+  'git'
+  'glibc'
+  'fontconfig'
+  'libxkbcommon'
+  'hicolor-icon-theme'
+)
+makedepends=(
+  'cargo'
+  'pkgconf'
+  'wayland'
+  'libx11'
+  'libxcb'
+)
+optdepends=(
+  'libxkbcommon-x11: X11 keyboard support'
+  'wayland: Wayland display support'
+  'vulkan-icd-loader: hardware-accelerated GPU rendering'
+  'xdg-desktop-portal: native file chooser dialogs'
+)
+conflicts=('gitfleet-bin' 'gitfleet-git')
+options=('!lto')
+source=("git+${url}.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "${srcdir}/${pkgname}"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${srcdir}/${pkgname}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p gitfleet-ui
+}
+
+check() {
+  cd "${srcdir}/${pkgname}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --workspace --lib --bins
+}
+
+package() {
+  cd "${srcdir}/${pkgname}"
+  install -Dm755 "target/release/gitfleet" "${pkgdir}/usr/bin/gitfleet"
+  if [[ -f "packaging/linux/gitfleet.desktop" ]]; then
+    install -Dm644 "packaging/linux/gitfleet.desktop" "${pkgdir}/usr/share/applications/gitfleet.desktop"
+  else
+    install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/gitfleet.desktop" <<'EOF'
+[Desktop Entry]
+Name=GitFleet
+Comment=Pure-Rust multi-repository Git desktop workspace manager
+Exec=gitfleet
+Icon=gitfleet
+Terminal=false
+Type=Application
+Categories=Development;RevisionControl;
+Keywords=git;vcs;repository;workspace;
+EOF
+  fi
+  install -Dm644 "assets/icon.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/gitfleet.png"
+  install -Dm644 "LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

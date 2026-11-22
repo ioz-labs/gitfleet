@@ -68,8 +68,8 @@ Download the latest release for your platform from the [GitHub Releases](https:/
 | **Windows** | `x86_64` | `gitfleet-windows-x86_64.zip` |
 | **Windows** | `ARM64` | `gitfleet-windows-arm64.zip` |
 | **macOS** | Apple Silicon (`arm64`) | `gitfleet-macos-arm64.dmg` |
-| **Linux** | `x86_64` | `gitfleet-linux-x86_64.tar.gz`, `gitfleet-linux-x86_64.deb` |
-| **Linux** | `ARM64` | `gitfleet-linux-arm64.tar.gz`, `gitfleet-linux-arm64.deb` |
+| **Linux** | `x86_64` | `gitfleet-linux-x86_64.tar.gz`, `gitfleet-linux-x86_64.deb`, `gitfleet-<ver>-1-x86_64.pkg.tar.zst` |
+| **Linux** | `ARM64` (`aarch64`) | `gitfleet-linux-arm64.tar.gz`, `gitfleet-linux-arm64.deb`, `gitfleet-<ver>-1-aarch64.pkg.tar.zst` |
 
 #### Platform Notes
 
@@ -79,6 +79,49 @@ Download the latest release for your platform from the [GitHub Releases](https:/
   ```bash
   sudo apt install ./gitfleet-linux-x86_64.deb   # or gitfleet-linux-arm64.deb
   ```
+
+### Linux (`pacman` — Arch Linux & Derivatives, `x86_64` & `aarch64`)
+
+Works on Arch Linux, Manjaro, EndeavourOS, CachyOS, Garuda, Artix, SteamOS, Arch Linux ARM, and any other `pacman`-based Linux distribution on `x86_64` or `aarch64`.
+
+#### Option 1: Add the GitFleet `pacman` Repository (Recommended — Auto-Updates via `pacman -Syu`)
+
+Register the GitHub Releases `pacman` repository (automatically matches your CPU architecture via `uname -m`) and install:
+
+```bash
+sudo tee -a /etc/pacman.conf >/dev/null <<EOF
+
+[gitfleet-$(uname -m)]
+SigLevel = Never
+Server = https://github.com/ioz-labs/gitfleet/releases/latest/download
+EOF
+
+sudo pacman -Sy gitfleet
+```
+
+> **Note:** Subsequent releases update automatically whenever you run `sudo pacman -Syu`. Packages are served over HTTPS and checked by `pacman` against the SHA-256 digests embedded in `gitfleet-<arch>.db`.
+
+#### Option 2: Install a Downloaded `.pkg.tar.zst` Package (`pacman -U`)
+
+If you prefer not to edit `/etc/pacman.conf`, download `gitfleet-<version>-1-x86_64.pkg.tar.zst` (or `aarch64`) from [GitHub Releases](https://github.com/ioz-labs/gitfleet/releases) and install it directly:
+
+```bash
+sudo pacman -U ./gitfleet-*-x86_64.pkg.tar.zst   # or ./gitfleet-*-aarch64.pkg.tar.zst
+```
+
+#### Option 3: Build a Native Package from Source (`PKGBUILD` / `makepkg`)
+
+```bash
+git clone --depth=1 https://github.com/ioz-labs/gitfleet.git
+cd gitfleet/packaging/arch
+makepkg -si
+```
+
+To remove GitFleet later:
+
+```bash
+sudo pacman -Rns gitfleet
+```
 
 ---
 
@@ -95,6 +138,13 @@ sudo apt-get update && sudo apt-get install -y \
   pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
   libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
   libfontconfig1-dev libssl-dev
+```
+
+On Arch Linux (and `pacman`-based distributions):
+
+```bash
+sudo pacman -S --needed \
+  pkgconf libxkbcommon wayland libx11 libxcb fontconfig openssl
 ```
 
 On macOS, ensure Command Line Tools are installed (`xcode-select --install`). On Windows, install Visual Studio Build Tools with C++ support.

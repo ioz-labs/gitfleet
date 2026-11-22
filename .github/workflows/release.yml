@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version label for manual build artifacts (e.g. 0.4.0)"
+        description: "Optional version label for manual build artifacts (e.g. 0.4.1)"
         required: false
         default: ""
 
@@ -98,12 +98,14 @@ jobs:
             artifact_name: gitfleet-linux-x86_64
             platform: linux
             deb_arch: amd64
+            arch_pkg_arch: x86_64
           - label: Linux ARM64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: gitfleet-linux-arm64
             platform: linux
             deb_arch: arm64
+            arch_pkg_arch: aarch64
 
     steps:
       - name: Checkout repository
@@ -133,9 +135,10 @@ jobs:
             Write-Host "Skipping Defender exclusions: $_"
           }
 
-      - name: Install Linux GUI system libraries
+      - name: Install Linux GUI system libraries & packaging tools
         if: matrix.platform == 'linux'
         run: |
+          grep -Rq 'universe' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || sudo add-apt-repository -y universe
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
@@ -147,7 +150,12 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libfontconfig1-dev \
-            libssl-dev
+            libssl-dev \
+            libarchive-tools \
+            zstd \
+            fakeroot \
+            pacman-package-manager \
+            makepkg
 
       - name: Install Rust toolchain & target
         uses: dtolnay/rust-toolchain@stable
@@ -295,7 +303,7 @@ jobs:
             -format UDZO \
             "dist/out/${{ matrix.artifact_name }}.dmg"
 
-      - name: Package Linux (.tar.gz + .deb)
+      - name: Package Linux (.tar.gz + .deb + pacman .pkg.tar.zst)
         if: matrix.platform == 'linux'
         shell: bash
         run: |
@@ -306,18 +314,7 @@ jobs:
 
           cp "${BIN_DIR}/gitfleet" "dist/tar/${{ matrix.artifact_name }}/gitfleet"
           chmod +x "dist/tar/${{ matrix.artifact_name }}/gitfleet"
-          cp README.md LICENSE assets/icon.png "dist/tar/${{ matrix.artifact_name }}/"
-
-          cat > "dist/tar/${{ matrix.artifact_name }}/gitfleet.desktop" <<'EOF'
-          [Desktop Entry]
-          Name=GitFleet
-          Comment=Pure-Rust multi-repository Git desktop workspace manager
-          Exec=gitfleet
-          Icon=gitfleet
-          Terminal=false
-          Type=Application
-          Categories=Development;RevisionControl;
-          EOF
+          cp README.md LICENSE assets/icon.png packaging/linux/gitfleet.desktop "dist/tar/${{ matrix.artifact_name }}/"
 
           tar -C dist/tar -czf "dist/out/${{ matrix.artifact_name }}.tar.gz" "${{ matrix.artifact_name }}"
 
@@ -326,7 +323,7 @@ jobs:
           mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/usr/bin" "$DEB_ROOT/usr/share/applications" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
           cp "${BIN_DIR}/gitfleet" "$DEB_ROOT/usr/bin/gitfleet"
           chmod 755 "$DEB_ROOT/usr/bin/gitfleet"
-          cp "dist/tar/${{ matrix.artifact_name }}/gitfleet.desktop" "$DEB_ROOT/usr/share/applications/gitfleet.desktop"
+          cp packaging/linux/gitfleet.desktop "$DEB_ROOT/usr/share/applications/gitfleet.desktop"
           cp assets/icon.png "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/gitfleet.png"
 
           cat > "$DEB_ROOT/DEBIAN/control" <<EOF
@@ -341,6 +338,17 @@ jobs:
           EOF
 
           dpkg-deb --build "$DEB_ROOT" "dist/out/${{ matrix.artifact_name }}.deb"
+
+          # Build Arch Linux / pacman package (.pkg.tar.zst) and pacman repo DB (.db / .files)
+          bash packaging/arch/build-pacman-pkg.sh \
+            --version "${VER}" \
+            --arch "${{ matrix.arch_pkg_arch }}" \
+            --binary "${BIN_DIR}/gitfleet" \
+            --desktop packaging/linux/gitfleet.desktop \
+            --icon assets/icon.png \
+            --license LICENSE \
+            --readme README.md \
+            --out-dir dist/out
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

@@ -1836,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "directories",
  "gitfleet-core",
@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1866,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-docs"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gitfleet-core",
  "serde",
@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-git"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "gitfleet-core",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-scheduler"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gitfleet-core",
  "notify",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-search"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gitfleet-core",
  "ignore",
@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-security"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "age",
  "arboard",
@@ -1922,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-terminal"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gitfleet-core",
  "portable-pty",
@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-ui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arboard",
  "chrono",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "gitfleet-workspace"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "directories",
  "gitfleet-core",
