@@ -663,6 +663,26 @@ where
         .into()
 }
 
+/// Full-width grouped segmented-control track container for compact/narrow responsive headers.
+pub fn segmented_group_fill<'a, M>(p: Palette, content: impl Into<Element<'a, M>>) -> Element<'a, M>
+where
+    M: 'a,
+{
+    container(content)
+        .padding(2)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(p.surface_input)),
+            border: Border {
+                color: p.border_subtle,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 /// Wraps an overlay's full-screen positioned container in an `opaque` click-catching backdrop so
 /// clicks, right-clicks, hover states, tooltips, and wheel scrolling NEVER leak through to widgets
 /// behind the popup/modal.
@@ -1799,26 +1819,268 @@ pub fn estimate_text_width(s: &str, font_size: f32, monospace: bool) -> f32 {
     (units * font_size * 1.04).ceil()
 }
 
-/// Lays out a `(left, right)` pair on a single horizontal row (left-aligned + right-aligned) when
-/// both fit inside the available width, and cleanly wraps `right` onto a second right-aligned row
-/// below `left` when the pane becomes narrow — preventing button labels like "Commit & Push" from
-/// ever squishing or wrapping vertically.
-pub fn responsive_pair<'a, M>(
-    left: impl Into<Element<'a, M>>,
-    right: impl Into<Element<'a, M>>,
-    col_spacing: f32,
-    row_spacing: f32,
+fn pick_adaptive_tier(max_w: f32, breakpoints: &[f32]) -> usize {
+    if !max_w.is_finite() {
+        return 0;
+    }
+    for (idx, &bp) in breakpoints.iter().enumerate() {
+        if max_w + 0.5 >= bp {
+            return idx;
+        }
+    }
+    breakpoints.len()
+}
+
+#[derive(Default)]
+struct AdaptiveWidthState {
+    active: usize,
+}
+
+struct AdaptiveByWidth<'a, M, const N: usize> {
+    variants: [Element<'a, M>; N],
+    breakpoints: [f32; N],
+    width: Length,
+}
+
+impl<'a, M, const N: usize> Widget<M, Theme, Renderer> for AdaptiveByWidth<'a, M, N> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<AdaptiveWidthState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(AdaptiveWidthState::default())
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.variants.iter().map(Tree::new).collect()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&self.variants);
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(self.width, Length::Shrink)
+    }
+
+    fn layout(
+        &self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &adv_layout::Limits,
+    ) -> adv_layout::Node {
+        let max_w = limits.max().width;
+        let idx = pick_adaptive_tier(max_w, &self.breakpoints[..N.saturating_sub(1)]).min(N - 1);
+        tree.state.downcast_mut::<AdaptiveWidthState>().active = idx;
+
+        let child_limits = limits.width(self.width).height(Length::Shrink);
+        let child_node =
+            self.variants[idx]
+                .as_widget()
+                .layout(&mut tree.children[idx], renderer, &child_limits);
+        let resolved = limits.resolve(self.width, Length::Shrink, child_node.size());
+        adv_layout::Node::with_children(resolved, vec![child_node])
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let idx = tree.state.downcast_ref::<AdaptiveWidthState>().active.min(N - 1);
+        if let Some(child_layout) = layout.children().next() {
+            self.variants[idx].as_widget().draw(
+                &tree.children[idx],
+                renderer,
+                theme,
+                style,
+                child_layout,
+                cursor,
+                viewport,
+            );
+        }
+    }
+
+    fn on_event(
+        &mut self,
+        tree: &mut Tree,
+        event: iced::Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) -> event::Status {
+        let idx = tree.state.downcast_ref::<AdaptiveWidthState>().active.min(N - 1);
+        let Some(child_layout) = layout.children().next() else {
+            return event::Status::Ignored;
+        };
+        self.variants[idx].as_widget_mut().on_event(
+            &mut tree.children[idx],
+            event,
+            child_layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        )
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        let idx = tree.state.downcast_ref::<AdaptiveWidthState>().active.min(N - 1);
+        let Some(child_layout) = layout.children().next() else {
+            return mouse::Interaction::None;
+        };
+        self.variants[idx].as_widget().mouse_interaction(
+            &tree.children[idx],
+            child_layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn operate(
+        &self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        let idx = tree.state.downcast_ref::<AdaptiveWidthState>().active.min(N - 1);
+        if let Some(child_layout) = layout.children().next() {
+            self.variants[idx].as_widget().operate(
+                &mut tree.children[idx],
+                child_layout,
+                renderer,
+                operation,
+            );
+        }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        let idx = tree.state.downcast_ref::<AdaptiveWidthState>().active.min(N - 1);
+        let child_layout = layout.children().next()?;
+        self.variants[idx].as_widget_mut().overlay(
+            &mut tree.children[idx],
+            child_layout,
+            renderer,
+            translation,
+        )
+    }
+}
+
+/// Switches between `wide` (`available_width >= breakpoint`) and `compact` directly at layout time
+/// using the widget's exact allocated width budget — preventing narrow resizable panels from ever
+/// crushing headers, wrapping button labels vertically, or hiding titles.
+pub fn adaptive_width<'a, M>(
+    breakpoint: f32,
+    width: Length,
+    wide: impl Into<Element<'a, M>>,
+    compact: impl Into<Element<'a, M>>,
 ) -> Element<'a, M>
 where
     M: 'a,
 {
-    struct ResponsivePair<'a, M> {
+    Element::new(AdaptiveByWidth {
+        variants: [wide.into(), compact.into()],
+        breakpoints: [breakpoint, 0.0],
+        width,
+    })
+}
+
+/// Three-tier width-adaptive container (`wide` >= `wide_bp`, `medium` >= `medium_bp`, else `compact`).
+pub fn adaptive_width_3<'a, M>(
+    wide_bp: f32,
+    medium_bp: f32,
+    width: Length,
+    wide: impl Into<Element<'a, M>>,
+    medium: impl Into<Element<'a, M>>,
+    compact: impl Into<Element<'a, M>>,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    Element::new(AdaptiveByWidth {
+        variants: [wide.into(), medium.into(), compact.into()],
+        breakpoints: [wide_bp, medium_bp, 0.0],
+        width,
+    })
+}
+
+fn compute_responsive_split(
+    size: Size,
+    breakpoint: f32,
+    first_ratio: f32,
+    spacing: f32,
+) -> (bool, Rectangle, Rectangle) {
+    let w = size.width.max(1.0);
+    let h = size.height.max(1.0);
+    let ratio = first_ratio.clamp(0.20, 0.80);
+    let gap = spacing.max(0.0);
+
+    if w + 0.5 >= breakpoint {
+        let avail = (w - gap).max(2.0);
+        let w1 = (avail * ratio).round().clamp(1.0, (avail - 1.0).max(1.0));
+        let w2 = (avail - w1).max(1.0);
+        (
+            true,
+            Rectangle::new(Point::ORIGIN, Size::new(w1, h)),
+            Rectangle::new(Point::new(w1 + gap, 0.0), Size::new(w2, h)),
+        )
+    } else {
+        let avail = (h - gap).max(2.0);
+        let h1 = (avail * ratio).round().clamp(1.0, (avail - 1.0).max(1.0));
+        let h2 = (avail - h1).max(1.0);
+        (
+            false,
+            Rectangle::new(Point::ORIGIN, Size::new(w, h1)),
+            Rectangle::new(Point::new(0.0, h1 + gap), Size::new(w, h2)),
+        )
+    }
+}
+
+/// Lays out two panes side-by-side (`first_ratio` / `1 - first_ratio`) when available width >=
+/// `breakpoint`, and stacks them vertically when narrower — keeping a single stable widget tree
+/// for both panes so scroll positions never reset across orientation changes.
+pub fn responsive_split<'a, M>(
+    breakpoint: f32,
+    first_ratio: f32,
+    spacing: f32,
+    first: impl Into<Element<'a, M>>,
+    second: impl Into<Element<'a, M>>,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    struct ResponsiveSplit<'a, M> {
         children: [Element<'a, M>; 2],
-        col_spacing: f32,
-        row_spacing: f32,
+        breakpoint: f32,
+        first_ratio: f32,
+        spacing: f32,
     }
 
-    impl<'a, M> Widget<M, Theme, Renderer> for ResponsivePair<'a, M> {
+    impl<'a, M> Widget<M, Theme, Renderer> for ResponsiveSplit<'a, M> {
         fn tag(&self) -> tree::Tag {
             tree::Tag::stateless()
         }
@@ -1836,7 +2098,7 @@ where
         }
 
         fn size(&self) -> Size<Length> {
-            Size::new(Length::Fill, Length::Shrink)
+            Size::new(Length::Fill, Length::Fill)
         }
 
         fn layout(
@@ -1845,54 +2107,20 @@ where
             renderer: &Renderer,
             limits: &adv_layout::Limits,
         ) -> adv_layout::Node {
-            let max_w = limits.max().width;
-            let max_h = limits.max().height;
-            let child_limits = adv_layout::Limits::new(Size::ZERO, Size::new(max_w, max_h));
-
-            let left_node =
-                self.children[0]
-                    .as_widget()
-                    .layout(&mut tree.children[0], renderer, &child_limits);
-            let right_node =
-                self.children[1]
-                    .as_widget()
-                    .layout(&mut tree.children[1], renderer, &child_limits);
-
-            let left_sz = left_node.size();
-            let right_sz = right_node.size();
-
-            let eff_w = if max_w.is_finite() {
-                max_w
-            } else {
-                left_sz.width + self.col_spacing + right_sz.width
-            };
-
-            if left_sz.width + self.col_spacing + right_sz.width <= eff_w + 0.5 {
-                let total_h = left_sz.height.max(right_sz.height);
-                let left_y = ((total_h - left_sz.height) * 0.5).max(0.0);
-                let right_y = ((total_h - right_sz.height) * 0.5).max(0.0);
-                let right_x = (eff_w - right_sz.width).max(left_sz.width + self.col_spacing);
-                let resolved = limits.resolve(Length::Fill, Length::Shrink, Size::new(eff_w, total_h));
-                adv_layout::Node::with_children(
-                    resolved,
-                    vec![
-                        left_node.move_to(Point::new(0.0, left_y)),
-                        right_node.move_to(Point::new(right_x, right_y)),
-                    ],
-                )
-            } else {
-                let total_h = left_sz.height + self.row_spacing + right_sz.height;
-                let right_x = (eff_w - right_sz.width).max(0.0);
-                let right_y = left_sz.height + self.row_spacing;
-                let resolved = limits.resolve(Length::Fill, Length::Shrink, Size::new(eff_w, total_h));
-                adv_layout::Node::with_children(
-                    resolved,
-                    vec![
-                        left_node.move_to(Point::ORIGIN),
-                        right_node.move_to(Point::new(right_x, right_y)),
-                    ],
-                )
-            }
+            let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
+            let (_, r0, r1) =
+                compute_responsive_split(size, self.breakpoint, self.first_ratio, self.spacing);
+            let l0 = adv_layout::Limits::new(r0.size(), r0.size());
+            let l1 = adv_layout::Limits::new(r1.size(), r1.size());
+            let n0 = self.children[0]
+                .as_widget()
+                .layout(&mut tree.children[0], renderer, &l0)
+                .move_to(r0.position());
+            let n1 = self.children[1]
+                .as_widget()
+                .layout(&mut tree.children[1], renderer, &l1)
+                .move_to(r1.position());
+            adv_layout::Node::with_children(size, vec![n0, n1])
         }
 
         fn draw(
@@ -2006,16 +2234,43 @@ where
         }
     }
 
-    Element::new(ResponsivePair {
-        children: [left.into(), right.into()],
-        col_spacing,
-        row_spacing,
+    Element::new(ResponsiveSplit {
+        children: [first.into(), second.into()],
+        breakpoint,
+        first_ratio,
+        spacing,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_tier_and_responsive_split_switch_cleanly_at_breakpoints() {
+        assert_eq!(pick_adaptive_tier(400.0, &[300.0]), 0);
+        assert_eq!(pick_adaptive_tier(299.6, &[300.0]), 0);
+        assert_eq!(pick_adaptive_tier(240.0, &[300.0]), 1);
+        assert_eq!(pick_adaptive_tier(f32::INFINITY, &[300.0]), 0);
+
+        assert_eq!(pick_adaptive_tier(380.0, &[355.0, 235.0]), 0);
+        assert_eq!(pick_adaptive_tier(290.0, &[355.0, 235.0]), 1);
+        assert_eq!(pick_adaptive_tier(185.0, &[355.0, 235.0]), 2);
+
+        let (horiz, r0, r1) = compute_responsive_split(Size::new(360.0, 300.0), 290.0, 0.40, 6.0);
+        assert!(horiz);
+        assert_eq!(r0.x, 0.0);
+        assert_eq!(r0.height, 300.0);
+        assert_eq!(r1.x, r0.width + 6.0);
+        assert!((r0.width + 6.0 + r1.width - 360.0).abs() < 0.01);
+
+        let (horiz, t0, t1) = compute_responsive_split(Size::new(190.0, 300.0), 290.0, 0.42, 6.0);
+        assert!(!horiz);
+        assert_eq!(t0.y, 0.0);
+        assert_eq!(t0.width, 190.0);
+        assert_eq!(t1.y, t0.height + 6.0);
+        assert!((t0.height + 6.0 + t1.height - 300.0).abs() < 0.01);
+    }
 
     #[test]
     fn popup_origin_anchors_and_flips_cleanly_at_viewport_edges() {

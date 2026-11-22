@@ -697,14 +697,16 @@ impl GitFleetApp {
                         ResizeTarget::TopRightSplit => {
                             let right_left = self.sidebar_width + 6.0;
                             let right_w = (main_w - right_left - 12.0).max(300.0);
+                            let max_ratio = (1.0 - 185.0 / right_w).clamp(0.45, 0.78);
                             self.top_right_split_ratio =
-                                ((pos.x - right_left) / right_w).clamp(0.22, 0.78);
+                                ((pos.x - right_left) / right_w).clamp(0.22, max_ratio);
                         }
                         ResizeTarget::CommitFilesSplit => {
                             let top_right_top = top_chrome + 6.0;
                             let top_right_h = ((main_h - 12.0) * self.right_split_ratio).max(160.0);
+                            let min_ratio = (145.0 / top_right_h).clamp(0.18, 0.50);
                             self.commit_files_split_ratio =
-                                ((pos.y - top_right_top) / top_right_h).clamp(0.18, 0.76);
+                                ((pos.y - top_right_top) / top_right_h).clamp(min_ratio, 0.76);
                         }
                         ResizeTarget::FilesStagedSplit => {
                             let top_right_top = top_chrome + 6.0;

@@ -356,17 +356,23 @@ impl GitFleetApp {
         match &self.graph_selection {
             GraphSelection::WorkingTree => {
                 let staged_n = active_status.map(|s| s.staged_count).unwrap_or(0);
-                let mut hdr = row![
-                    theme::clipped_line(
-                        text("Commit").size(type_scale::BODY).color(p.text_primary),
-                        Length::Shrink,
-                    ),
+                let first_line_len = self
+                    .commit_editor
+                    .line(0)
+                    .map(|l| l.chars().count())
+                    .unwrap_or(0);
+                let line_count = self.commit_editor.line_count();
+
+                let mut wide_hdr_left = row![
+                    text("Commit")
+                        .size(type_scale::BODY)
+                        .color(p.text_primary)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(space::XS)
                 .align_y(Alignment::Center);
-
                 if staged_n > 0 {
-                    hdr = hdr.push(theme::badge(
+                    wide_hdr_left = wide_hdr_left.push(theme::badge(
                         format!("{staged_n} staged"),
                         p.success_bg,
                         p.success_fg,
@@ -375,12 +381,10 @@ impl GitFleetApp {
                     ));
                 }
 
-                let first_line_len = self
-                    .commit_editor
-                    .line(0)
-                    .map(|l| l.chars().count())
-                    .unwrap_or(0);
-                let line_count = self.commit_editor.line_count();
+                let mut wide_hdr = row![theme::clipped_line(wide_hdr_left, Length::Fill)]
+                    .spacing(space::XS)
+                    .width(Length::Fill)
+                    .align_y(Alignment::Center);
 
                 if first_line_len > 0 || line_count > 1 {
                     let meta_label = if line_count > 1 {
@@ -388,19 +392,64 @@ impl GitFleetApp {
                     } else {
                         format!("{first_line_len}/72")
                     };
-                    hdr = hdr.push(Space::with_width(Length::Fill)).push(
+                    wide_hdr = wide_hdr.push(theme::clipped_line(
                         text(meta_label)
                             .size(type_scale::BADGE)
                             .color(if first_line_len > 72 {
                                 p.warning_fg
                             } else {
                                 p.text_muted
-                            }),
-                    );
+                            })
+                            .wrapping(text::Wrapping::None),
+                        Length::Shrink,
+                    ));
                 }
 
+                let mut compact_hdr_left = row![
+                    text("Commit")
+                        .size(type_scale::BODY)
+                        .color(p.text_primary)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(space::XXS)
+                .align_y(Alignment::Center);
+                if staged_n > 0 {
+                    compact_hdr_left = compact_hdr_left.push(theme::badge(
+                        format!("{staged_n}"),
+                        p.success_bg,
+                        p.success_fg,
+                        p.border_subtle,
+                        false,
+                    ));
+                }
+
+                // In narrow panes, park the Amend toggle cleanly on the empty right side of the
+                // Commit header so the commit message editor retains generous vertical height.
+                let compact_hdr = row![
+                    theme::clipped_line(compact_hdr_left, Length::Fill),
+                    tip(
+                        theme::clipped_line(
+                            checkbox("Amend", self.amend_commit)
+                                .on_toggle(Message::AmendToggled)
+                                .size(13)
+                                .spacing(5)
+                                .text_size(type_scale::CAPTION)
+                                .style(theme::tree_checkbox(p)),
+                            Length::Shrink,
+                        ),
+                        "Amend last commit",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                ]
+                .spacing(space::XS)
+                .width(Length::Fill)
+                .align_y(Alignment::Center);
+
+                let hdr = theme::adaptive_width(235.0, Length::Fill, wide_hdr, compact_hdr);
+
                 let commit_box = text_editor(&self.commit_editor)
-                    .placeholder("Commit summary\n\nOptional description… (Ctrl+Enter to commit)")
+                    .placeholder("Commit message… (Ctrl+Enter)")
                     .on_action(Message::CommitMessageAction)
                     .key_binding(|key_press| {
                         if key_press.status == text_editor::Status::Focused
@@ -544,10 +593,14 @@ impl GitFleetApp {
                                     tooltip::Position::Top,
                                     p,
                                 ),
-                                button(text("Keys").size(type_scale::BADGE))
-                                    .padding([2, 8])
-                                    .style(theme::primary_btn(p))
-                                    .on_press(Message::OpenSecretsDrawer { show_keys: true }),
+                                button(
+                                    text("Keys")
+                                        .size(type_scale::BADGE)
+                                        .wrapping(text::Wrapping::None),
+                                )
+                                .padding([2, 8])
+                                .style(theme::primary_btn(p))
+                                .on_press(Message::OpenSecretsDrawer { show_keys: true }),
                             ]
                             .spacing(space::XS)
                             .align_y(Alignment::Center),
@@ -578,7 +631,9 @@ impl GitFleetApp {
                                     button(
                                         row![
                                             icons::lock(10.0, Color::WHITE),
-                                            text("Encrypt").size(type_scale::BADGE),
+                                            text("Encrypt")
+                                                .size(type_scale::BADGE)
+                                                .wrapping(text::Wrapping::None),
                                         ]
                                         .spacing(4)
                                         .align_y(Alignment::Center),
@@ -593,10 +648,14 @@ impl GitFleetApp {
                                     tooltip::Position::Top,
                                     p,
                                 ),
-                                button(text("Open").size(type_scale::BADGE))
-                                    .padding([2, 7])
-                                    .style(theme::subtle_btn(p))
-                                    .on_press(Message::OpenSecretsDrawer { show_keys: false }),
+                                button(
+                                    text("Open")
+                                        .size(type_scale::BADGE)
+                                        .wrapping(text::Wrapping::None),
+                                )
+                                .padding([2, 7])
+                                .style(theme::subtle_btn(p))
+                                .on_press(Message::OpenSecretsDrawer { show_keys: false }),
                             ]
                             .spacing(space::XS)
                             .align_y(Alignment::Center),
@@ -624,10 +683,14 @@ impl GitFleetApp {
                                     Length::Fill,
                                 ),
                                 tip(
-                                    button(text("Restore").size(type_scale::BADGE))
-                                        .padding([2, 8])
-                                        .style(theme::primary_btn(p))
-                                        .on_press(Message::RestoreRepoEnv),
+                                    button(
+                                        text("Restore")
+                                            .size(type_scale::BADGE)
+                                            .wrapping(text::Wrapping::None),
+                                    )
+                                    .padding([2, 8])
+                                    .style(theme::primary_btn(p))
+                                    .on_press(Message::RestoreRepoEnv),
                                     format!(
                                         "Decrypt {} from .gitfleet/secrets.age",
                                         paths.join(", ")
@@ -635,10 +698,14 @@ impl GitFleetApp {
                                     tooltip::Position::Top,
                                     p,
                                 ),
-                                button(text("Open").size(type_scale::BADGE))
-                                    .padding([2, 7])
-                                    .style(theme::subtle_btn(p))
-                                    .on_press(Message::OpenSecretsDrawer { show_keys: false }),
+                                button(
+                                    text("Open")
+                                        .size(type_scale::BADGE)
+                                        .wrapping(text::Wrapping::None),
+                                )
+                                .padding([2, 7])
+                                .style(theme::subtle_btn(p))
+                                .on_press(Message::OpenSecretsDrawer { show_keys: false }),
                             ]
                             .spacing(space::XS)
                             .align_y(Alignment::Center),
@@ -653,56 +720,131 @@ impl GitFleetApp {
                     );
                 }
 
-                let commit_actions = row![
-                    tip(
-                        button(
-                            row![
-                                icons::check(icon_size::XS, p.text_primary),
-                                text("Commit")
-                                    .size(type_scale::CAPTION)
-                                    .wrapping(text::Wrapping::None),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                        )
+                let make_commit_btn = |fill: bool| -> Element<'_, Message> {
+                    let inner: Element<'_, Message> = theme::clipped_line(
+                        row![
+                            icons::check(icon_size::XS, p.text_primary),
+                            text("Commit")
+                                .size(type_scale::CAPTION)
+                                .color(p.text_primary)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                        Length::Shrink,
+                    );
+                    let content: Element<'_, Message> = if fill {
+                        container(inner)
+                            .width(Length::Fill)
+                            .center_x(Length::Fill)
+                            .into()
+                    } else {
+                        inner
+                    };
+                    let mut btn = button(content)
                         .padding([4, 9])
                         .style(theme::subtle_btn(p))
-                        .on_press(Message::CommitSubmitted),
+                        .on_press(Message::CommitSubmitted);
+                    if fill {
+                        btn = btn.width(Length::Fill);
+                    }
+                    tip(
+                        btn,
                         "Create commit from staged changes (Ctrl+Enter)",
                         tooltip::Position::Top,
                         p,
-                    ),
-                    tip(
-                        button(
-                            row![
-                                icons::push(icon_size::XS, Color::WHITE),
-                                text("Commit & Push")
-                                    .size(type_scale::CAPTION)
-                                    .wrapping(text::Wrapping::None),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                        )
+                    )
+                };
+
+                let make_commit_push_btn = |fill: bool| -> Element<'_, Message> {
+                    let inner: Element<'_, Message> = theme::clipped_line(
+                        row![
+                            icons::push(icon_size::XS, Color::WHITE),
+                            text("Commit & Push")
+                                .size(type_scale::CAPTION)
+                                .color(Color::WHITE)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                        Length::Shrink,
+                    );
+                    let content: Element<'_, Message> = if fill {
+                        container(inner)
+                            .width(Length::Fill)
+                            .center_x(Length::Fill)
+                            .into()
+                    } else {
+                        inner
+                    };
+                    let mut btn = button(content)
                         .padding([4, 9])
                         .style(theme::primary_btn(p))
-                        .on_press(Message::CommitAndPushSubmitted),
+                        .on_press(Message::CommitAndPushSubmitted);
+                    if fill {
+                        btn = btn.width(Length::Fill);
+                    }
+                    tip(
+                        btn,
                         "Commit staged changes and push to remote (Ctrl+Shift+Enter)",
                         tooltip::Position::Top,
                         p,
-                    ),
+                    )
+                };
+
+                let make_amend_checkbox = || -> Element<'_, Message> {
+                    theme::clipped_line(
+                        checkbox("Amend last commit", self.amend_commit)
+                            .on_toggle(Message::AmendToggled)
+                            .size(14)
+                            .spacing(6)
+                            .text_size(type_scale::CAPTION)
+                            .style(theme::tree_checkbox(p)),
+                        Length::Shrink,
+                    )
+                };
+
+                // Wide (>= 355px): single crisp row — Amend on left, CTAs on right
+                let wide_footer = row![
+                    make_amend_checkbox(),
+                    Space::with_width(Length::Fill),
+                    make_commit_btn(false),
+                    make_commit_push_btn(false),
                 ]
                 .spacing(space::XS)
+                .width(Length::Fill)
                 .align_y(Alignment::Center);
 
-                let footer = theme::responsive_pair(
-                    checkbox("Amend last commit", self.amend_commit)
-                        .on_toggle(Message::AmendToggled)
-                        .size(14)
-                        .spacing(6)
-                        .text_size(type_scale::CAPTION),
-                    commit_actions,
-                    space::XS,
-                    space::XS,
+                // Medium (235..354px): Amend row + full-width balanced side-by-side CTAs
+                let medium_footer = column![
+                    make_amend_checkbox(),
+                    row![
+                        container(make_commit_btn(true)).width(Length::FillPortion(42)),
+                        container(make_commit_push_btn(true)).width(Length::FillPortion(58)),
+                    ]
+                    .spacing(space::XS)
+                    .width(Length::Fill)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(space::XS)
+                .width(Length::Fill);
+
+                // Compact (< 235px): Amend lives in the Commit header; stack full-width CTAs
+                // cleanly so "Commit & Push" stays crisp on a single line at any narrow width.
+                let compact_footer = column![
+                    make_commit_btn(true),
+                    make_commit_push_btn(true),
+                ]
+                .spacing(space::XXS)
+                .width(Length::Fill);
+
+                let footer = theme::adaptive_width_3(
+                    355.0,
+                    235.0,
+                    Length::Fill,
+                    wide_footer,
+                    medium_footer,
+                    compact_footer,
                 );
 
                 let mut pane_col = column![
@@ -740,91 +882,118 @@ impl GitFleetApp {
                         .collect::<Vec<_>>()
                         .join(", ");
 
-                    // Compact header row with icon + tooltip action buttons (zero wasted rows!)
-                    let hdr = row![
+                    let make_commit_id_row = || -> Element<'_, Message> {
                         theme::clipped_line(
                             row![
                                 text("Commit")
                                     .size(type_scale::CAPTION)
-                                    .color(p.text_muted),
+                                    .color(p.text_muted)
+                                    .wrapping(text::Wrapping::None),
                                 text(c.short_oid.clone())
                                     .size(type_scale::CAPTION)
                                     .font(theme::CODE_FONT)
-                                    .color(p.accent_fg),
+                                    .color(p.accent_fg)
+                                    .wrapping(text::Wrapping::None),
                             ]
                             .spacing(5)
                             .align_y(Alignment::Center),
                             Length::Fill,
-                        ),
-                        tip(
-                            button(icons::cherry_pick(icon_size::SM, p.accent_fg))
-                                .padding([4, 5])
-                                .style(theme::vscode_icon_btn(p, false))
-                                .on_press(Message::OpenCherryPickModal {
-                                    revisions: vec![c.oid.clone()],
-                                    detail: format!("{}  {}", c.short_oid, c.summary),
-                                }),
-                            "Cherry-Pick commit onto current branch…",
-                            tooltip::Position::Bottom,
-                            p,
-                        ),
-                        tip(
-                            button(icons::revert(icon_size::SM, p.warning_fg))
-                                .padding([4, 5])
-                                .style(theme::vscode_icon_btn(p, false))
-                                .on_press(Message::RequestConfirm(
-                                    PendingConfirm::revert_commit(
-                                        c.oid.clone(),
-                                        &c.short_oid,
-                                        &c.summary,
-                                    ),
-                                )),
-                            "Revert commit (creates inverse commit)",
-                            tooltip::Position::Bottom,
-                            p,
-                        ),
-                        tip(
-                            button(icons::tag(icon_size::SM, p.text_secondary))
-                                .padding([4, 5])
-                                .style(theme::vscode_icon_btn(p, false))
-                                .on_press(Message::CreateTagAtCommit(c.oid.clone())),
-                            "Create Tag at this commit",
-                            tooltip::Position::Bottom,
-                            p,
-                        ),
-                        tip(
-                            button(icons::reset_soft(icon_size::SM, p.text_secondary))
-                                .padding([4, 5])
-                                .style(theme::vscode_icon_btn(p, false))
-                                .on_press(Message::RequestConfirm(
-                                    PendingConfirm::reset_commit(
-                                        c.oid.clone(),
-                                        &c.short_oid,
-                                        ResetMode::Soft,
-                                    ),
-                                )),
-                            "Reset Soft to this commit (keep changes staged)",
-                            tooltip::Position::Bottom,
-                            p,
-                        ),
-                        tip(
-                            button(icons::reset_mixed(icon_size::SM, p.danger_fg))
-                                .padding([4, 5])
-                                .style(theme::vscode_icon_btn(p, false))
-                                .on_press(Message::RequestConfirm(
-                                    PendingConfirm::reset_commit(
-                                        c.oid.clone(),
-                                        &c.short_oid,
-                                        ResetMode::Mixed,
-                                    ),
-                                )),
-                            "Reset Mixed to this commit (keep working tree)",
-                            tooltip::Position::Bottom,
-                            p,
-                        ),
-                    ]
-                    .spacing(2)
-                    .align_y(Alignment::Center);
+                        )
+                    };
+
+                    let make_commit_detail_actions = || -> Element<'_, Message> {
+                        row![
+                            tip(
+                                button(icons::cherry_pick(icon_size::SM, p.accent_fg))
+                                    .padding([4, 5])
+                                    .style(theme::vscode_icon_btn(p, false))
+                                    .on_press(Message::OpenCherryPickModal {
+                                        revisions: vec![c.oid.clone()],
+                                        detail: format!("{}  {}", c.short_oid, c.summary),
+                                    }),
+                                "Cherry-Pick commit onto current branch…",
+                                tooltip::Position::Bottom,
+                                p,
+                            ),
+                            tip(
+                                button(icons::revert(icon_size::SM, p.warning_fg))
+                                    .padding([4, 5])
+                                    .style(theme::vscode_icon_btn(p, false))
+                                    .on_press(Message::RequestConfirm(
+                                        PendingConfirm::revert_commit(
+                                            c.oid.clone(),
+                                            &c.short_oid,
+                                            &c.summary,
+                                        ),
+                                    )),
+                                "Revert commit (creates inverse commit)",
+                                tooltip::Position::Bottom,
+                                p,
+                            ),
+                            tip(
+                                button(icons::tag(icon_size::SM, p.text_secondary))
+                                    .padding([4, 5])
+                                    .style(theme::vscode_icon_btn(p, false))
+                                    .on_press(Message::CreateTagAtCommit(c.oid.clone())),
+                                "Create Tag at this commit",
+                                tooltip::Position::Bottom,
+                                p,
+                            ),
+                            tip(
+                                button(icons::reset_soft(icon_size::SM, p.text_secondary))
+                                    .padding([4, 5])
+                                    .style(theme::vscode_icon_btn(p, false))
+                                    .on_press(Message::RequestConfirm(
+                                        PendingConfirm::reset_commit(
+                                            c.oid.clone(),
+                                            &c.short_oid,
+                                            ResetMode::Soft,
+                                        ),
+                                    )),
+                                "Reset Soft to this commit (keep changes staged)",
+                                tooltip::Position::Bottom,
+                                p,
+                            ),
+                            tip(
+                                button(icons::reset_mixed(icon_size::SM, p.danger_fg))
+                                    .padding([4, 5])
+                                    .style(theme::vscode_icon_btn(p, false))
+                                    .on_press(Message::RequestConfirm(
+                                        PendingConfirm::reset_commit(
+                                            c.oid.clone(),
+                                            &c.short_oid,
+                                            ResetMode::Mixed,
+                                        ),
+                                    )),
+                                "Reset Mixed to this commit (keep working tree)",
+                                tooltip::Position::Bottom,
+                                p,
+                            ),
+                        ]
+                        .spacing(2)
+                        .align_y(Alignment::Center)
+                        .into()
+                    };
+
+                    // Wide (>= 255px): single header row; Narrow (< 255px): keep commit OID intact
+                    // above a subtle recessed icon strip so actions never crush the hash.
+                    let hdr = theme::adaptive_width(
+                        255.0,
+                        Length::Fill,
+                        row![make_commit_id_row(), make_commit_detail_actions()]
+                            .spacing(space::XXS)
+                            .width(Length::Fill)
+                            .align_y(Alignment::Center),
+                        column![
+                            make_commit_id_row(),
+                            container(make_commit_detail_actions())
+                                .padding([2, 4])
+                                .width(Length::Fill)
+                                .style(theme::table_col_header_box(p)),
+                        ]
+                        .spacing(space::XXS)
+                        .width(Length::Fill),
+                    );
 
                     let mut meta_col = column![
                         theme::clipped_line(
@@ -871,7 +1040,7 @@ impl GitFleetApp {
                     }
 
                     column![
-                        hdr.width(Length::Fill),
+                        hdr,
                         horizontal_rule(1).style(theme::subtle_rule(p)),
                         row![big_avatar, meta_col]
                             .spacing(8)
@@ -900,22 +1069,55 @@ impl GitFleetApp {
     /// with dedicated Unstaged + Staged split panels when inspecting Working Tree / Index.
     pub(crate) fn view_files_pane(&self, p: Palette) -> Element<'_, Message> {
         let active_status = self.active_status();
-
         let changed_count = self.active_changed_files().len();
-        let mode_pill = |icon: Element<'static, Message>,
-                         label: &'static str,
-                         mode: FilesViewMode,
-                         hint: &'static str|
+        let multi_sel_count = if self.graph_selection == GraphSelection::WorkingTree {
+            self.selected_changed_files.len()
+        } else {
+            0
+        };
+
+        let make_files_title = || -> Element<'_, Message> {
+            let mut title_row = row![
+                text("Files")
+                    .size(type_scale::BODY)
+                    .color(p.text_primary)
+                    .wrapping(text::Wrapping::None),
+                theme::badge(
+                    format!("{changed_count}"),
+                    p.surface_card,
+                    p.text_muted,
+                    p.border_subtle,
+                    false,
+                ),
+            ]
+            .spacing(space::XS)
+            .align_y(Alignment::Center);
+            if multi_sel_count > 1 {
+                title_row = title_row.push(theme::badge(
+                    format!("{multi_sel_count} selected"),
+                    p.fill_selected,
+                    p.accent_fg,
+                    p.border_subtle,
+                    false,
+                ));
+            }
+            theme::clipped_line(title_row, Length::Fill)
+        };
+
+        let mode_seg_wide = |icon: Element<'static, Message>,
+                             label: &'static str,
+                             mode: FilesViewMode,
+                             hint: &'static str|
          -> Element<'_, Message> {
             let active = self.files_mode == mode;
             tip(
-                button(
+                button(theme::clipped_line(
                     row![
                         icon,
                         text(label)
                             .size(type_scale::CAPTION)
                             .color(if active {
-                                p.accent_fg
+                                Color::WHITE
                             } else {
                                 p.text_secondary
                             })
@@ -923,9 +1125,10 @@ impl GitFleetApp {
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center),
-                )
+                    Length::Shrink,
+                ))
                 .padding([3, 7])
-                .style(theme::filter_pill_btn(p, active))
+                .style(theme::segmented_btn(p, active))
                 .on_press(Message::SetFilesViewMode(mode)),
                 hint,
                 tooltip::Position::Bottom,
@@ -933,41 +1136,45 @@ impl GitFleetApp {
             )
         };
 
-        let multi_sel_count = if self.graph_selection == GraphSelection::WorkingTree {
-            self.selected_changed_files.len()
-        } else {
-            0
-        };
-        let mut files_title_row = row![
-            text("Files").size(type_scale::BODY).color(p.text_primary),
-            theme::badge(
-                format!("{changed_count}"),
-                p.surface_card,
-                p.text_muted,
-                p.border_subtle,
-                false,
-            ),
-        ]
-        .spacing(space::XS)
-        .align_y(Alignment::Center);
-        if multi_sel_count > 1 {
-            files_title_row = files_title_row.push(theme::badge(
-                format!("{multi_sel_count} selected"),
-                p.fill_selected,
-                p.accent_fg,
-                p.border_subtle,
-                false,
-            ));
-        }
+        let mode_seg_compact =
+            |label: &'static str, mode: FilesViewMode, portion: u16, hint: &'static str| -> Element<'_, Message> {
+                let active = self.files_mode == mode;
+                container(tip(
+                    button(
+                        container(theme::clipped_line(
+                            text(label)
+                                .size(type_scale::CAPTION)
+                                .color(if active {
+                                    Color::WHITE
+                                } else {
+                                    p.text_secondary
+                                })
+                                .wrapping(text::Wrapping::None),
+                            Length::Shrink,
+                        ))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
+                    )
+                    .width(Length::Fill)
+                    .padding([3, 4])
+                    .style(theme::segmented_btn(p, active))
+                    .on_press(Message::SetFilesViewMode(mode)),
+                    hint,
+                    tooltip::Position::Bottom,
+                    p,
+                ))
+                .width(Length::FillPortion(portion))
+                .into()
+            };
 
-        let files_header = column![
+        let wide_segmented = theme::segmented_group(
+            p,
             row![
-                theme::clipped_line(files_title_row, Length::Fill),
-                mode_pill(
+                mode_seg_wide(
                     icons::file_diff(
                         12.0,
                         if self.files_mode == FilesViewMode::Flat {
-                            p.accent_fg
+                            Color::WHITE
                         } else {
                             p.text_secondary
                         },
@@ -977,11 +1184,11 @@ impl GitFleetApp {
                     FilesViewMode::Flat,
                     "Changed Files — Unstaged & Staged panels",
                 ),
-                mode_pill(
+                mode_seg_wide(
                     icons::folder(
                         12.0,
                         if self.files_mode == FilesViewMode::Dir {
-                            p.accent_fg
+                            Color::WHITE
                         } else {
                             p.text_secondary
                         },
@@ -991,11 +1198,11 @@ impl GitFleetApp {
                     FilesViewMode::Dir,
                     "Changed by Directory — Filter changed files by folder",
                 ),
-                mode_pill(
+                mode_seg_wide(
                     icons::folder_tree(
                         12.0,
                         if self.files_mode == FilesViewMode::AllFiles {
-                            p.accent_fg
+                            Color::WHITE
                         } else {
                             p.text_secondary
                         },
@@ -1006,82 +1213,169 @@ impl GitFleetApp {
                     "All Files — Browse all repository files & folders like VS Code (gitignored items dimmed)",
                 ),
             ]
-            .spacing(space::XXS)
+            .spacing(2)
             .align_y(Alignment::Center),
-            {
-                let mut filter_row = row![
-                    text_input("Filter files…", &self.file_filter)
-                        .on_input(Message::FileFilterChanged)
-                        .padding([4, 8])
-                        .size(type_scale::CAPTION)
-                        .width(Length::Fill)
-                        .style(theme::dark_input(p)),
-                ]
+        );
+
+        let compact_segmented = theme::segmented_group_fill(
+            p,
+            row![
+                mode_seg_compact(
+                    "Changed",
+                    FilesViewMode::Flat,
+                    44,
+                    "Changed Files — Unstaged & Staged panels",
+                ),
+                mode_seg_compact(
+                    "Dir",
+                    FilesViewMode::Dir,
+                    28,
+                    "Changed by Directory — Filter changed files by folder",
+                ),
+                mode_seg_compact(
+                    "All",
+                    FilesViewMode::AllFiles,
+                    28,
+                    "All Files — Browse all repository files & folders like VS Code (gitignored items dimmed)",
+                ),
+            ]
+            .spacing(2)
+            .width(Length::Fill)
+            .align_y(Alignment::Center),
+        );
+
+        // Wide (>= 305px): single header row (Files [N] + segmented switcher).
+        // Compact (< 305px): clean 2-row header so title never vanishes and segments stay crisp.
+        let top_bar = theme::adaptive_width(
+            305.0,
+            Length::Fill,
+            row![make_files_title(), wide_segmented]
                 .spacing(space::XS)
-                .align_y(Alignment::Center);
+                .width(Length::Fill)
+                .align_y(Alignment::Center),
+            column![make_files_title(), compact_segmented]
+                .spacing(space::XXS)
+                .width(Length::Fill),
+        );
 
-                if self.files_mode == FilesViewMode::AllFiles {
-                    filter_row = filter_row.push(tip(
-                        button(
-                            row![
-                                if self.show_ignored_files {
-                                    icons::eye(12.0, p.accent_fg)
-                                } else {
-                                    icons::eye_off(12.0, p.text_muted)
-                                },
-                                text("Ignored")
-                                    .size(type_scale::CAPTION)
-                                    .color(if self.show_ignored_files {
-                                        p.accent_fg
-                                    } else {
-                                        p.text_muted
-                                    })
-                                    .wrapping(text::Wrapping::None),
-                            ]
-                            .spacing(4)
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([4, 8])
-                        .style(theme::filter_pill_btn(p, self.show_ignored_files))
-                        .on_press(Message::ToggleShowIgnoredFiles),
+        let search_msg = Message::OpenDetachedSearch(if self.file_filter.trim().is_empty() {
+            None
+        } else {
+            Some(self.file_filter.trim().to_string())
+        });
+        let ignored_hint = if self.show_ignored_files {
+            "Showing gitignored files & folders (dimmed like VS Code) — click to hide"
+        } else {
+            "Gitignored files & folders are hidden — click to show (e.g. .env)"
+        };
+
+        let mut wide_actions = row![].spacing(space::XXS).align_y(Alignment::Center);
+        let mut compact_actions = row![].spacing(space::XXS).align_y(Alignment::Center);
+
+        if self.files_mode == FilesViewMode::AllFiles {
+            wide_actions = wide_actions.push(tip(
+                button(theme::clipped_line(
+                    row![
                         if self.show_ignored_files {
-                            "Showing gitignored files & folders (dimmed like VS Code) — click to hide"
+                            icons::eye(12.0, p.accent_fg)
                         } else {
-                            "Gitignored files & folders are hidden — click to show (e.g. .env)"
+                            icons::eye_off(12.0, p.text_muted)
                         },
-                        tooltip::Position::Bottom,
-                        p,
-                    ));
-                }
-
-                filter_row.push(tip(
-                    button(
-                        row![
-                            icons::folder_search(12.0, p.accent_fg),
-                            text("Search")
-                                .size(type_scale::CAPTION)
-                                .color(p.text_primary)
-                                .wrapping(text::Wrapping::None),
-                        ]
-                        .spacing(4)
-                        .align_y(Alignment::Center),
-                    )
-                    .padding([4, 8])
-                    .style(theme::subtle_btn(p))
-                    .on_press(Message::OpenDetachedSearch(
-                        if self.file_filter.trim().is_empty() {
-                            None
-                        } else {
-                            Some(self.file_filter.trim().to_string())
-                        },
-                    )),
-                    "VS Code-style Search & Replace in files (opens Independent Popup)",
-                    tooltip::Position::Bottom,
-                    p,
+                        text("Ignored")
+                            .size(type_scale::CAPTION)
+                            .color(if self.show_ignored_files {
+                                p.accent_fg
+                            } else {
+                                p.text_muted
+                            })
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                    Length::Shrink,
                 ))
-            },
+                .padding([4, 8])
+                .style(theme::toolbar_btn(p, self.show_ignored_files))
+                .on_press(Message::ToggleShowIgnoredFiles),
+                ignored_hint,
+                tooltip::Position::Bottom,
+                p,
+            ));
+
+            compact_actions = compact_actions.push(tip(
+                button(if self.show_ignored_files {
+                    icons::eye(13.0, p.accent_fg)
+                } else {
+                    icons::eye_off(13.0, p.text_muted)
+                })
+                .padding([5, 6])
+                .style(theme::toolbar_btn(p, self.show_ignored_files))
+                .on_press(Message::ToggleShowIgnoredFiles),
+                ignored_hint,
+                tooltip::Position::Bottom,
+                p,
+            ));
+        }
+
+        wide_actions = wide_actions.push(tip(
+            button(theme::clipped_line(
+                row![
+                    icons::folder_search(12.0, p.accent_fg),
+                    text("Search")
+                        .size(type_scale::CAPTION)
+                        .color(p.text_primary)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+                Length::Shrink,
+            ))
+            .padding([4, 8])
+            .style(theme::subtle_btn(p))
+            .on_press(search_msg.clone()),
+            "VS Code-style Search & Replace in files (opens Independent Popup)",
+            tooltip::Position::Bottom,
+            p,
+        ));
+
+        compact_actions = compact_actions.push(tip(
+            button(icons::folder_search(13.0, p.accent_fg))
+                .padding([5, 6])
+                .style(theme::subtle_btn(p))
+                .on_press(search_msg),
+            "Search & Replace in files (opens Independent Popup)",
+            tooltip::Position::Bottom,
+            p,
+        ));
+
+        // Keep `text_input` permanently at child index 0 so resizing never drops focus while
+        // trailing buttons collapse smoothly to crisp icon buttons in narrow panes.
+        let filter_actions_bp = if self.files_mode == FilesViewMode::AllFiles {
+            315.0
+        } else {
+            245.0
+        };
+        let filter_row = row![
+            text_input("Filter files…", &self.file_filter)
+                .on_input(Message::FileFilterChanged)
+                .padding([4, 8])
+                .size(type_scale::CAPTION)
+                .width(Length::Fill)
+                .style(theme::dark_input(p)),
+            theme::adaptive_width(
+                filter_actions_bp,
+                Length::Shrink,
+                wide_actions,
+                compact_actions,
+            ),
         ]
-        .spacing(space::XS);
+        .spacing(space::XS)
+        .width(Length::Fill)
+        .align_y(Alignment::Center);
+
+        let files_header = column![top_bar, filter_row]
+            .spacing(space::XS)
+            .width(Length::Fill);
 
         let conflict_banner: Element<'_, Message> = if let Some(st) = active_status
             && (st.in_merge || st.in_rebase || st.conflict_count > 0)
@@ -1219,7 +1513,7 @@ impl GitFleetApp {
             ));
         }
 
-        let unstaged_hdr = container(unstaged_hdr_row)
+        let unstaged_hdr = container(theme::clipped_line(unstaged_hdr_row, Length::Fill))
             .padding([4, 8])
             .width(Length::Fill)
             .style(theme::section_header_box(p));
@@ -1249,7 +1543,7 @@ impl GitFleetApp {
             ));
         }
 
-        let staged_hdr = container(staged_hdr_row)
+        let staged_hdr = container(theme::clipped_line(staged_hdr_row, Length::Fill))
             .padding([4, 8])
             .width(Length::Fill)
             .style(theme::section_header_box(p));
@@ -1397,18 +1691,21 @@ impl GitFleetApp {
             .style(theme::table_col_header_box(p));
 
         if visible_files.is_empty() {
-            return column![
-                header_strip,
-                container(
-                    text(empty_hint)
-                        .size(type_scale::CAPTION)
-                        .color(p.text_muted),
-                )
-                .padding([10, 10])
-                .width(Length::Fill)
-                .height(Length::Fill),
-            ]
-            .spacing(2)
+            return container(
+                row![
+                    icons::check(12.0, p.text_muted),
+                    theme::clipped_line(
+                        text(empty_hint)
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                        Length::Fill,
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([12, 10])
+            .width(Length::Fill)
             .height(Length::Fill)
             .into();
         }
@@ -1629,19 +1926,16 @@ impl GitFleetApp {
         }
 
         let left_dirs = container(slim_scroll_h(dirs_col, max_dir_w.clamp(88.0, 480.0), p))
-            .width(Length::FillPortion(38))
+            .width(Length::Fill)
             .height(Length::Fill)
             .padding(4)
             .style(theme::section_panel_box(p));
 
         let right_files = container(self.view_files_flat(p, self.selected_dir_filter.as_deref()))
-            .width(Length::FillPortion(62))
+            .width(Length::Fill)
             .height(Length::Fill);
 
-        row![left_dirs, right_files]
-            .spacing(6)
-            .height(Length::Fill)
-            .into()
+        theme::responsive_split(290.0, 0.38, 6.0, left_dirs, right_files)
     }
 
     /// All Files mode: Left = collapsible folder tree, Right = files in selected folder.
@@ -1903,19 +2197,16 @@ impl GitFleetApp {
             max_tree_w.clamp(90.0, 560.0),
             p,
         ))
-            .width(Length::FillPortion(42))
-            .height(Length::Fill)
-            .padding(4)
-            .style(theme::section_panel_box(p));
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(4)
+        .style(theme::section_panel_box(p));
 
         let right_files = container(slim_scroll_h(files_col, max_file_w.clamp(96.0, 560.0), p))
-            .width(Length::FillPortion(58))
+            .width(Length::Fill)
             .height(Length::Fill);
 
-        row![left_dirs, right_files]
-            .spacing(6)
-            .height(Length::Fill)
-            .into()
+        theme::responsive_split(290.0, 0.42, 6.0, left_dirs, right_files)
     }
 }
 
