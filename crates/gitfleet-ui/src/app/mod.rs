@@ -254,6 +254,10 @@ pub(crate) struct GitFleetApp {
     pub(crate) import_key_name_input: String,
     pub(crate) import_key_input: String,
     pub(crate) renaming_key: Option<(String, String)>,
+    pub(crate) show_create_profile_bar: bool,
+    pub(crate) new_profile_name_input: String,
+    pub(crate) clone_from_active_profile: bool,
+    pub(crate) renaming_profile: Option<(String, String)>,
     pub(crate) revealed_secrets: HashMap<(String, String), String>,
     pub(crate) secret_file_input: String,
     pub(crate) secret_key_input: String,
@@ -524,6 +528,10 @@ impl GitFleetApp {
             import_key_name_input: String::new(),
             import_key_input: String::new(),
             renaming_key: None,
+            show_create_profile_bar: false,
+            new_profile_name_input: String::new(),
+            clone_from_active_profile: true,
+            renaming_profile: None,
             revealed_secrets: HashMap::new(),
             secret_file_input: ".env".into(),
             secret_key_input: String::new(),
@@ -660,9 +668,17 @@ impl GitFleetApp {
                 group: parent.group,
                 pinned: parent.pinned,
                 secret_key_id: parent.secret_key_id,
+                secret_profile: parent.secret_profile,
             });
         }
         Some(parent)
+    }
+
+    /// Returns the locally selected Secrets Vault profile for the active repository on this machine
+    /// (`None` means the base `"default"` profile).
+    pub(crate) fn active_repo_secret_profile(&self) -> Option<String> {
+        let id = self.selected_repo.as_ref()?;
+        self.service.workspace.repo_secret_profile(id)
     }
 
     /// Returns the workspace-assigned secret key binding (`Repo` override or nearest ancestor `Group`)

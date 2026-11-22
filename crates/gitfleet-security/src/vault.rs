@@ -3,10 +3,13 @@ use crate::formats::{
     normalize_newlines, normalize_repo_rel_path, parse_secret_entries, rel_to_fs_path,
     update_secret_content, validate_secret_content,
 };
-use crate::manifest::manifest_file_path;
+use crate::manifest::{
+    discover_vault_profiles, manifest_file_path, normalize_profile_name, resolve_profile_name,
+    vault_file_name_for_profile, vault_file_path_for_profile,
+};
 use crate::models::{
-    SecretFileFormat, SecretFileSpec, VaultFileState, VaultFileSummary, VaultKeyEntry,
-    VaultKeyInfo, VaultKeyringSummary, VaultSummary,
+    DEFAULT_PROFILE, SecretFileFormat, SecretFileSpec, VaultFileState, VaultFileSummary,
+    VaultKeyEntry, VaultKeyInfo, VaultKeyringSummary, VaultProfileSummary, VaultSummary,
 };
 use age::secrecy::ExposeSecret;
 use arboard::Clipboard;
@@ -122,10 +125,6 @@ fn default_keyring_file_path() -> Option<PathBuf> {
 fn legacy_identity_file_path() -> Option<PathBuf> {
     ProjectDirs::from("org", "gitfleet", "gitfleet")
         .map(|d| d.config_dir().join("secrets-identity.txt"))
-}
-
-pub(crate) fn vault_file_path(repo_path: &Path) -> PathBuf {
-    repo_path.join(".gitfleet").join("secrets.age")
 }
 
 fn parse_age_identity_text(raw: &str) -> AppResult<age::x25519::Identity> {
@@ -478,9 +477,10 @@ impl SecurityService {
         self.copy_key_private(&k.id)
     }
 
-    pub(crate) fn encrypt_payload_with_key(
+    pub(crate) fn encrypt_payload_for_profile(
         &self,
         repo_path: &Path,
+        profile: &str,
         payload: &VaultPayloadV2,
         target_key_id: Option<&str>,
     ) -> AppResult<VaultKeyEntry> {
@@ -509,7 +509,7 @@ impl SecurityService {
         writer.finish()?;
         plaintext.zeroize();
 
-        let target = vault_file_path(repo_path);
+        let target = vault_file_path_for_profile(repo_path, profile);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -517,12 +517,13 @@ impl SecurityService {
         Ok(chosen.to_entry(kr.default_key_id.as_deref()))
     }
 
-    pub(crate) fn decrypt_payload_with_key(
+    pub(crate) fn decrypt_payload_for_profile(
         &self,
         repo_path: &Path,
+        profile: &str,
         preferred_key_id: Option<&str>,
     ) -> AppResult<(VaultPayloadV2, Option<VaultKeyEntry>)> {
-        let target = vault_file_path(repo_path);
+        let target = vault_file_path_for_profile(repo_path, profile);
         if !target.exists() {
             return Ok((
                 VaultPayloadV2 {
@@ -537,11 +538,11 @@ impl SecurityService {
         let manifest_hint = self
             .load_manifest(repo_path)
             .ok()
-            .and_then(|m| m.key_name);
+            .and_then(|m| m.key_name_for_profile(profile).map(str::to_string));
         if kr.keys.is_empty() {
             let msg = match manifest_hint {
                 Some(name) => format!(
-                    "No Age key in keyring (repo expects key '{name}'). Import or create a key first."
+                    "No Age key in keyring (profile '{profile}' expects key '{name}'). Import or create a key first."
                 ),
                 None => "No Age key in keyring yet. Click 'Keys' to create or import a key.".into(),
             };
@@ -587,25 +588,175 @@ impl SecurityService {
 
         let msg = match manifest_hint {
             Some(name) => format!(
-                "No matching key in keyring (repo expects key '{name}'). Import that Age secret key."
+                "No matching key in keyring (profile '{profile}' expects key '{name}'). Import that Age secret key."
             ),
-            None => "Age decrypt failed — none of the keys in your keyring match this vault.".into(),
+            None => format!(
+                "Age decrypt failed — none of the keys in your keyring match profile '{profile}'."
+            ),
         };
         Err(AppError::Security(msg))
     }
 
-    pub fn vault_summary_with_key(
+    /// Creates a new Secrets Vault profile (e.g. `"laptop"`, `"work-pc"`, `"staging"`).
+    /// Optionally clones encrypted secret files from an existing unlocked profile (`clone_from`).
+    pub fn create_vault_profile(
         &self,
         repo_path: &Path,
+        raw_name: &str,
+        clone_from: Option<&str>,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<String> {
+        let name = normalize_profile_name(raw_name)?;
+        if name == DEFAULT_PROFILE {
+            return Err(AppError::Security(
+                "Profile 'default' already exists as the base profile.".into(),
+            ));
+        }
+        let mut manifest = self.load_manifest(repo_path)?;
+        let existing = discover_vault_profiles(repo_path, &manifest);
+        if existing.iter().any(|p| p == &name) {
+            return Err(AppError::Security(format!(
+                "Profile '{name}' already exists in this repository."
+            )));
+        }
+
+        if let Some(src_raw) = clone_from {
+            let src = resolve_profile_name(Some(src_raw))?;
+            if vault_file_path_for_profile(repo_path, &src).exists() {
+                let (payload, matched_key) =
+                    self.decrypt_payload_for_profile(repo_path, &src, preferred_key_id)?;
+                if !payload.files.is_empty() {
+                    let effective_key_id = preferred_key_id
+                        .or_else(|| matched_key.as_ref().map(|k| k.id.as_str()));
+                    let used_key = self.encrypt_payload_for_profile(
+                        repo_path,
+                        &name,
+                        &payload,
+                        effective_key_id,
+                    )?;
+                    manifest.set_key_name_for_profile(&name, Some(used_key.name));
+                }
+            }
+        }
+
+        manifest.profiles.push(name.clone());
+        self.save_manifest(repo_path, &manifest)?;
+        Ok(name)
+    }
+
+    /// Renames a custom Secrets Vault profile (`.gitfleet/secrets.<old>.age` -> `.gitfleet/secrets.<new>.age`).
+    pub fn rename_vault_profile(
+        &self,
+        repo_path: &Path,
+        old_raw: &str,
+        new_raw: &str,
+    ) -> AppResult<String> {
+        let old = resolve_profile_name(Some(old_raw))?;
+        let new = normalize_profile_name(new_raw)?;
+        if old == DEFAULT_PROFILE {
+            return Err(AppError::Security(
+                "The base 'default' profile cannot be renamed.".into(),
+            ));
+        }
+        if new == DEFAULT_PROFILE {
+            return Err(AppError::Security(
+                "Cannot rename a profile to reserved name 'default'.".into(),
+            ));
+        }
+        if old == new {
+            return Ok(new);
+        }
+
+        let mut manifest = self.load_manifest(repo_path)?;
+        let existing = discover_vault_profiles(repo_path, &manifest);
+        if !existing.iter().any(|p| p == &old) {
+            return Err(AppError::Security(format!("Profile '{old}' does not exist.")));
+        }
+        if existing.iter().any(|p| p == &new) {
+            return Err(AppError::Security(format!(
+                "Profile '{new}' already exists."
+            )));
+        }
+
+        let old_path = vault_file_path_for_profile(repo_path, &old);
+        let new_path = vault_file_path_for_profile(repo_path, &new);
+        if old_path.exists() {
+            std::fs::rename(&old_path, &new_path)?;
+        }
+
+        manifest.profiles.retain(|p| p != &old);
+        manifest.profiles.push(new.clone());
+        if let Some(kn) = manifest.profile_key_names.remove(&old) {
+            manifest.profile_key_names.insert(new.clone(), kn);
+        }
+        self.save_manifest(repo_path, &manifest)?;
+        Ok(new)
+    }
+
+    /// Deletes a custom Secrets Vault profile (`.gitfleet/secrets.<profile>.age` and manifest entry).
+    /// Never modifies or deletes local `.env`/`.toml`/`.yaml` files on disk.
+    pub fn delete_vault_profile(&self, repo_path: &Path, raw_profile: &str) -> AppResult<bool> {
+        let profile = resolve_profile_name(Some(raw_profile))?;
+        if profile == DEFAULT_PROFILE {
+            return Err(AppError::Security(
+                "Cannot delete the base 'default' profile individually. Use 'Delete Vault' to remove the entire vault.".into(),
+            ));
+        }
+        let mut manifest = self.load_manifest(repo_path)?;
+        let vpath = vault_file_path_for_profile(repo_path, &profile);
+        let mut removed_any = false;
+        if vpath.exists() {
+            std::fs::remove_file(&vpath)?;
+            removed_any = true;
+        }
+        let before = manifest.profiles.len();
+        manifest.profiles.retain(|p| p != &profile);
+        if manifest.profiles.len() != before {
+            removed_any = true;
+        }
+        if manifest.profile_key_names.remove(&profile).is_some() {
+            removed_any = true;
+        }
+        if manifest_file_path(repo_path).exists() || !manifest.files.is_empty() || !manifest.profiles.is_empty() {
+            self.save_manifest(repo_path, &manifest)?;
+        }
+        Ok(removed_any)
+    }
+
+    pub fn vault_summary_for_profile(
+        &self,
+        repo_path: &Path,
+        profile: Option<&str>,
         preferred_key_id: Option<&str>,
     ) -> AppResult<VaultSummary> {
         let has_manifest = manifest_file_path(repo_path).exists();
-        let has_vault = vault_file_path(repo_path).exists();
         let manifest = self.load_manifest(repo_path).unwrap_or_default();
-        let manifest_key_name = manifest.key_name.clone();
+        let profile_names = discover_vault_profiles(repo_path, &manifest);
+
+        let requested = resolve_profile_name(profile).unwrap_or_else(|_| DEFAULT_PROFILE.to_string());
+        let active_profile = if profile_names.iter().any(|p| p == &requested) {
+            requested
+        } else {
+            DEFAULT_PROFILE.to_string()
+        };
+
+        let profiles: Vec<VaultProfileSummary> = profile_names
+            .iter()
+            .map(|name| VaultProfileSummary {
+                name: name.clone(),
+                has_vault: vault_file_path_for_profile(repo_path, name).exists(),
+                key_name: manifest.key_name_for_profile(name).map(str::to_string),
+            })
+            .collect();
+
+        let vault_file_name = vault_file_name_for_profile(&active_profile);
+        let has_vault = vault_file_path_for_profile(repo_path, &active_profile).exists();
+        let manifest_key_name = manifest
+            .key_name_for_profile(&active_profile)
+            .map(str::to_string);
 
         let (payload_opt, unlocked_key, vault_locked, lock_error) = if has_vault {
-            match self.decrypt_payload_with_key(repo_path, preferred_key_id) {
+            match self.decrypt_payload_for_profile(repo_path, &active_profile, preferred_key_id) {
                 Ok((p, matched)) => (Some(p), matched, false, None),
                 Err(e) => {
                     let msg = match e {
@@ -687,6 +838,9 @@ impl SecurityService {
             has_vault,
             vault_locked,
             lock_error,
+            active_profile,
+            vault_file_name,
+            profiles,
             unlocked_by_key_id: unlocked_key.as_ref().map(|k| k.id.clone()),
             unlocked_by_key_name: unlocked_key.map(|k| k.name),
             manifest_key_name,
@@ -694,16 +848,26 @@ impl SecurityService {
         })
     }
 
-    pub fn vault_summary(&self, repo_path: &Path) -> AppResult<VaultSummary> {
-        self.vault_summary_with_key(repo_path, None)
-    }
-
-    pub fn encrypt_selected_files_with_key(
+    pub fn vault_summary_with_key(
         &self,
         repo_path: &Path,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<VaultSummary> {
+        self.vault_summary_for_profile(repo_path, None, preferred_key_id)
+    }
+
+    pub fn vault_summary(&self, repo_path: &Path) -> AppResult<VaultSummary> {
+        self.vault_summary_for_profile(repo_path, None, None)
+    }
+
+    pub fn encrypt_selected_files_for_profile(
+        &self,
+        repo_path: &Path,
+        profile: Option<&str>,
         only_paths: Option<&[String]>,
         preferred_key_id: Option<&str>,
     ) -> AppResult<(usize, VaultKeyEntry)> {
+        let profile = resolve_profile_name(profile)?;
         let mut manifest = self.load_manifest(repo_path)?;
 
         if manifest.files.is_empty() && only_paths.is_none() {
@@ -767,17 +931,18 @@ impl SecurityService {
             ));
         }
 
-        let (mut payload, matched_existing) = if vault_file_path(repo_path).exists() {
-            self.decrypt_payload_with_key(repo_path, preferred_key_id)?
-        } else {
-            (
-                VaultPayloadV2 {
-                    version: 2,
-                    files: BTreeMap::new(),
-                },
-                None,
-            )
-        };
+        let (mut payload, matched_existing) =
+            if vault_file_path_for_profile(repo_path, &profile).exists() {
+                self.decrypt_payload_for_profile(repo_path, &profile, preferred_key_id)?
+            } else {
+                (
+                    VaultPayloadV2 {
+                        version: 2,
+                        files: BTreeMap::new(),
+                    },
+                    None,
+                )
+            };
 
         let mut encrypted_count = 0usize;
         for spec in &targets {
@@ -806,11 +971,24 @@ impl SecurityService {
         // Priority: explicit repo/group assignment > key that already unlocked existing vault > default key
         let effective_key_id = preferred_key_id
             .or_else(|| matched_existing.as_ref().map(|k| k.id.as_str()));
-        let used_key = self.encrypt_payload_with_key(repo_path, &payload, effective_key_id)?;
+        let used_key =
+            self.encrypt_payload_for_profile(repo_path, &profile, &payload, effective_key_id)?;
 
-        manifest.key_name = Some(used_key.name.clone());
+        if profile != DEFAULT_PROFILE && !manifest.profiles.iter().any(|p| p == &profile) {
+            manifest.profiles.push(profile.clone());
+        }
+        manifest.set_key_name_for_profile(&profile, Some(used_key.name.clone()));
         self.save_manifest(repo_path, &manifest)?;
         Ok((encrypted_count, used_key))
+    }
+
+    pub fn encrypt_selected_files_with_key(
+        &self,
+        repo_path: &Path,
+        only_paths: Option<&[String]>,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<(usize, VaultKeyEntry)> {
+        self.encrypt_selected_files_for_profile(repo_path, None, only_paths, preferred_key_id)
     }
 
     pub fn encrypt_selected_files(
@@ -818,40 +996,60 @@ impl SecurityService {
         repo_path: &Path,
         only_paths: Option<&[String]>,
     ) -> AppResult<usize> {
-        self.encrypt_selected_files_with_key(repo_path, only_paths, None)
+        self.encrypt_selected_files_for_profile(repo_path, None, only_paths, None)
             .map(|(n, _)| n)
     }
 
-    /// Re-encrypts an existing `.gitfleet/secrets.age` vault under a different key from the local
-    /// keyring without requiring the plaintext files to exist on disk.
-    pub fn rekey_vault(&self, repo_path: &Path, target_key_id: &str) -> AppResult<VaultKeyEntry> {
-        if !vault_file_path(repo_path).exists() {
-            return Err(AppError::Security(
-                "No .gitfleet/secrets.age vault exists in this repository yet.".into(),
-            ));
+    /// Re-encrypts a profile's vault file under a different key from the local keyring
+    /// without requiring the plaintext files to exist on disk.
+    pub fn rekey_vault_for_profile(
+        &self,
+        repo_path: &Path,
+        profile: Option<&str>,
+        target_key_id: &str,
+    ) -> AppResult<VaultKeyEntry> {
+        let profile = resolve_profile_name(profile)?;
+        let vpath = vault_file_path_for_profile(repo_path, &profile);
+        if !vpath.exists() {
+            return Err(AppError::Security(format!(
+                "No .gitfleet/{} vault exists in this repository yet.",
+                vault_file_name_for_profile(&profile)
+            )));
         }
-        let (payload, _) = self.decrypt_payload_with_key(repo_path, None)?;
-        let used_key = self.encrypt_payload_with_key(repo_path, &payload, Some(target_key_id))?;
+        let (payload, _) = self.decrypt_payload_for_profile(repo_path, &profile, None)?;
+        let used_key = self.encrypt_payload_for_profile(
+            repo_path,
+            &profile,
+            &payload,
+            Some(target_key_id),
+        )?;
         if manifest_file_path(repo_path).exists()
             && let Ok(mut manifest) = self.load_manifest(repo_path)
         {
-            manifest.key_name = Some(used_key.name.clone());
+            manifest.set_key_name_for_profile(&profile, Some(used_key.name.clone()));
             let _ = self.save_manifest(repo_path, &manifest);
         }
         Ok(used_key)
     }
 
-    pub fn restore_selected_files_with_key(
+    pub fn rekey_vault(&self, repo_path: &Path, target_key_id: &str) -> AppResult<VaultKeyEntry> {
+        self.rekey_vault_for_profile(repo_path, None, target_key_id)
+    }
+
+    pub fn restore_selected_files_for_profile(
         &self,
         repo_path: &Path,
+        profile: Option<&str>,
         only_paths: Option<&[String]>,
         preferred_key_id: Option<&str>,
     ) -> AppResult<usize> {
-        let (payload, _) = self.decrypt_payload_with_key(repo_path, preferred_key_id)?;
+        let profile = resolve_profile_name(profile)?;
+        let (payload, _) = self.decrypt_payload_for_profile(repo_path, &profile, preferred_key_id)?;
         if payload.files.is_empty() {
-            return Err(AppError::Security(
-                "No encrypted files found in .gitfleet/secrets.age.".into(),
-            ));
+            return Err(AppError::Security(format!(
+                "No encrypted files found in profile '{profile}' (.gitfleet/{}).",
+                vault_file_name_for_profile(&profile)
+            )));
         }
 
         let filter_set: Option<HashSet<String>> = only_paths
@@ -896,12 +1094,21 @@ impl SecurityService {
         Ok(restored)
     }
 
+    pub fn restore_selected_files_with_key(
+        &self,
+        repo_path: &Path,
+        only_paths: Option<&[String]>,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<usize> {
+        self.restore_selected_files_for_profile(repo_path, None, only_paths, preferred_key_id)
+    }
+
     pub fn restore_selected_files(
         &self,
         repo_path: &Path,
         only_paths: Option<&[String]>,
     ) -> AppResult<usize> {
-        self.restore_selected_files_with_key(repo_path, only_paths, None)
+        self.restore_selected_files_for_profile(repo_path, None, only_paths, None)
     }
 
     pub fn encrypt_env_files(&self, repo_path: &Path) -> AppResult<usize> {
@@ -912,28 +1119,43 @@ impl SecurityService {
         self.restore_selected_files(repo_path, None)
     }
 
-    pub fn reveal_secret(&self, repo_path: &Path, file: &str, key: &str) -> AppResult<String> {
-        let norm = normalize_repo_rel_path(repo_path, file)?;
-        let (payload, _) = self.decrypt_payload_with_key(repo_path, None)?;
-        let entry = payload
-            .files
-            .get(&norm)
-            .ok_or_else(|| AppError::Security(format!("Secret file '{norm}' not found in vault")))?;
-        let entries = parse_secret_entries(entry.format, &entry.raw)?;
-        entries
-            .get(key)
-            .cloned()
-            .ok_or_else(|| AppError::Security(format!("Secret key '{key}' not found in '{norm}'")))
-    }
-
-    pub fn set_secret_value_with_key(
+    pub fn reveal_secret_for_profile(
         &self,
         repo_path: &Path,
+        profile: Option<&str>,
+        file: &str,
+        key: &str,
+    ) -> AppResult<String> {
+        let profile = resolve_profile_name(profile)?;
+        let norm = normalize_repo_rel_path(repo_path, file)?;
+        let (payload, _) = self.decrypt_payload_for_profile(repo_path, &profile, None)?;
+        let entry = payload.files.get(&norm).ok_or_else(|| {
+            AppError::Security(format!(
+                "Secret file '{norm}' not found in profile '{profile}'"
+            ))
+        })?;
+        let entries = parse_secret_entries(entry.format, &entry.raw)?;
+        entries.get(key).cloned().ok_or_else(|| {
+            AppError::Security(format!(
+                "Secret key '{key}' not found in '{norm}' (profile '{profile}')"
+            ))
+        })
+    }
+
+    pub fn reveal_secret(&self, repo_path: &Path, file: &str, key: &str) -> AppResult<String> {
+        self.reveal_secret_for_profile(repo_path, None, file, key)
+    }
+
+    pub fn set_secret_value_for_profile(
+        &self,
+        repo_path: &Path,
+        profile: Option<&str>,
         file: &str,
         key: &str,
         value: &str,
         preferred_key_id: Option<&str>,
     ) -> AppResult<VaultKeyEntry> {
+        let profile = resolve_profile_name(profile)?;
         let norm = normalize_repo_rel_path(repo_path, file)?;
         let key = key.trim();
         if key.is_empty() {
@@ -953,17 +1175,18 @@ impl SecurityService {
                 ))
             })?;
 
-        let (mut payload, matched_existing) = if vault_file_path(repo_path).exists() {
-            self.decrypt_payload_with_key(repo_path, preferred_key_id)?
-        } else {
-            (
-                VaultPayloadV2 {
-                    version: 2,
-                    files: BTreeMap::new(),
-                },
-                None,
-            )
-        };
+        let (mut payload, matched_existing) =
+            if vault_file_path_for_profile(repo_path, &profile).exists() {
+                self.decrypt_payload_for_profile(repo_path, &profile, preferred_key_id)?
+            } else {
+                (
+                    VaultPayloadV2 {
+                        version: 2,
+                        files: BTreeMap::new(),
+                    },
+                    None,
+                )
+            };
 
         let current_raw = payload
             .files
@@ -983,14 +1206,29 @@ impl SecurityService {
 
         let effective_key_id = preferred_key_id
             .or_else(|| matched_existing.as_ref().map(|k| k.id.as_str()));
-        let used_key = self.encrypt_payload_with_key(repo_path, &payload, effective_key_id)?;
+        let used_key =
+            self.encrypt_payload_for_profile(repo_path, &profile, &payload, effective_key_id)?;
 
         if !manifest.files.iter().any(|f| f.path == norm) {
             manifest.files.push(SecretFileSpec { path: norm, format });
         }
-        manifest.key_name = Some(used_key.name.clone());
+        if profile != DEFAULT_PROFILE && !manifest.profiles.iter().any(|p| p == &profile) {
+            manifest.profiles.push(profile.clone());
+        }
+        manifest.set_key_name_for_profile(&profile, Some(used_key.name.clone()));
         self.save_manifest(repo_path, &manifest)?;
         Ok(used_key)
+    }
+
+    pub fn set_secret_value_with_key(
+        &self,
+        repo_path: &Path,
+        file: &str,
+        key: &str,
+        value: &str,
+        preferred_key_id: Option<&str>,
+    ) -> AppResult<VaultKeyEntry> {
+        self.set_secret_value_for_profile(repo_path, None, file, key, value, preferred_key_id)
     }
 
     pub fn set_secret_value(
@@ -1000,12 +1238,18 @@ impl SecurityService {
         key: &str,
         value: &str,
     ) -> AppResult<()> {
-        self.set_secret_value_with_key(repo_path, file, key, value, None)
+        self.set_secret_value_for_profile(repo_path, None, file, key, value, None)
             .map(|_| ())
     }
 
-    pub fn copy_secret_value(&self, repo_path: &Path, file: &str, key: &str) -> AppResult<()> {
-        let mut val = self.reveal_secret(repo_path, file, key)?;
+    pub fn copy_secret_value_for_profile(
+        &self,
+        repo_path: &Path,
+        profile: Option<&str>,
+        file: &str,
+        key: &str,
+    ) -> AppResult<()> {
+        let mut val = self.reveal_secret_for_profile(repo_path, profile, file, key)?;
         let mut cb =
             Clipboard::new().map_err(|e| AppError::Security(format!("Clipboard error: {e}")))?;
         let res = cb
@@ -1013,6 +1257,10 @@ impl SecurityService {
             .map_err(|e| AppError::Security(format!("Clipboard error: {e}")));
         val.zeroize();
         res
+    }
+
+    pub fn copy_secret_value(&self, repo_path: &Path, file: &str, key: &str) -> AppResult<()> {
+        self.copy_secret_value_for_profile(repo_path, None, file, key)
     }
 }
 

@@ -6,11 +6,11 @@ mod scanner;
 mod vault;
 
 pub use formats::{normalize_repo_rel_path, parse_secret_entries};
-pub use manifest::manifest_file_path;
+pub use manifest::{manifest_file_path, normalize_profile_name, vault_file_name_for_profile};
 pub use models::{
-    IgnoreLayer, IgnoreSnapshot, OversizedFile, SecretFileFormat, SecretFileSpec, SecretFinding,
-    SecretsManifest, VaultFileState, VaultFileSummary, VaultKeyEntry, VaultKeyInfo,
-    VaultKeyringSummary, VaultSummary,
+    DEFAULT_PROFILE, IgnoreLayer, IgnoreSnapshot, OversizedFile, SecretFileFormat, SecretFileSpec,
+    SecretFinding, SecretsManifest, VaultFileState, VaultFileSummary, VaultKeyEntry, VaultKeyInfo,
+    VaultKeyringSummary, VaultProfileSummary, VaultSummary,
 };
 
 use std::collections::HashSet;
@@ -338,6 +338,113 @@ mod tests {
             std::fs::read_to_string(repo.join(".env")).unwrap(),
             "API_KEY=keep-me\n"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn supports_multiple_profiles_per_machine_without_clobbering_default() {
+        let root = temp_dir("multi_profiles");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let svc = SecurityService::with_identity_path(root.join("keyring.json"));
+        let key = svc.create_named_key("Dev").unwrap();
+
+        // 1. Encrypt base/default profile (.gitfleet/secrets.age)
+        std::fs::write(
+            repo.join(".env"),
+            "API_HOST=http://192.168.1.50:8080\nDB_PASS=shared-secret\n",
+        )
+        .unwrap();
+        svc.add_manifest_file(&repo, ".env", None).unwrap();
+        svc.encrypt_selected_files_for_profile(&repo, None, None, Some(&key.id))
+            .unwrap();
+
+        // 2. Create 'home-laptop' profile cloned from 'default', then override API_HOST for laptop
+        let p_laptop = svc
+            .create_vault_profile(&repo, "Home Laptop", Some(DEFAULT_PROFILE), Some(&key.id))
+            .unwrap();
+        assert_eq!(p_laptop, "home-laptop");
+        assert!(repo.join(".gitfleet/secrets.age").exists());
+        assert!(repo.join(".gitfleet/secrets.home-laptop.age").exists());
+
+        svc.set_secret_value_for_profile(
+            &repo,
+            Some(&p_laptop),
+            ".env",
+            "API_HOST",
+            "http://localhost:8080",
+            Some(&key.id),
+        )
+        .unwrap();
+
+        // Default and laptop hold independent API_HOST values while sharing DB_PASS
+        assert_eq!(
+            svc.reveal_secret_for_profile(&repo, Some(DEFAULT_PROFILE), ".env", "API_HOST")
+                .unwrap(),
+            "http://192.168.1.50:8080"
+        );
+        assert_eq!(
+            svc.reveal_secret_for_profile(&repo, Some("home-laptop"), ".env", "API_HOST")
+                .unwrap(),
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            svc.reveal_secret_for_profile(&repo, Some("home-laptop"), ".env", "DB_PASS")
+                .unwrap(),
+            "shared-secret"
+        );
+
+        // 3. Summary reflects active profile accurately against local disk
+        let sum_def = svc
+            .vault_summary_for_profile(&repo, Some(DEFAULT_PROFILE), Some(&key.id))
+            .unwrap();
+        assert_eq!(sum_def.active_profile, "default");
+        assert_eq!(sum_def.vault_file_name, "secrets.age");
+        assert_eq!(sum_def.profiles.len(), 2);
+        assert_eq!(sum_def.files[0].state, VaultFileState::Synced);
+
+        let sum_lap = svc
+            .vault_summary_for_profile(&repo, Some("home-laptop"), Some(&key.id))
+            .unwrap();
+        assert_eq!(sum_lap.active_profile, "home-laptop");
+        assert_eq!(sum_lap.vault_file_name, "secrets.home-laptop.age");
+        assert_eq!(sum_lap.files[0].state, VaultFileState::Modified);
+
+        // 4. Restoring 'home-laptop' writes laptop's API_HOST to disk; default now sees Modified
+        svc.restore_selected_files_for_profile(&repo, Some("home-laptop"), None, Some(&key.id))
+            .unwrap();
+        let disk_env = std::fs::read_to_string(repo.join(".env")).unwrap();
+        assert!(disk_env.contains("API_HOST=http://localhost:8080"));
+        assert!(disk_env.contains("DB_PASS=shared-secret"));
+
+        let sum_lap_synced = svc
+            .vault_summary_for_profile(&repo, Some("home-laptop"), Some(&key.id))
+            .unwrap();
+        assert_eq!(sum_lap_synced.files[0].state, VaultFileState::Synced);
+
+        // 5. Rename profile -> moves secrets.home-laptop.age to secrets.laptop.age
+        let renamed = svc
+            .rename_vault_profile(&repo, "home-laptop", "laptop")
+            .unwrap();
+        assert_eq!(renamed, "laptop");
+        assert!(!repo.join(".gitfleet/secrets.home-laptop.age").exists());
+        assert!(repo.join(".gitfleet/secrets.laptop.age").exists());
+
+        // 6. Delete custom profile -> removes its .age file, keeps default vault and local .env intact
+        assert!(svc.delete_vault_profile(&repo, "laptop").unwrap());
+        assert!(!repo.join(".gitfleet/secrets.laptop.age").exists());
+        assert!(repo.join(".gitfleet/secrets.age").exists());
+        assert!(repo.join(".env").exists());
+        assert!(svc.delete_vault_profile(&repo, DEFAULT_PROFILE).is_err());
+
+        // 7. Create another profile then destroy_repo_vault cleans up ALL profile vaults
+        svc.create_vault_profile(&repo, "staging", Some(DEFAULT_PROFILE), Some(&key.id))
+            .unwrap();
+        let removed = svc.destroy_repo_vault(&repo).unwrap();
+        assert_eq!(removed, 3); // secrets.age + secrets.staging.age + secrets.json
+        assert!(!repo.join(".gitfleet").exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }

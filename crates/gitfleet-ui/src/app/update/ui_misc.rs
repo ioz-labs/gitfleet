@@ -872,6 +872,9 @@ impl GitFleetApp {
                     ConfirmAction::DeleteRepoEntry { rel_path, is_dir } => {
                         self.update(Message::DeleteRepoEntry { rel_path, is_dir })
                     }
+                    ConfirmAction::DeleteVaultProfile { profile } => {
+                        self.update(Message::DeleteVaultProfile(profile))
+                    }
                 }
             }
             Message::OpenCherryPickModal { revisions, detail } => {

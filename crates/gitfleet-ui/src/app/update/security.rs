@@ -33,15 +33,19 @@ impl GitFleetApp {
             Message::OpenSecretsDrawer { show_keys } => {
                 self.drawer_tab = Some(DrawerTab::Secrets);
                 self.terminal_focused = false;
-                if show_keys {
-                    self.show_key_manager = true;
+                self.show_key_manager = show_keys;
+                self.show_secret_picker = false;
+                if !show_keys {
+                    self.renaming_key = None;
                 }
                 self.refresh_vault_and_ignore();
                 Task::none()
             }
             Message::ToggleKeyManager => {
                 self.show_key_manager = !self.show_key_manager;
-                if !self.show_key_manager {
+                if self.show_key_manager {
+                    self.show_secret_picker = false;
+                } else {
                     self.renaming_key = None;
                 }
                 Task::none()
@@ -250,15 +254,17 @@ impl GitFleetApp {
             }
             Message::RekeyActiveRepoVault(target_key_id) => {
                 if let Some(repo) = self.current_repo() {
-                    match self
-                        .service
-                        .security
-                        .rekey_vault(&repo.path, &target_key_id)
-                    {
+                    let profile = self.vault_summary.active_profile.clone();
+                    let vault_file = gitfleet_security::vault_file_name_for_profile(&profile);
+                    match self.service.security.rekey_vault_for_profile(
+                        &repo.path,
+                        Some(&profile),
+                        &target_key_id,
+                    ) {
                         Ok(used_key) => {
                             self.toast_is_error = false;
                             self.toast_message = format!(
-                                "Re-encrypted vault with key '{}' — commit .gitfleet/secrets.age",
+                                "Re-encrypted profile '{profile}' with key '{}' — commit .gitfleet/{vault_file}",
                                 used_key.name
                             );
                             self.refresh_vault_summary();
@@ -275,11 +281,17 @@ impl GitFleetApp {
                 if let Some(repo) = self.current_repo() {
                     match self.service.security.destroy_repo_vault(&repo.path) {
                         Ok(n) => {
+                            if let Some(repo_id) = self.selected_repo.clone() {
+                                let _ = self.service.workspace.set_repo_secret_profile(&repo_id, None);
+                            }
+                            self.show_create_profile_bar = false;
+                            self.new_profile_name_input.clear();
+                            self.renaming_profile = None;
                             self.revealed_secrets.clear();
                             self.refresh_vault_and_ignore();
                             self.toast_is_error = false;
                             self.toast_message = if n > 0 {
-                                "Deleted Secrets Vault (.gitfleet/secrets.age & secrets.json). Local secret files on disk were kept.".into()
+                                "Deleted Secrets Vault (.gitfleet/secrets*.age & secrets.json). Local secret files on disk were kept.".into()
                             } else {
                                 "No Secrets Vault files found in this repository.".into()
                             };
@@ -292,20 +304,231 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            Message::SelectVaultProfile(profile) => {
+                if let Some(repo_id) = self.selected_repo.clone() {
+                    let target = if profile.trim().is_empty()
+                        || profile == gitfleet_security::DEFAULT_PROFILE
+                    {
+                        None
+                    } else {
+                        Some(profile.clone())
+                    };
+                    let _ = self
+                        .service
+                        .workspace
+                        .set_repo_secret_profile(&repo_id, target);
+                    self.renaming_profile = None;
+                    self.revealed_secrets.clear();
+                    self.refresh_vault_summary();
+                    let active = self.vault_summary.active_profile.clone();
+                    let enc_n = self.vault_summary.encrypt_needed_count();
+                    let res_n = self.vault_summary.restore_needed_count();
+                    self.toast_is_error = false;
+                    self.toast_message = if self.vault_summary.vault_locked {
+                        format!("Switched Secrets profile to '{active}' (locked)")
+                    } else if res_n > 0 {
+                        format!(
+                            "Switched Secrets profile to '{active}' — click Restore to write {res_n} file(s) to disk"
+                        )
+                    } else if enc_n > 0 && self.vault_summary.has_vault {
+                        format!(
+                            "Switched Secrets profile to '{active}' — disk differs: click Restore to apply '{active}', or Encrypt to save local edits"
+                        )
+                    } else if enc_n > 0 {
+                        format!(
+                            "Switched Secrets profile to '{active}' — click Encrypt to seal local files into this profile"
+                        )
+                    } else {
+                        format!("Switched Secrets profile to '{active}' (synced with disk)")
+                    };
+                }
+                Task::none()
+            }
+            Message::ToggleCreateVaultProfile => {
+                self.show_create_profile_bar = !self.show_create_profile_bar;
+                if self.show_create_profile_bar {
+                    self.new_profile_name_input.clear();
+                    self.renaming_profile = None;
+                    // Smart default: copy from active profile when it has encrypted files and disk
+                    // isn't carrying unsaved local edits; otherwise start blank ready to encrypt disk.
+                    self.clone_from_active_profile = self.vault_summary.has_vault
+                        && !self.vault_summary.vault_locked
+                        && self.vault_summary.encrypt_needed_count() == 0;
+                }
+                Task::none()
+            }
+            Message::NewVaultProfileNameChanged(v) => {
+                self.new_profile_name_input = v;
+                Task::none()
+            }
+            Message::ToggleCloneVaultProfile(v) => {
+                self.clone_from_active_profile = v;
+                Task::none()
+            }
+            Message::CreateVaultProfileSubmitted => {
+                let raw_name = self.new_profile_name_input.trim().to_string();
+                if raw_name.is_empty() {
+                    return Task::none();
+                }
+                if let Some(repo) = self.current_repo() {
+                    let preferred = self
+                        .active_repo_secret_key_binding()
+                        .map(|(id, _)| id);
+                    let clone_src = if self.clone_from_active_profile
+                        && self.vault_summary.has_vault
+                        && !self.vault_summary.vault_locked
+                    {
+                        Some(self.vault_summary.active_profile.clone())
+                    } else {
+                        None
+                    };
+                    match self.service.security.create_vault_profile(
+                        &repo.path,
+                        &raw_name,
+                        clone_src.as_deref(),
+                        preferred.as_deref(),
+                    ) {
+                        Ok(created) => {
+                            if let Some(repo_id) = self.selected_repo.clone() {
+                                let _ = self
+                                    .service
+                                    .workspace
+                                    .set_repo_secret_profile(&repo_id, Some(created.clone()));
+                            }
+                            self.show_create_profile_bar = false;
+                            self.new_profile_name_input.clear();
+                            self.revealed_secrets.clear();
+                            self.refresh_vault_summary();
+                            self.toast_is_error = false;
+                            self.toast_message = if let Some(src) = clone_src {
+                                format!(
+                                    "Created profile '{created}' (copied from '{src}') — edit keys or local files as needed"
+                                )
+                            } else {
+                                format!(
+                                    "Created profile '{created}' — click Encrypt to seal local files into .gitfleet/{}",
+                                    gitfleet_security::vault_file_name_for_profile(&created)
+                                )
+                            };
+                            return self.load_status_task(repo);
+                        }
+                        Err(e) => {
+                            self.report_action_error(
+                                "Create Secrets Profile Failed",
+                                e.to_string(),
+                                false,
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::StartRenameVaultProfile(profile) => {
+                if profile != gitfleet_security::DEFAULT_PROFILE {
+                    self.show_create_profile_bar = false;
+                    self.renaming_profile = Some((profile.clone(), profile));
+                }
+                Task::none()
+            }
+            Message::RenameVaultProfileInputChanged(v) => {
+                if let Some((_, draft)) = &mut self.renaming_profile {
+                    *draft = v;
+                }
+                Task::none()
+            }
+            Message::CancelRenameVaultProfile => {
+                self.renaming_profile = None;
+                Task::none()
+            }
+            Message::SubmitRenameVaultProfile => {
+                let Some((old_name, draft)) = self.renaming_profile.take() else {
+                    return Task::none();
+                };
+                if let Some(repo) = self.current_repo() {
+                    match self
+                        .service
+                        .security
+                        .rename_vault_profile(&repo.path, &old_name, &draft)
+                    {
+                        Ok(new_name) => {
+                            if let Some(repo_id) = self.selected_repo.clone() {
+                                let _ = self
+                                    .service
+                                    .workspace
+                                    .set_repo_secret_profile(&repo_id, Some(new_name.clone()));
+                            }
+                            self.revealed_secrets.clear();
+                            self.refresh_vault_summary();
+                            self.toast_is_error = false;
+                            self.toast_message =
+                                format!("Renamed Secrets profile '{old_name}' → '{new_name}'");
+                            return self.load_status_task(repo);
+                        }
+                        Err(e) => {
+                            self.report_action_error(
+                                "Rename Secrets Profile Failed",
+                                e.to_string(),
+                                false,
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::DeleteVaultProfile(profile) => {
+                if let Some(repo) = self.current_repo() {
+                    match self
+                        .service
+                        .security
+                        .delete_vault_profile(&repo.path, &profile)
+                    {
+                        Ok(_) => {
+                            if let Some(repo_id) = self.selected_repo.clone()
+                                && self.active_repo_secret_profile().as_deref()
+                                    == Some(profile.as_str())
+                            {
+                                let _ = self
+                                    .service
+                                    .workspace
+                                    .set_repo_secret_profile(&repo_id, None);
+                            }
+                            self.renaming_profile = None;
+                            self.revealed_secrets.clear();
+                            self.refresh_vault_summary();
+                            self.toast_is_error = false;
+                            self.toast_message = format!(
+                                "Deleted Secrets profile '{profile}'. Local secret files on disk were kept."
+                            );
+                            return self.load_status_task(repo);
+                        }
+                        Err(e) => {
+                            self.report_action_error(
+                                "Delete Secrets Profile Failed",
+                                e.to_string(),
+                                false,
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
             Message::EncryptRepoEnv => {
                 if let Some(repo) = self.current_repo() {
                     let preferred = self
                         .active_repo_secret_key_binding()
                         .map(|(id, _)| id);
-                    match self.service.security.encrypt_selected_files_with_key(
+                    let profile = self.vault_summary.active_profile.clone();
+                    let vault_file = gitfleet_security::vault_file_name_for_profile(&profile);
+                    match self.service.security.encrypt_selected_files_for_profile(
                         &repo.path,
+                        Some(&profile),
                         None,
                         preferred.as_deref(),
                     ) {
                         Ok((n, used_key)) => {
                             self.toast_is_error = false;
                             self.toast_message = format!(
-                                "Encrypted {n} secret file(s) with key '{}' → commit .gitfleet/secrets.age",
+                                "Encrypted {n} secret file(s) into profile '{profile}' (key '{}') → commit .gitfleet/{vault_file}",
                                 used_key.name
                             );
                             self.refresh_vault_and_ignore();
@@ -323,15 +546,18 @@ impl GitFleetApp {
                     let preferred = self
                         .active_repo_secret_key_binding()
                         .map(|(id, _)| id);
-                    match self.service.security.restore_selected_files_with_key(
+                    let profile = self.vault_summary.active_profile.clone();
+                    match self.service.security.restore_selected_files_for_profile(
                         &repo.path,
+                        Some(&profile),
                         None,
                         preferred.as_deref(),
                     ) {
                         Ok(n) => {
                             self.toast_is_error = false;
-                            self.toast_message =
-                                format!("Restored {n} secret file(s) from encrypted vault");
+                            self.toast_message = format!(
+                                "Restored {n} secret file(s) from profile '{profile}'"
+                            );
                             self.refresh_vault_and_ignore();
                             return self.load_status_task(repo);
                         }
@@ -347,15 +573,18 @@ impl GitFleetApp {
                     let preferred = self
                         .active_repo_secret_key_binding()
                         .map(|(id, _)| id);
-                    match self.service.security.encrypt_selected_files_with_key(
+                    let profile = self.vault_summary.active_profile.clone();
+                    let vault_file = gitfleet_security::vault_file_name_for_profile(&profile);
+                    match self.service.security.encrypt_selected_files_for_profile(
                         &repo.path,
+                        Some(&profile),
                         Some(std::slice::from_ref(&path)),
                         preferred.as_deref(),
                     ) {
                         Ok((_, used_key)) => {
                             self.toast_is_error = false;
                             self.toast_message = format!(
-                                "Encrypted '{path}' with key '{}' into .gitfleet/secrets.age",
+                                "Encrypted '{path}' into profile '{profile}' (key '{}') → .gitfleet/{vault_file}",
                                 used_key.name
                             );
                             self.refresh_vault_and_ignore();
@@ -373,14 +602,18 @@ impl GitFleetApp {
                     let preferred = self
                         .active_repo_secret_key_binding()
                         .map(|(id, _)| id);
-                    match self.service.security.restore_selected_files_with_key(
+                    let profile = self.vault_summary.active_profile.clone();
+                    match self.service.security.restore_selected_files_for_profile(
                         &repo.path,
+                        Some(&profile),
                         Some(std::slice::from_ref(&path)),
                         preferred.as_deref(),
                     ) {
                         Ok(_) => {
                             self.toast_is_error = false;
-                            self.toast_message = format!("Restored '{path}' from encrypted vault");
+                            self.toast_message = format!(
+                                "Restored '{path}' from profile '{profile}'"
+                            );
                             self.refresh_vault_and_ignore();
                             return self.load_status_task(repo);
                         }
@@ -393,13 +626,15 @@ impl GitFleetApp {
             }
             Message::ToggleSecretFilePicker => {
                 self.show_secret_picker = !self.show_secret_picker;
-                if self.show_secret_picker
-                    && let Some(repo) = self.current_repo()
-                {
-                    self.secret_candidates = self
-                        .service
-                        .security
-                        .discover_candidate_files(&repo.path);
+                if self.show_secret_picker {
+                    self.show_key_manager = false;
+                    self.renaming_key = None;
+                    if let Some(repo) = self.current_repo() {
+                        self.secret_candidates = self
+                            .service
+                            .security
+                            .discover_candidate_files(&repo.path);
+                    }
                 }
                 Task::none()
             }
@@ -481,37 +716,82 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::SelectSecretTargetFile(rel_path) => {
+                if self.secret_file_input != rel_path {
+                    self.secret_key_input.clear();
+                    self.secret_val_input.clear();
+                }
                 self.secret_file_input = rel_path;
+                self.show_key_manager = false;
+                self.show_secret_picker = false;
+                self.renaming_key = None;
+                Task::none()
+            }
+            Message::SelectSecretTargetKey(rel_path, key) => {
+                self.secret_file_input = rel_path.clone();
+                self.secret_key_input = key.clone();
+                self.show_key_manager = false;
+                self.show_secret_picker = false;
+                if let Some(val) = self.revealed_secrets.get(&(rel_path.clone(), key.clone())) {
+                    self.secret_val_input = val.clone();
+                } else if let Some(repo) = self.current_repo() {
+                    let profile = self.vault_summary.active_profile.clone();
+                    if let Ok(val) = self.service.security.reveal_secret_for_profile(
+                        &repo.path,
+                        Some(&profile),
+                        &rel_path,
+                        &key,
+                    ) {
+                        self.secret_val_input = val;
+                    } else {
+                        self.secret_val_input.clear();
+                    }
+                } else {
+                    self.secret_val_input.clear();
+                }
+                Task::none()
+            }
+            Message::ClearSecretQuickEdit => {
+                self.secret_key_input.clear();
+                self.secret_val_input.clear();
                 Task::none()
             }
             Message::RevealSecret(file, key) => {
+                let cache_key = (file.clone(), key.clone());
+                if self.revealed_secrets.remove(&cache_key).is_some() {
+                    return Task::none();
+                }
+                let profile = self.vault_summary.active_profile.clone();
                 if let Some(repo) = self.current_repo()
-                    && let Ok(val) = self.service.security.reveal_secret(&repo.path, &file, &key)
+                    && let Ok(val) = self.service.security.reveal_secret_for_profile(
+                        &repo.path,
+                        Some(&profile),
+                        &file,
+                        &key,
+                    )
                 {
-                    self.revealed_secrets.insert((file, key), val);
+                    self.revealed_secrets.insert(cache_key, val);
                 }
                 Task::none()
             }
             Message::CopySecret(file, key) => {
+                let profile = self.vault_summary.active_profile.clone();
                 if let Some(repo) = self.current_repo() {
-                    match self
-                        .service
-                        .security
-                        .copy_secret_value(&repo.path, &file, &key)
-                    {
+                    match self.service.security.copy_secret_value_for_profile(
+                        &repo.path,
+                        Some(&profile),
+                        &file,
+                        &key,
+                    ) {
                         Ok(_) => {
                             self.toast_is_error = false;
-                            self.toast_message = format!("Copied '{key}' directly to clipboard");
+                            self.toast_message =
+                                format!("Copied '{key}' (profile '{profile}') to clipboard");
                         }
                         Err(e) => {
                             self.report_action_error("Copy Secret Failed", e.to_string(), false);
                         }
                     }
                 }
-                Task::none()
-            }
-            Message::SecretFileInputChanged(v) => {
-                self.secret_file_input = v;
                 Task::none()
             }
             Message::SecretKeyInputChanged(v) => {
@@ -533,8 +813,10 @@ impl GitFleetApp {
                     let preferred = self
                         .active_repo_secret_key_binding()
                         .map(|(id, _)| id);
-                    match self.service.security.set_secret_value_with_key(
+                    let profile = self.vault_summary.active_profile.clone();
+                    match self.service.security.set_secret_value_for_profile(
                         &repo.path,
+                        Some(&profile),
                         &file,
                         &key,
                         &val,
@@ -545,7 +827,7 @@ impl GitFleetApp {
                             self.secret_val_input.clear();
                             self.toast_is_error = false;
                             self.toast_message = format!(
-                                "Saved secret '{key}' into encrypted vault (key '{}')",
+                                "Saved '{key}' into profile '{profile}' (key '{}')",
                                 used_key.name
                             );
                             self.refresh_vault_and_ignore();

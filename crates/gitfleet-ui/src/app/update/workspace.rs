@@ -19,6 +19,9 @@ impl GitFleetApp {
         self.show_palette = false;
         self.show_branch_popover = false;
         self.rename_branch_modal = None;
+        self.show_create_profile_bar = false;
+        self.new_profile_name_input.clear();
+        self.renaming_profile = None;
         self.clear_conflict_state();
         self.graph_selection = GraphSelection::WorkingTree;
         self.commits.clear();

@@ -187,6 +187,7 @@ pub(crate) enum ConfirmAction {
     RemoveWorktree { path: PathBuf },
     DeleteVaultKey { key_id: String },
     DestroyRepoVault,
+    DeleteVaultProfile { profile: String },
     ForceCommit { push_after: bool },
     CommitAllWorkingTree { push_after: bool },
     ExecuteMerge { target: String, mode: MergeMode },
@@ -736,6 +737,22 @@ impl PendingConfirm {
                 branch,
                 base_branch,
                 force: unmerged,
+            },
+        }
+    }
+
+    pub(crate) fn delete_vault_profile(profile: &str) -> Self {
+        let fname = gitfleet_security::vault_file_name_for_profile(profile);
+        Self {
+            title: format!("Delete Secrets Profile '{profile}'?"),
+            message: format!(
+                "Deletes '.gitfleet/{fname}' and removes profile '{profile}' from '.gitfleet/secrets.json'. Other profiles and your local .env / .toml / .yaml files on disk will NOT be deleted."
+            ),
+            detail: Some(format!(".gitfleet/{fname}")),
+            confirm_label: "Delete Profile".into(),
+            is_danger: true,
+            action: ConfirmAction::DeleteVaultProfile {
+                profile: profile.to_string(),
             },
         }
     }

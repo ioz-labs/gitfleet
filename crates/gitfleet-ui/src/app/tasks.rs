@@ -221,15 +221,23 @@ impl GitFleetApp {
         let preferred_key = self
             .active_repo_secret_key_binding()
             .map(|(key_id, _)| key_id);
+        let active_profile = self.active_repo_secret_profile();
         self.vault_summary = self
             .service
             .security
-            .vault_summary_with_key(&repo.path, preferred_key.as_deref())
+            .vault_summary_for_profile(
+                &repo.path,
+                active_profile.as_deref(),
+                preferred_key.as_deref(),
+            )
             .unwrap_or_default();
         if let Some(first) = self.vault_summary.files.first()
             && (self.secret_file_input.trim().is_empty()
-                || (self.secret_file_input == ".env"
-                    && !self.vault_summary.files.iter().any(|f| f.path == ".env")))
+                || !self
+                    .vault_summary
+                    .files
+                    .iter()
+                    .any(|f| f.path == self.secret_file_input))
         {
             self.secret_file_input = first.path.clone();
         }

@@ -560,6 +560,12 @@ impl GitFleetApp {
 
                 let encrypt_needed = self.vault_summary.encrypt_needed_count();
                 let restore_needed = self.vault_summary.restore_needed_count();
+                let profile_tag = if self.vault_summary.is_default_profile() {
+                    String::new()
+                } else {
+                    format!(" [{}]", self.vault_summary.active_profile)
+                };
+                let vault_fname = self.vault_summary.vault_file_name.as_str();
                 if self.vault_summary.vault_locked {
                     has_alerts = true;
                     let repo_name = self
@@ -577,7 +583,7 @@ impl GitFleetApp {
                             row![
                                 icons::lock(icon_size::XS, p.warning_fg),
                                 theme::clipped_line(
-                                    text(format!("Secrets vault locked{key_hint}"))
+                                    text(format!("Secrets vault locked{profile_tag}{key_hint}"))
                                         .size(type_scale::BADGE)
                                         .color(p.warning_fg),
                                     Length::Fill,
@@ -589,7 +595,7 @@ impl GitFleetApp {
                                         .on_press(Message::RequestConfirm(
                                             PendingConfirm::destroy_repo_vault(&repo_name),
                                         )),
-                                    "Delete locked Secrets Vault (.gitfleet/secrets.age & secrets.json)",
+                                    "Delete locked Secrets Vault (.gitfleet/secrets*.age & secrets.json)",
                                     tooltip::Position::Top,
                                     p,
                                 ),
@@ -613,11 +619,11 @@ impl GitFleetApp {
                     has_alerts = true;
                     let paths = self.vault_summary.encrypt_needed_paths();
                     let label = match paths.as_slice() {
-                        [only] => format!("Secrets modified: {only}"),
+                        [only] => format!("Secrets modified{profile_tag}: {only}"),
                         [first, rest @ ..] => {
-                            format!("Secrets modified: {first} (+{} more)", rest.len())
+                            format!("Secrets modified{profile_tag}: {first} (+{} more)", rest.len())
                         }
-                        [] => format!("{encrypt_needed} secret file(s) modified"),
+                        [] => format!("{encrypt_needed} secret file(s) modified{profile_tag}"),
                     };
                     alerts_col = alerts_col.push(
                         container(
@@ -642,7 +648,7 @@ impl GitFleetApp {
                                     .style(theme::primary_btn(p))
                                     .on_press(Message::EncryptRepoEnv),
                                     format!(
-                                        "Encrypt {} into .gitfleet/secrets.age",
+                                        "Encrypt {} into .gitfleet/{vault_fname}",
                                         paths.join(", ")
                                     ),
                                     tooltip::Position::Top,
@@ -668,11 +674,11 @@ impl GitFleetApp {
                     has_alerts = true;
                     let paths = self.vault_summary.restore_needed_paths();
                     let label = match paths.as_slice() {
-                        [only] => format!("Secret missing on disk: {only}"),
+                        [only] => format!("Secret missing{profile_tag}: {only}"),
                         [first, rest @ ..] => {
-                            format!("Secrets missing: {first} (+{} more)", rest.len())
+                            format!("Secrets missing{profile_tag}: {first} (+{} more)", rest.len())
                         }
-                        [] => format!("{restore_needed} secret file(s) missing on disk"),
+                        [] => format!("{restore_needed} secret file(s) missing{profile_tag}"),
                     };
                     alerts_col = alerts_col.push(
                         container(
@@ -692,7 +698,7 @@ impl GitFleetApp {
                                     .style(theme::primary_btn(p))
                                     .on_press(Message::RestoreRepoEnv),
                                     format!(
-                                        "Decrypt {} from .gitfleet/secrets.age",
+                                        "Decrypt {} from .gitfleet/{vault_fname}",
                                         paths.join(", ")
                                     ),
                                     tooltip::Position::Top,

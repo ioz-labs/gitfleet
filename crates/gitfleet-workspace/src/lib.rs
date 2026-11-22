@@ -17,6 +17,10 @@ pub struct RepoEntry {
     /// Optional explicit Age key ID override for this repository's Secrets Vault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_key_id: Option<String>,
+    /// Optional active Secrets Vault profile on this machine (e.g. `"laptop"`, `"staging"`).
+    /// Stored locally per workspace (never committed to Git); defaults to `"default"` when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1185,6 +1189,7 @@ impl WorkspaceService {
             group: target_group.clone(),
             pinned: false,
             secret_key_id: None,
+            secret_profile: None,
         };
         if let Ok(mut guard) = self.state.write() {
             if let Some(g) = &target_group {
@@ -1305,6 +1310,42 @@ impl WorkspaceService {
         let guard = self.state.read().ok()?;
         let repo = guard.repos.iter().find(|r| &r.id == repo_id)?;
         resolve_repo_secret_key_in(&guard, repo)
+    }
+
+    /// Sets (or clears with `None` / `"default"`) the active Secrets Vault profile for `repo_id`
+    /// on this machine.
+    pub fn set_repo_secret_profile(
+        &self,
+        repo_id: &RepoId,
+        profile: Option<String>,
+    ) -> AppResult<()> {
+        let cleaned = profile
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s != "default");
+        let mut found = false;
+        if let Ok(mut guard) = self.state.write()
+            && let Some(repo) = guard.repos.iter_mut().find(|r| &r.id == repo_id)
+        {
+            repo.secret_profile = cleaned;
+            found = true;
+        }
+        if found {
+            self.auto_save();
+            Ok(())
+        } else {
+            Err(AppError::RepoNotFound(repo_id.0.clone()))
+        }
+    }
+
+    /// Returns the locally remembered active Secrets Vault profile for `repo_id` (if non-default).
+    pub fn repo_secret_profile(&self, repo_id: &RepoId) -> Option<String> {
+        let guard = self.state.read().ok()?;
+        let repo = guard.repos.iter().find(|r| &r.id == repo_id)?;
+        repo.secret_profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "default")
+            .map(str::to_string)
     }
 
     /// Removes any repo or group secret key bindings referencing a deleted `key_id`.
@@ -1596,6 +1637,7 @@ fn import_scanned_repos_into(
             group: target_group,
             pinned: false,
             secret_key_id: None,
+            secret_profile: None,
         };
         let next_idx = cfg.repos.len();
         existing_index.insert(key, next_idx);
@@ -1712,6 +1754,7 @@ mod tests {
                 pinned: false,
                 available: false,
                 secret_key_id: None,
+                secret_profile: None,
             }],
             ui: WorkspaceUiState::default(),
         };
@@ -1780,6 +1823,7 @@ mod tests {
                 pinned: true,
                 available: false,
                 secret_key_id: None,
+                secret_profile: None,
             }],
             ui: WorkspaceUiState::default(),
         };
@@ -1967,6 +2011,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         });
 
         // With update_existing_groups = false: `web` is added with group `frontend`, `api` untouched
@@ -2020,6 +2065,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         assert_eq!(
             resolve_repo_secret_key_in(&cfg, &inherited_repo),
@@ -2037,6 +2083,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         assert_eq!(
             resolve_repo_secret_key_in(&cfg, &subgroup_repo),
@@ -2054,6 +2101,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: Some("key_special".into()),
+            secret_profile: None,
         };
         assert_eq!(
             resolve_repo_secret_key_in(&cfg, &override_repo),
@@ -2068,6 +2116,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         assert_eq!(resolve_repo_secret_key_in(&cfg, &root_repo), None);
     }
@@ -2097,6 +2146,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         let r_nested = RepoEntry {
             id: RepoId::new(),
@@ -2106,6 +2156,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         let r_sibling = RepoEntry {
             id: RepoId::new(),
@@ -2115,6 +2166,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         let r_flat = RepoEntry {
             id: RepoId::new(),
@@ -2124,6 +2176,7 @@ mod tests {
             pinned: false,
             available: true,
             secret_key_id: None,
+            secret_profile: None,
         };
         cfg.ui.selected_repo_id = Some(r_nested.id.clone());
         cfg.repos = vec![

@@ -294,6 +294,13 @@ impl GitFleetApp {
         let restore_needed = self.vault_summary.restore_needed_count();
         let encrypt_paths = self.vault_summary.encrypt_needed_paths();
         let restore_paths = self.vault_summary.restore_needed_paths();
+        let active_profile = self.vault_summary.active_profile.as_str();
+        let vault_fname = self.vault_summary.vault_file_name.as_str();
+        let profile_suffix = if self.vault_summary.is_default_profile() {
+            String::new()
+        } else {
+            format!(" [{active_profile}]")
+        };
 
         let (secrets_status_text, secrets_color, secrets_dot, secrets_tip) = if hygiene_warns > 0 {
             (
@@ -310,52 +317,56 @@ impl GitFleetApp {
                 .map(|k| format!(" (key: {k})"))
                 .unwrap_or_default();
             (
-                "Secrets: Locked".to_string(),
-                p.warning_fg,
-                Some(p.warning_fg),
-                format!("Secrets vault is locked{key_hint} — click to import or select key"),
-            )
-        } else if encrypt_needed > 0 {
-            (
-                format!("Secrets: {encrypt_needed} modified"),
+                format!("Secrets{profile_suffix}: Locked"),
                 p.warning_fg,
                 Some(p.warning_fg),
                 format!(
-                    "Secret file(s) changed on disk ({}) — click Encrypt or open Secrets Vault",
+                    "Secrets profile '{active_profile}' is locked{key_hint} — click to import or select key"
+                ),
+            )
+        } else if encrypt_needed > 0 {
+            (
+                format!("Secrets{profile_suffix}: {encrypt_needed} modified"),
+                p.warning_fg,
+                Some(p.warning_fg),
+                format!(
+                    "Secret file(s) changed on disk ({}) vs profile '{active_profile}' — click Encrypt or open Secrets Vault",
                     encrypt_paths.join(", ")
                 ),
             )
         } else if restore_needed > 0 {
             (
-                format!("Secrets: {restore_needed} missing"),
+                format!("Secrets{profile_suffix}: {restore_needed} missing"),
                 p.accent_fg,
                 Some(p.accent_fg),
                 format!(
-                    "Secret file(s) missing on disk ({}) — click Restore or open Secrets Vault",
+                    "Secret file(s) missing on disk ({}) in profile '{active_profile}' — click Restore or open Secrets Vault",
                     restore_paths.join(", ")
                 ),
             )
         } else if !self.vault_summary.files.is_empty() {
             (
-                format!("Secrets ({})", self.vault_summary.files.len()),
+                format!("Secrets{profile_suffix} ({})", self.vault_summary.files.len()),
                 if secrets_active {
                     p.accent_fg
                 } else {
                     p.text_secondary
                 },
                 None,
-                "Secrets Vault (.gitfleet/secrets.json & secrets.age) — all files synced".to_string(),
+                format!(
+                    "Secrets Vault (.gitfleet/{vault_fname}, profile '{active_profile}') — all files synced"
+                ),
             )
         } else {
             (
-                "Secrets".to_string(),
+                format!("Secrets{profile_suffix}"),
                 if secrets_active {
                     p.accent_fg
                 } else {
                     p.text_secondary
                 },
                 None,
-                "Secrets Vault (.gitfleet/secrets.json & secrets.age)".to_string(),
+                format!("Secrets Vault (.gitfleet/secrets.json & {vault_fname})"),
             )
         };
 
@@ -432,7 +443,7 @@ impl GitFleetApp {
 
         if encrypt_needed > 0 && !self.vault_summary.vault_locked {
             let encrypt_tip = format!(
-                "Encrypt {} modified secret file(s) ({}) into .gitfleet/secrets.age",
+                "Encrypt {} modified secret file(s) ({}) into profile '{active_profile}' (.gitfleet/{vault_fname})",
                 encrypt_needed,
                 encrypt_paths.join(", ")
             );
@@ -454,7 +465,7 @@ impl GitFleetApp {
             ));
         } else if restore_needed > 0 && !self.vault_summary.vault_locked {
             let restore_tip = format!(
-                "Restore {} missing secret file(s) ({}) from .gitfleet/secrets.age",
+                "Restore {} missing secret file(s) ({}) from profile '{active_profile}' (.gitfleet/{vault_fname})",
                 restore_needed,
                 restore_paths.join(", ")
             );
