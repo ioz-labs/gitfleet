@@ -1,7 +1,7 @@
-//! Centralized GitFleet Design System tokens (typography, spacing, padding, radii, layout).
+//! Centralized GitFleet Design System scale tokens (typography, 4px spacing, 3-tier radii, layout).
 //!
-//! All bottom dock tabs, modals, overlays, and chrome components should draw sizes and spacing
-//! from this module rather than hardcoding magic numbers.
+//! Layer 2 scale tokens: all panes, bottom dock tabs, modals, overlays, and kit components draw
+//! dimensions from this module rather than hardcoding magic numbers.
 #![allow(dead_code)]
 
 /// Typography scale (in logical pixels, strict 12px minimum across the entire app).
@@ -27,25 +27,38 @@ pub mod space {
 
 /// Reusable padding presets (`[vertical, horizontal]` or uniform `u16`).
 pub mod pad {
+    pub const BTN_XS: [u16; 2] = [3, 8];
     pub const BTN_SM: [u16; 2] = [5, 10];
     pub const BTN_MD: [u16; 2] = [7, 14];
+    pub const BTN_ICON_SM: [u16; 2] = [4, 5];
     pub const BTN_ICON: [u16; 2] = [5, 6];
     pub const INPUT: [u16; 2] = [7, 10];
-    pub const INPUT_COMPACT: [u16; 2] = [6, 9];
+    pub const INPUT_COMPACT: [u16; 2] = [5, 9];
     pub const CARD: u16 = 12;
-    pub const MODAL: u16 = 20;
-    pub const DOCK_TOOLBAR: [u16; 2] = [8, 14];
-    pub const DOCK_BODY: [u16; 2] = [12, 14];
-    pub const PILL: [u16; 2] = [3, 9];
-    pub const ROW: [u16; 2] = [6, 10];
+    pub const MODAL: u16 = 18;
+    pub const DOCK_TOOLBAR: [u16; 2] = [6, 12];
+    pub const DOCK_BODY: [u16; 2] = [10, 14];
+    pub const PILL: [u16; 2] = [2, 7];
+    pub const ROW: [u16; 2] = [5, 10];
 }
 
-/// Border radii scale.
+/// Strict 3-tier border-radius discipline (+ `0px` for edge-to-edge split panes).
+///
+/// - `NONE` (`0px`): Split panes, dock headers, ribbon, status bar (eliminates box-in-box borders).
+/// - `BADGE` / `XS` (`3px`): Status badges, counters, shortcut kbd chips.
+/// - `CONTROL` / `SM` (`5px`): Buttons, inputs, segmented controls, tree row highlights.
+/// - `SURFACE` / `MD` / `LG` (`8px`): Modals, floating popovers, context menu cards, elevated cards.
 pub mod radius {
-    pub const XS: f32 = 4.0;
-    pub const SM: f32 = 6.0;
-    pub const MD: f32 = 8.0;
-    pub const LG: f32 = 12.0;
+    pub const NONE: f32 = 0.0;
+    pub const BADGE: f32 = 3.0;
+    pub const CONTROL: f32 = 5.0;
+    pub const SURFACE: f32 = 8.0;
+
+    // Semantic aliases preserved for existing callers mapped onto the 3-tier system:
+    pub const XS: f32 = BADGE;
+    pub const SM: f32 = CONTROL;
+    pub const MD: f32 = SURFACE;
+    pub const LG: f32 = SURFACE;
 }
 
 /// Standard vector SVG icon sizes.
@@ -56,17 +69,28 @@ pub mod icon_size {
     pub const LG: f32 = 24.0;
 }
 
-/// Modal widths, bottom dock sizing, and chrome dimensions.
+/// Chrome dimensions, modal widths, splitter geometry, and dock sizing.
 pub mod layout {
-    pub const MODAL_SM: f32 = 500.0;
+    pub const RIBBON_HEIGHT: f32 = 40.0;
+    pub const PANE_HEADER_HEIGHT: f32 = 30.0;
+    pub const STATUS_BAR_HEIGHT: f32 = 26.0;
+
+    /// Invisible cursor hit area for `HairlineSplitter` (`7px`), painting a crisp `1px` line inside.
+    pub const SPLITTER_HIT_SIZE: f32 = 7.0;
+    pub const SPLITTER_LINE_SIZE: f32 = 1.0;
+    pub const FOCUS_BAR_WIDTH: f32 = 2.0;
+
+    pub const MODAL_SM: f32 = 480.0;
     pub const MODAL_MD: f32 = 640.0;
     pub const MODAL_LG: f32 = 800.0;
-    pub const MODAL_XL: f32 = 900.0;
+    pub const MODAL_XL: f32 = 920.0;
     pub const MODAL_MAX_HEIGHT: f32 = 760.0;
 
-    pub const DOCK_DEFAULT_HEIGHT: f32 = 340.0;
-    pub const DOCK_MIN_HEIGHT: f32 = 190.0;
-    pub const STATUS_BAR_HEIGHT: f32 = 28.0;
+    pub const DOCK_DEFAULT_HEIGHT: f32 = 320.0;
+    pub const DOCK_MIN_HEIGHT: f32 = 180.0;
+    pub const DOCK_RIGHT_DEFAULT_WIDTH: f32 = 460.0;
+    pub const DOCK_RIGHT_MIN_WIDTH: f32 = 300.0;
+
     pub const TERMINAL_SIDEBAR_WIDTH: f32 = 196.0;
     pub const TERMINAL_MENU_WIDTH: f32 = 344.0;
 }
@@ -84,7 +108,7 @@ pub mod tree {
     pub const ROW_PAD_H: f32 = 6.0;
     /// Visual gap from the lead icon/checkbox right edge to the row label (`ROW_BTN_GAP + ROW_PAD_H`).
     pub const LABEL_GAP: f32 = ROW_BTN_GAP + ROW_PAD_H;
-    pub const ROW_SPACING: f32 = 2.0;
+    pub const ROW_SPACING: f32 = 1.5;
     pub const CHECKBOX_SIZE: f32 = 14.0;
     pub const CHEVRON_ICON_SIZE: f32 = 12.0;
     pub const LEAD_ICON_SIZE: f32 = 14.0;
@@ -107,7 +131,7 @@ pub mod tree {
 
 #[cfg(test)]
 mod tests {
-    use super::type_scale;
+    use super::{layout, radius, type_scale};
 
     #[test]
     fn enforces_12px_minimum_type_scale() {
@@ -126,5 +150,15 @@ mod tests {
         assert!(type_scale::SUBHEADING > type_scale::BODY);
         assert!(type_scale::HEADING > type_scale::SUBHEADING);
         assert!(type_scale::TITLE > type_scale::HEADING);
+    }
+
+    #[test]
+    fn enforces_three_tier_radius_scale() {
+        assert_eq!(radius::NONE, 0.0);
+        assert_eq!(radius::BADGE, 3.0);
+        assert_eq!(radius::CONTROL, 5.0);
+        assert_eq!(radius::SURFACE, 8.0);
+        assert!(layout::SPLITTER_HIT_SIZE >= 6.0);
+        assert_eq!(layout::SPLITTER_LINE_SIZE, 1.0);
     }
 }

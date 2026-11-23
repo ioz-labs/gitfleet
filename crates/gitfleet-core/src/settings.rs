@@ -4,6 +4,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub theme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_theme_path: Option<PathBuf>,
     pub background_image: Option<PathBuf>,
     pub external_diff_tool: Option<String>,
     pub external_merge_tool: Option<String>,
@@ -49,7 +51,8 @@ fn default_true() -> bool {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            theme: "dark".to_string(),
+            theme: "obsidian".to_string(),
+            custom_theme_path: None,
             background_image: None,
             external_diff_tool: None,
             external_merge_tool: None,

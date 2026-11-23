@@ -10,7 +10,7 @@ pub(crate) use types::*;
 use crate::{graph, preview};
 use crate::syntax::CodeLanguage;
 use crate::terminal::TerminalFontCatalog;
-use crate::theme::ThemeMode;
+use crate::theme::{Palette, ThemeMode, ThemePreset};
 use crate::views::detached_viewer::DetachedViewerState;
 use crate::views::diff_viewer::{DiffLayoutCache, build_diff_layout_cache};
 use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
@@ -39,6 +39,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) windows: BTreeMap<window::Id, WindowKind>,
     pub(crate) detached_viewers: BTreeMap<window::Id, DetachedViewerState>,
     pub(crate) pending_detached_viewers: VecDeque<DetachedViewerState>,
+    pub(crate) theme_preset: ThemePreset,
     pub(crate) theme_mode: ThemeMode,
 
     // Top-Left: Repositories
@@ -356,12 +357,27 @@ impl GitFleetApp {
             .filter(|id| ws.repos.iter().any(|r| &r.id == id))
             .or_else(|| ws.repos.first().map(|r| r.id.clone()));
 
+        let loaded_app_settings = service.settings();
+        if let Some(custom_path) = loaded_app_settings.custom_theme_path.as_deref()
+            && let Ok((_name, custom_pal)) = crate::theme::load_custom_theme_from_path(custom_path)
+        {
+            crate::theme::set_active_custom_palette(custom_pal);
+        }
+        let initial_preset = if let Some(preset_id) = ws.ui.theme_preset.as_deref() {
+            ThemePreset::from_id(preset_id)
+        } else if !loaded_app_settings.theme.trim().is_empty()
+            && loaded_app_settings.theme != "dark"
+        {
+            ThemePreset::from_id(&loaded_app_settings.theme)
+        } else if ws.ui.light_theme {
+            ThemePreset::DaylightCrisp
+        } else {
+            ThemePreset::PrecisionObsidian
+        };
+
         let mut app = Self {
-            theme_mode: if ws.ui.light_theme {
-                ThemeMode::Light
-            } else {
-                ThemeMode::Dark
-            },
+            theme_preset: initial_preset,
+            theme_mode: initial_preset.mode(),
             selected_repo: initial_repo.clone(),
             active_submodule: None,
             repo_submodules: HashMap::new(),
@@ -663,10 +679,30 @@ impl GitFleetApp {
         (app, Task::batch(tasks))
     }
 
+    pub(crate) fn palette(&self) -> Palette {
+        self.theme_preset.palette()
+    }
+
+    pub(crate) fn apply_theme_preset(&mut self, preset: ThemePreset) {
+        self.theme_preset = preset;
+        self.theme_mode = preset.mode();
+        self.rebuild_diff_cache();
+        for viewer in self.detached_viewers.values_mut() {
+            for tab in &mut viewer.tabs {
+                tab.rebuild_diff_cache(self.theme_mode);
+            }
+        }
+        let mut s = self.service.settings();
+        s.theme = preset.id().to_string();
+        self.service.update_settings(s);
+        self.persist_ui_prefs();
+    }
+
     pub(crate) fn persist_ui_prefs(&self) {
         let mut ui = self.service.workspace.current().ui;
         ui.selected_repo_id = self.selected_repo.clone();
         ui.light_theme = self.theme_mode == ThemeMode::Light;
+        ui.theme_preset = Some(self.theme_preset.id().to_string());
         ui.show_ignored_files = self.show_ignored_files;
         let _ = self.service.workspace.set_ui_state(ui);
     }

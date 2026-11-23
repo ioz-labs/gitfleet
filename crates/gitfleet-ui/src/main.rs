@@ -18,8 +18,14 @@ fn main() -> iced::Result {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    iced::daemon(GitFleetApp::title, GitFleetApp::update, GitFleetApp::view)
+    let mut builder = iced::daemon(GitFleetApp::title, GitFleetApp::update, GitFleetApp::view)
         .theme(GitFleetApp::theme)
-        .subscription(GitFleetApp::subscription)
-        .run_with(GitFleetApp::new)
+        .default_font(theme::UI_FONT)
+        .subscription(GitFleetApp::subscription);
+
+    for font_bytes in theme::ALL_BUNDLED_FONTS {
+        builder = builder.font(font_bytes);
+    }
+
+    builder.run_with(GitFleetApp::new)
 }

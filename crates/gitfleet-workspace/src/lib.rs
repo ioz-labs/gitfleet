@@ -35,6 +35,8 @@ pub struct WorkspaceUiState {
     pub compact_density: bool,
     #[serde(default)]
     pub light_theme: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_preset: Option<String>,
     #[serde(default = "default_show_ignored_files")]
     pub show_ignored_files: bool,
 }
@@ -51,6 +53,7 @@ impl Default for WorkspaceUiState {
             active_tab: None,
             compact_density: false,
             light_theme: false,
+            theme_preset: None,
             show_ignored_files: default_show_ignored_files(),
         }
     }

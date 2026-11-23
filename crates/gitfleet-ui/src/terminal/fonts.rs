@@ -58,6 +58,7 @@ pub fn cell_metrics(font_name: &str, font_size: f32) -> (f32, f32) {
 pub fn detect_terminal_fonts() -> TerminalFontCatalog {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
+    db.load_font_data(crate::theme::fonts::JETBRAINS_MONO_REGULAR.to_vec());
 
     let mut all_families: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();

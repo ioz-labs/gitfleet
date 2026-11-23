@@ -3,7 +3,7 @@ use crate::app::{
     DiscardFileEntry, DiscardModalState, DrawerTab, GitFleetApp, Message, ResizeTarget,
     STATUS_BAR_HEIGHT, TITLEBAR_HEIGHT, TOOLBAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
 };
-use crate::theme::ThemeMode;
+use crate::theme::{ThemeMode, ThemePreset};
 use chrono::Utc;
 use gitfleet_core::{RepoId, UndoEntry};
 use gitfleet_git::bulk::BulkOperation;
@@ -23,42 +23,97 @@ impl GitFleetApp {
         let task = (|| -> Task<Message> {
             match message {
             Message::ToggleTheme => {
-                self.theme_mode = match self.theme_mode {
-                    ThemeMode::Dark => ThemeMode::Light,
-                    ThemeMode::Light => ThemeMode::Dark,
-                };
-                self.rebuild_diff_cache();
-                for viewer in self.detached_viewers.values_mut() {
-                    for tab in &mut viewer.tabs {
-                        tab.rebuild_diff_cache(self.theme_mode);
-                    }
-                }
-                let mut s = self.service.settings();
-                s.theme = match self.theme_mode {
-                    ThemeMode::Dark => "dark".into(),
-                    ThemeMode::Light => "light".into(),
-                };
-                self.service.update_settings(s);
-                self.persist_ui_prefs();
+                let next = self.theme_preset.toggle_polarity();
+                self.apply_theme_preset(next);
                 Task::none()
             }
             Message::SetThemeMode(mode) => {
-                self.theme_mode = mode;
-                self.rebuild_diff_cache();
-                for viewer in self.detached_viewers.values_mut() {
-                    for tab in &mut viewer.tabs {
-                        tab.rebuild_diff_cache(self.theme_mode);
+                let next = match mode {
+                    ThemeMode::Dark => {
+                        if self.theme_preset.mode() == ThemeMode::Dark {
+                            self.theme_preset
+                        } else {
+                            ThemePreset::PrecisionObsidian
+                        }
                     }
-                }
-                let mut s = self.service.settings();
-                s.theme = match mode {
-                    ThemeMode::Dark => "dark".into(),
-                    ThemeMode::Light => "light".into(),
+                    ThemeMode::Light => ThemePreset::DaylightCrisp,
                 };
-                self.service.update_settings(s);
-                self.persist_ui_prefs();
+                self.apply_theme_preset(next);
                 Task::none()
             }
+            Message::SetThemePreset(preset) => {
+                self.apply_theme_preset(preset);
+                Task::none()
+            }
+            Message::PickImportCustomTheme => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Import GitFleet Theme (.json)")
+                        .add_filter("JSON Theme", &["json"])
+                        .pick_file()
+                        .await
+                        .map(|f| f.path().to_path_buf())
+                },
+                Message::CustomThemeFilePicked,
+            ),
+            Message::CustomThemeFilePicked(Some(path)) => {
+                match crate::theme::load_custom_theme_from_path(&path) {
+                    Ok((name, pal)) => {
+                        crate::theme::set_active_custom_palette(pal);
+                        let mut s = self.service.settings();
+                        s.custom_theme_path = Some(path);
+                        s.theme = ThemePreset::Custom.id().to_string();
+                        self.service.update_settings(s);
+                        self.apply_theme_preset(ThemePreset::Custom);
+                        self.toast_is_error = false;
+                        self.toast_message = format!("Loaded custom theme '{name}'");
+                    }
+                    Err(err) => {
+                        self.report_action_error("Theme Import Failed", err, false);
+                    }
+                }
+                Task::none()
+            }
+            Message::CustomThemeFilePicked(None) => Task::none(),
+            Message::PickExportThemePreset => {
+                let default_name = format!("{}.gitfleet-theme.json", self.theme_preset.id());
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Export Theme JSON")
+                            .set_file_name(default_name)
+                            .add_filter("JSON Theme", &["json"])
+                            .save_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    Message::ExportThemePresetPicked,
+                )
+            }
+            Message::ExportThemePresetPicked(Some(path)) => {
+                match crate::theme::export_palette_to_json(self.theme_preset.label(), self.palette())
+                {
+                    Ok(json) => match std::fs::write(&path, json) {
+                        Ok(()) => {
+                            self.toast_is_error = false;
+                            self.toast_message =
+                                format!("Exported theme to {}", path.display());
+                        }
+                        Err(e) => {
+                            self.report_action_error(
+                                "Theme Export Failed",
+                                format!("Failed to write theme file: {e}"),
+                                false,
+                            );
+                        }
+                    },
+                    Err(err) => {
+                        self.report_action_error("Theme Export Failed", err, false);
+                    }
+                }
+                Task::none()
+            }
+            Message::ExportThemePresetPicked(None) => Task::none(),
             Message::ToggleCommandPalette => {
                 self.show_branch_popover = false;
                 self.show_eol_modal = false;

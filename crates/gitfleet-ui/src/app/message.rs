@@ -6,7 +6,7 @@ use crate::app::types::{
 };
 use crate::terminal::TerminalCanvasAction;
 use crate::syntax::CodeLanguage;
-use crate::theme::ThemeMode;
+use crate::theme::{ThemeMode, ThemePreset};
 use crate::views::csv_diff::CsvDiffData;
 use crate::views::detached_viewer::DetachedAction;
 use crate::views::diff_viewer::DiffLayoutCache;
@@ -535,7 +535,13 @@ pub(crate) enum Message {
     ToggleSettingsModal,
     SetSettingsTab(SettingsTab),
     SettingsFontFilterChanged(String),
+    #[allow(dead_code)]
     SetThemeMode(ThemeMode),
+    SetThemePreset(ThemePreset),
+    PickImportCustomTheme,
+    CustomThemeFilePicked(Option<PathBuf>),
+    PickExportThemePreset,
+    ExportThemePresetPicked(Option<PathBuf>),
     SetMaxParallelBulkOps(usize),
     RescanExternalTools,
     ToggleFsWatcher(bool),

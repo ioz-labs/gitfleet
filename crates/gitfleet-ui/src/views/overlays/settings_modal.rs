@@ -1,6 +1,7 @@
 use crate::app::{GitFleetApp, Message, SettingsTab};
 use crate::icons;
-use crate::theme::{self, DARK, LIGHT, Palette, ThemeMode, icon_size, pad, space, type_scale};
+use crate::theme::kit::{ButtonSize, ButtonVariant, UiButton};
+use crate::theme::{self, DARK, Palette, ThemePreset, icon_size, pad, space, type_scale};
 use crate::views::{slim_scroll, truncate_chars};
 use iced::widget::{
     Space, button, column, container, horizontal_rule, opaque, row, text, text_input,
@@ -54,15 +55,12 @@ fn grouped_card<'a>(p: Palette, items: Vec<Element<'a, Message>>) -> Element<'a,
 
 fn theme_preview_card<'a>(
     p: Palette,
-    target_mode: ThemeMode,
+    target_preset: ThemePreset,
     active: bool,
-    title: &'static str,
-    desc: &'static str,
 ) -> Element<'a, Message> {
-    let sample = match target_mode {
-        ThemeMode::Dark => DARK,
-        ThemeMode::Light => LIGHT,
-    };
+    let sample = target_preset.palette();
+    let title = target_preset.label();
+    let desc = target_preset.subtitle();
 
     let mini_window = container(
         column![
@@ -184,19 +182,23 @@ fn theme_preview_card<'a>(
     });
 
     let footer_row = row![
-        match target_mode {
-            ThemeMode::Dark => icons::moon(14.0, if active { p.accent_fg } else { p.text_secondary }),
-            ThemeMode::Light => icons::sun(14.0, if active { p.warning_fg } else { p.text_secondary }),
+        if sample.is_dark {
+            icons::moon(14.0, if active { p.accent_fg } else { p.text_secondary })
+        } else {
+            icons::sun(14.0, if active { p.warning_fg } else { p.text_secondary })
         },
         column![
-            text(title).size(type_scale::BODY).color(p.text_primary),
+            text(title)
+                .size(type_scale::BODY)
+                .font(theme::UI_FONT_MEDIUM)
+                .color(p.text_primary),
             text(desc).size(type_scale::CAPTION).color(p.text_muted),
         ]
         .spacing(1)
         .width(Length::Fill),
         if active {
             Element::from(
-                container(icons::check(11.0, Color::WHITE))
+                container(icons::check(11.0, theme::on_accent_ink(p.accent_primary)))
                     .width(Length::Fixed(18.0))
                     .height(Length::Fixed(18.0))
                     .center_x(Length::Fixed(18.0))
@@ -221,13 +223,13 @@ fn theme_preview_card<'a>(
 
     button(
         column![mini_window, footer_row]
-            .spacing(10)
+            .spacing(8)
             .width(Length::Fill),
     )
     .padding(10)
     .width(Length::FillPortion(1))
     .style(theme::choice_card_btn(p, active))
-    .on_press(Message::SetThemeMode(target_mode))
+    .on_press(Message::SetThemePreset(target_preset))
     .into()
 }
 
@@ -498,24 +500,66 @@ impl GitFleetApp {
         p: Palette,
         s: &gitfleet_core::AppSettings,
     ) -> Element<'_, Message> {
-        let theme_cards = row![
-            theme_preview_card(
-                p,
-                ThemeMode::Dark,
-                self.theme_mode == ThemeMode::Dark,
-                "Dark",
-                "Low-glare deep slate",
-            ),
-            theme_preview_card(
-                p,
-                ThemeMode::Light,
-                self.theme_mode == ThemeMode::Light,
-                "Light",
-                "Crisp high-contrast daylight",
-            ),
+        let builtins = ThemePreset::ALL_BUILTINS;
+        let row_top = row![
+            theme_preview_card(p, builtins[0], self.theme_preset == builtins[0]),
+            theme_preview_card(p, builtins[1], self.theme_preset == builtins[1]),
+            theme_preview_card(p, builtins[2], self.theme_preset == builtins[2]),
         ]
-        .spacing(space::MD)
+        .spacing(space::SM)
         .width(Length::Fill);
+
+        let custom_card: Element<'_, Message> = if s.custom_theme_path.is_some()
+            || self.theme_preset == ThemePreset::Custom
+        {
+            theme_preview_card(
+                p,
+                ThemePreset::Custom,
+                self.theme_preset == ThemePreset::Custom,
+            )
+        } else {
+            Space::with_width(Length::FillPortion(1)).into()
+        };
+
+        let row_bottom = row![
+            theme_preview_card(p, builtins[3], self.theme_preset == builtins[3]),
+            theme_preview_card(p, builtins[4], self.theme_preset == builtins[4]),
+            custom_card,
+        ]
+        .spacing(space::SM)
+        .width(Length::Fill);
+
+        let custom_path_label = s
+            .custom_theme_path
+            .as_ref()
+            .and_then(|pt| pt.file_name())
+            .and_then(|n| n.to_str())
+            .map(|name| format!("Custom JSON: {name}"))
+            .unwrap_or_else(|| "Import a custom .json semantic token file or export any preset to customize".into());
+
+        let custom_bar = row![
+            text(custom_path_label)
+                .size(type_scale::CAPTION)
+                .color(p.text_muted)
+                .width(Length::Fill),
+            UiButton::new(p, "Import JSON…")
+                .variant(ButtonVariant::Subtle)
+                .size(ButtonSize::Xs)
+                .icon(icons::folder_open(icon_size::XS, p.text_secondary))
+                .on_press(Message::PickImportCustomTheme),
+            UiButton::new(p, "Export Active JSON…")
+                .variant(ButtonVariant::Subtle)
+                .size(ButtonSize::Xs)
+                .icon(icons::save(icon_size::XS, p.text_secondary))
+                .on_press(Message::PickExportThemePreset),
+        ]
+        .spacing(space::SM)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+        let theme_cards = column![row_top, row_bottom, custom_bar]
+            .spacing(space::SM)
+            .width(Length::Fill);
 
         let mut parallel_btns = row![].spacing(2).align_y(Alignment::Center);
         for n in [2usize, 4, 6, 8, 12] {

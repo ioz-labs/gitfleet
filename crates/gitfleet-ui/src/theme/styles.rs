@@ -49,8 +49,8 @@ pub fn panel_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
         text_color: Some(p.text_primary),
         border: Border {
             color: p.border_subtle,
-            width: 1.0,
-            radius: 6.0.into(),
+            width: 0.0,
+            radius: crate::theme::radius::NONE.into(),
         },
         ..Default::default()
     }
@@ -153,17 +153,17 @@ pub fn tooltip_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
 
 pub fn context_menu_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
-        background: Some(Background::Color(p.surface_panel)),
+        background: Some(Background::Color(p.surface_card)),
         text_color: Some(p.text_primary),
         border: Border {
             color: p.border_strong,
             width: 1.0,
-            radius: 7.0.into(),
+            radius: crate::theme::radius::SURFACE.into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.48),
-            offset: Vector::new(0.0, 6.0),
-            blur_radius: 18.0,
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 22.0,
         },
     }
 }
@@ -359,13 +359,19 @@ pub fn primary_btn(p: Palette) -> impl Fn(&Theme, button::Status) -> button::Sty
             button::Status::Pressed => p.fill_active,
             button::Status::Disabled => p.border_default,
         };
+        let fg = match status {
+            button::Status::Disabled => p.text_muted,
+            button::Status::Pressed => p.text_primary,
+            button::Status::Hovered => crate::theme::on_accent_ink(p.accent_hover),
+            button::Status::Active => crate::theme::on_accent_ink(p.accent_primary),
+        };
         button::Style {
             background: Some(Background::Color(bg)),
-            text_color: Color::WHITE,
+            text_color: fg,
             border: Border {
                 color: Color::TRANSPARENT,
                 width: 0.0,
-                radius: 5.0.into(),
+                radius: crate::theme::radius::CONTROL.into(),
             },
             ..Default::default()
         }
@@ -420,13 +426,9 @@ pub fn repo_row_btn(p: Palette, selected: bool) -> impl Fn(&Theme, button::Statu
             background: Some(Background::Color(bg)),
             text_color: p.text_primary,
             border: Border {
-                color: if selected {
-                    p.accent_primary
-                } else {
-                    Color::TRANSPARENT
-                },
-                width: if selected { 1.0 } else { 0.0 },
-                radius: 5.0.into(),
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: crate::theme::radius::CONTROL.into(),
             },
             ..Default::default()
         }

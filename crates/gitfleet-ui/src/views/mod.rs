@@ -20,7 +20,7 @@ use iced::{Element, Length, window};
 
 impl GitFleetApp {
     pub(crate) fn view(&self, window_id: window::Id) -> Element<'_, Message> {
-        let p = self.theme_mode.palette();
+        let p = self.palette();
         match self.windows.get(&window_id) {
             Some(WindowKind::DetachedViewer) => self.view_detached_viewer(window_id, p),
             _ => self.view_host(p),
