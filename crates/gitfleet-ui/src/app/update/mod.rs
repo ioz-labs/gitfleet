@@ -1,3 +1,4 @@
+mod blueprint;
 mod files_docs;
 mod git_history;
 mod git_staging;
@@ -12,6 +13,10 @@ use iced::Task;
 impl GitFleetApp {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let message = match self.try_update_workspace(message) {
+            Ok(t) => return t,
+            Err(m) => m,
+        };
+        let message = match self.try_update_blueprint(message) {
             Ok(t) => return t,
             Err(m) => m,
         };

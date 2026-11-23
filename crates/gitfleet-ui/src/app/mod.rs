@@ -13,6 +13,9 @@ use crate::terminal::TerminalFontCatalog;
 use crate::theme::{Palette, ThemeMode, ThemePreset};
 use crate::views::detached_viewer::DetachedViewerState;
 use crate::views::diff_viewer::{DiffLayoutCache, build_diff_layout_cache};
+use crate::views::overlays::blueprint_modal::{
+    BlueprintExportModalState, BlueprintImportModalState,
+};
 use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
 use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
@@ -176,14 +179,20 @@ pub(crate) struct GitFleetApp {
     pub(crate) show_palette: bool,
     pub(crate) palette_input_id: text_input::Id,
     pub(crate) palette_query: String,
+    pub(crate) palette_selected_idx: usize,
     pub(crate) show_branch_popover: bool,
     pub(crate) branch_filter_id: text_input::Id,
     pub(crate) branch_filter_query: String,
+    pub(crate) branch_popover_selected_idx: usize,
     pub(crate) branch_create_base: Option<String>,
     pub(crate) branch_create_checkout: bool,
+    pub(crate) workspace_modal_tab: WorkspaceModalTab,
+    pub(crate) blueprint_export_modal: Option<BlueprintExportModalState>,
+    pub(crate) blueprint_import_modal: Option<BlueprintImportModalState>,
 
     // Merge/Rebase Forecast Modal
     pub(crate) show_merge_modal: bool,
+    pub(crate) merge_branch_filter: String,
     pub(crate) merge_target_branch: Option<String>,
     pub(crate) merge_forecast: Option<ForecastResult>,
 
@@ -507,12 +516,18 @@ impl GitFleetApp {
             show_palette: false,
             palette_input_id: text_input::Id::unique(),
             palette_query: String::new(),
+            palette_selected_idx: 0,
             show_branch_popover: false,
             branch_filter_id: text_input::Id::unique(),
             branch_filter_query: String::new(),
+            branch_popover_selected_idx: 0,
             branch_create_base: None,
             branch_create_checkout: true,
+            workspace_modal_tab: WorkspaceModalTab::Workspaces,
+            blueprint_export_modal: None,
+            blueprint_import_modal: None,
             show_merge_modal: false,
+            merge_branch_filter: String::new(),
             merge_target_branch: None,
             merge_forecast: None,
             rename_branch_modal: None,
@@ -908,6 +923,8 @@ impl GitFleetApp {
             || self.commit_modal.is_some()
             || self.add_repo_modal.is_some()
             || self.scan_modal.is_some()
+            || self.blueprint_export_modal.is_some()
+            || self.blueprint_import_modal.is_some()
     }
 
     pub(crate) fn unsaved_editor_names(&self) -> Vec<String> {

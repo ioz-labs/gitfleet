@@ -912,6 +912,14 @@ impl GitFleetApp {
             modal_layers.push(self.view_scan_modal(p, modal));
         }
 
+        if let Some(modal) = &self.blueprint_export_modal {
+            modal_layers.push(self.view_blueprint_export_modal(p, modal));
+        }
+
+        if let Some(modal) = &self.blueprint_import_modal {
+            modal_layers.push(self.view_blueprint_import_modal(p, modal));
+        }
+
         if let Some(modal) = &self.add_repo_modal {
             modal_layers.push(self.view_add_repo_modal(p, modal));
         }

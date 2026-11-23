@@ -1,3 +1,11 @@
+pub mod blueprint;
+
+pub use blueprint::{
+    BLUEPRINT_SCHEMA_VERSION, BlueprintRemote, BlueprintRepo, GroupBlueprint, UrlProtocolMode,
+    compute_export_group_path, resolve_materialized_repo_dest, rewrite_git_url_protocol,
+    validate_group_hierarchy, validate_safe_rel_segment,
+};
+
 use directories::ProjectDirs;
 use gitfleet_core::{
     AppError, AppEvent, AppResult, EventBus, RepoId, canonicalize_clean,

@@ -142,6 +142,7 @@ impl GitFleetApp {
                 self.show_syntax_modal = false;
                 self.show_palette = !self.show_palette;
                 self.palette_query.clear();
+                self.palette_selected_idx = 0;
                 if self.show_palette {
                     return text_input::focus(self.palette_input_id.clone());
                 }
@@ -149,7 +150,34 @@ impl GitFleetApp {
             }
             Message::PaletteQueryChanged(q) => {
                 self.palette_query = q;
+                self.palette_selected_idx = 0;
                 Task::none()
+            }
+            Message::PaletteMoveSelection(delta) => {
+                let ws = self.service.workspace.current();
+                let len = self.build_filtered_palette_entries(&ws.repos).len();
+                if len > 0 {
+                    let cur = self.palette_selected_idx.min(len - 1) as isize;
+                    let next = (cur + delta).rem_euclid(len as isize) as usize;
+                    self.palette_selected_idx = next;
+                }
+                Task::none()
+            }
+            Message::PaletteConfirmSelected => {
+                let ws = self.service.workspace.current();
+                let entries = self.build_filtered_palette_entries(&ws.repos);
+                if let Some((entry, _)) = entries
+                    .into_iter()
+                    .nth(self.palette_selected_idx)
+                {
+                    self.show_palette = false;
+                    return self.update(entry.msg);
+                }
+                Task::none()
+            }
+            Message::PaletteExecuteEntry(msg) => {
+                self.show_palette = false;
+                self.update(*msg)
             }
             Message::ToggleBranchPopover => {
                 if self.selected_repo.is_none() {
@@ -162,6 +190,7 @@ impl GitFleetApp {
                 self.context_menu = None;
                 self.show_branch_popover = !self.show_branch_popover;
                 self.branch_filter_query.clear();
+                self.branch_popover_selected_idx = 0;
                 self.branch_create_base = None;
                 self.branch_create_checkout = true;
                 if self.show_branch_popover {
@@ -179,6 +208,7 @@ impl GitFleetApp {
                 self.branch_create_base = base_ref;
                 self.branch_create_checkout = true;
                 self.branch_filter_query = prefix.unwrap_or_default();
+                self.branch_popover_selected_idx = 0;
                 text_input::focus(self.branch_filter_id.clone())
             }
             Message::ToggleCreateBranchCheckout(v) => {
@@ -187,6 +217,40 @@ impl GitFleetApp {
             }
             Message::BranchFilterChanged(q) => {
                 self.branch_filter_query = q;
+                self.branch_popover_selected_idx = 0;
+                Task::none()
+            }
+            Message::BranchPopoverMoveSelection(delta) => {
+                let len = self.build_filtered_popover_branches().len();
+                if len > 0 {
+                    let cur = self.branch_popover_selected_idx.min(len - 1) as isize;
+                    let next = (cur + delta).rem_euclid(len as isize) as usize;
+                    self.branch_popover_selected_idx = next;
+                }
+                Task::none()
+            }
+            Message::BranchPopoverConfirmSelected => {
+                let filtered = self.build_filtered_popover_branches();
+                if let Some((b, _)) = filtered.get(self.branch_popover_selected_idx) {
+                    let msg = if b.is_remote {
+                        Message::CheckoutRemoteBranch(b.name.clone())
+                    } else {
+                        Message::CheckoutBranch(b.name.clone())
+                    };
+                    return self.update(msg);
+                }
+                let trimmed = self.branch_filter_query.trim();
+                if !trimmed.is_empty() && !trimmed.ends_with('/') {
+                    return self.update(Message::CreateBranchSubmitted);
+                }
+                Task::none()
+            }
+            Message::MergeBranchFilterChanged(q) => {
+                self.merge_branch_filter = q;
+                Task::none()
+            }
+            Message::SetWorkspaceModalTab(tab) => {
+                self.workspace_modal_tab = tab;
                 Task::none()
             }
             Message::CloseOverlays => {
@@ -234,6 +298,16 @@ impl GitFleetApp {
                 }
                 if self.commit_modal.is_some() {
                     self.commit_modal = None;
+                    return Task::none();
+                }
+                if self.blueprint_export_modal.is_some() {
+                    self.blueprint_export_modal = None;
+                    return Task::none();
+                }
+                if let Some(modal) = &self.blueprint_import_modal {
+                    if !modal.running {
+                        self.blueprint_import_modal = None;
+                    }
                     return Task::none();
                 }
                 if let Some(modal) = &self.add_repo_modal {

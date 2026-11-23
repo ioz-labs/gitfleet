@@ -1,8 +1,9 @@
 mod add_repo_modal;
+pub(crate) mod blueprint_modal;
 mod branch_popover;
 mod cherry_pick_modal;
 mod clone_modal;
-mod command_palette;
+pub(crate) mod command_palette;
 mod commit_modal;
 mod confirm_modal;
 mod context_menu;
@@ -10,6 +11,7 @@ mod discard_modal;
 pub(crate) mod doc_format_modal;
 mod error_modal;
 pub(crate) mod file_ops_modal;
+pub(crate) mod fuzzy;
 mod git_flow_modal;
 mod merge_modal;
 mod rename_branch_modal;

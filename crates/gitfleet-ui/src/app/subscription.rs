@@ -8,6 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 static STREAM_CURSOR_EVENTS: AtomicBool = AtomicBool::new(false);
+static PALETTE_NAV_ACTIVE: AtomicBool = AtomicBool::new(false);
+static BRANCH_POPOVER_NAV_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LAST_CURSOR_POS: OnceLock<Mutex<HashMap<window::Id, Point>>> = OnceLock::new();
 
 fn record_cursor_pos(id: window::Id, pos: Point) {
@@ -32,6 +34,8 @@ impl GitFleetApp {
             || self.repo_drag_candidate.is_some()
             || self.dragging_repo.is_some();
         set_stream_cursor_events(needs_cursor_stream);
+        PALETTE_NAV_ACTIVE.store(self.show_palette, Ordering::Relaxed);
+        BRANCH_POPOVER_NAV_ACTIVE.store(self.show_branch_popover, Ordering::Relaxed);
 
         let close_sub = window::close_events().map(Message::WindowClosed);
         let tick_sub = time::every(Duration::from_millis(250)).map(|_| Message::BackgroundTick);
@@ -61,6 +65,14 @@ impl GitFleetApp {
 
         if self.active_clone.is_some() {
             subs.push(time::every(Duration::from_millis(100)).map(|_| Message::CloneProgressTick));
+        }
+
+        if self
+            .blueprint_import_modal
+            .as_ref()
+            .is_some_and(|m| m.running)
+        {
+            subs.push(time::every(Duration::from_millis(100)).map(|_| Message::BlueprintImportTick));
         }
 
         if terminal_capture_keys {
@@ -140,6 +152,29 @@ fn handle_window_event(
             Some(Message::ModifiersChanged(modifiers))
         }
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            if !modifiers.command() && !modifiers.alt() && !modifiers.shift() {
+                if PALETTE_NAV_ACTIVE.load(Ordering::Relaxed) {
+                    match key.as_ref() {
+                        Key::Named(keyboard::key::Named::ArrowUp) => {
+                            return Some(Message::PaletteMoveSelection(-1));
+                        }
+                        Key::Named(keyboard::key::Named::ArrowDown) => {
+                            return Some(Message::PaletteMoveSelection(1));
+                        }
+                        _ => {}
+                    }
+                } else if BRANCH_POPOVER_NAV_ACTIVE.load(Ordering::Relaxed) {
+                    match key.as_ref() {
+                        Key::Named(keyboard::key::Named::ArrowUp) => {
+                            return Some(Message::BranchPopoverMoveSelection(-1));
+                        }
+                        Key::Named(keyboard::key::Named::ArrowDown) => {
+                            return Some(Message::BranchPopoverMoveSelection(1));
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // Window-scoped shortcuts that work even while text inputs / code editors are focused
             if modifiers.command() && modifiers.shift() && !modifiers.alt() {
                 match key.as_ref() {

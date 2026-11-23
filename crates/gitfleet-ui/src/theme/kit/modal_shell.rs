@@ -32,10 +32,12 @@ impl ModalSize {
     }
 }
 
+use std::borrow::Cow;
+
 pub struct ModalShell<'a, M> {
     p: Palette,
-    title: &'a str,
-    subtitle: Option<&'a str>,
+    title: Cow<'a, str>,
+    subtitle: Option<Cow<'a, str>>,
     icon: Option<Element<'a, M>>,
     size: ModalSize,
     max_height: f32,
@@ -46,10 +48,14 @@ pub struct ModalShell<'a, M> {
 }
 
 impl<'a, M: Clone + 'a> ModalShell<'a, M> {
-    pub fn new(p: Palette, title: &'a str, body: impl Into<Element<'a, M>>) -> Self {
+    pub fn new(
+        p: Palette,
+        title: impl Into<Cow<'a, str>>,
+        body: impl Into<Element<'a, M>>,
+    ) -> Self {
         Self {
             p,
-            title,
+            title: title.into(),
             subtitle: None,
             icon: None,
             size: ModalSize::Md,
@@ -61,8 +67,8 @@ impl<'a, M: Clone + 'a> ModalShell<'a, M> {
         }
     }
 
-    pub fn subtitle(mut self, subtitle: &'a str) -> Self {
-        self.subtitle = Some(subtitle);
+    pub fn subtitle(mut self, subtitle: impl Into<Cow<'a, str>>) -> Self {
+        self.subtitle = Some(subtitle.into());
         self
     }
 

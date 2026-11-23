@@ -76,4 +76,47 @@ impl GitService {
         remotes.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(remotes)
     }
+
+    pub async fn ensure_remote(
+        &self,
+        repo_path: &Path,
+        name: &str,
+        fetch_url: &str,
+        push_url: Option<&str>,
+    ) -> AppResult<()> {
+        let existing = self.get_remotes(repo_path).await.unwrap_or_default();
+        if existing.iter().any(|r| r.name == name) {
+            let _ = runner::run_git_ok(
+                repo_path,
+                &["remote", "set-url", name, fetch_url],
+                Some(&self.command_log),
+                Some(&self.events),
+                false,
+            )
+            .await?;
+        } else {
+            let _ = runner::run_git_ok(
+                repo_path,
+                &["remote", "add", name, fetch_url],
+                Some(&self.command_log),
+                Some(&self.events),
+                false,
+            )
+            .await?;
+        }
+        if let Some(purl) = push_url
+            && !purl.trim().is_empty()
+            && purl != fetch_url
+        {
+            let _ = runner::run_git_ok(
+                repo_path,
+                &["remote", "set-url", "--push", name, purl],
+                Some(&self.command_log),
+                Some(&self.events),
+                false,
+            )
+            .await;
+        }
+        Ok(())
+    }
 }

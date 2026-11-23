@@ -2,8 +2,9 @@ use crate::app::types::{
     AddRepoMode, BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuSubmenu,
     ContextMenuTarget, DiffGapExpandMode, DiffSelectionSide, DrawerTab, EncodingModalMode,
     FilesViewMode, GraphTab, HostLayoutMode, PendingConfirm, RepoFilter, ScanLevelPreset,
-    SettingsTab, TerminalMenuSubmenu,
+    SettingsTab, TerminalMenuSubmenu, WorkspaceModalTab,
 };
+use crate::views::overlays::blueprint_modal::BlueprintExportRepoItem;
 use crate::terminal::TerminalCanvasAction;
 use crate::syntax::CodeLanguage;
 use crate::theme::{ThemeMode, ThemePreset};
@@ -22,7 +23,7 @@ use gitfleet_git::{
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{IgnoreLayer, OversizedFile, SecretFinding};
-use gitfleet_workspace::ScanFolderResult;
+use gitfleet_workspace::{ScanFolderResult, UrlProtocolMode};
 use iced::keyboard::{Key, Modifiers};
 use iced::widget::{scrollable, text_editor};
 use iced::{Point, Size, window};
@@ -543,6 +544,41 @@ pub(crate) enum Message {
     FocusCommitSummary,
     CommitSummaryChanged(String),
     ApplyConventionalPrefix(&'static str),
+    PaletteMoveSelection(isize),
+    PaletteConfirmSelected,
+    PaletteExecuteEntry(Box<Message>),
+    BranchPopoverMoveSelection(isize),
+    BranchPopoverConfirmSelected,
+    MergeBranchFilterChanged(String),
+    SetWorkspaceModalTab(WorkspaceModalTab),
+
+    // F0: Portable Group / Workspace Blueprint (Export & Auto-Clone)
+    OpenExportBlueprintModal(Option<String>),
+    BlueprintExportLoaded(Vec<BlueprintExportRepoItem>),
+    SetBlueprintExportRelative(bool),
+    ToggleBlueprintExportRepo(usize, bool),
+    PickSaveBlueprintFile,
+    SaveBlueprintFilePicked(Option<PathBuf>),
+    PickImportBlueprintFile(Option<String>),
+    ImportBlueprintFilePicked {
+        parent_prefix: Option<String>,
+        path: Option<PathBuf>,
+    },
+    BlueprintTargetDirChanged(String),
+    PickBlueprintTargetDir,
+    BlueprintTargetDirPicked(Option<PathBuf>),
+    BlueprintParentPrefixChanged(String),
+    SetBlueprintProtocolMode(UrlProtocolMode),
+    ToggleBlueprintSubmodules(bool),
+    ToggleBlueprintImportRepo(usize, bool),
+    StartBlueprintImport,
+    RetryFailedBlueprintImport,
+    BlueprintImportTick,
+    CancelBlueprintImport,
+    BlueprintRepoFinished {
+        index: usize,
+        result: Result<(PathBuf, Option<String>, bool), String>,
+    },
     PickImportCustomTheme,
     CustomThemeFilePicked(Option<PathBuf>),
     PickExportThemePreset,

@@ -11,23 +11,39 @@ use iced::{Alignment, Element, Length};
 impl GitFleetApp {
     pub(crate) fn view_context_menu(&self, p: Palette, menu: &ContextMenuState) -> Element<'_, Message> {
         let ws = self.service.workspace.current();
+        let ctx_btn_sc = |icon: Element<'static, Message>,
+                          label: String,
+                          shortcut: &'static str,
+                          msg: Message,
+                          danger: bool|
+         -> Element<'static, Message> {
+            let mut r = row![
+                icon,
+                text(label)
+                    .size(type_scale::BODY)
+                    .line_height(text::LineHeight::Relative(1.15))
+                    .color(if danger { p.danger_fg } else { p.text_primary })
+                    .width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            if !shortcut.is_empty() {
+                r = r.push(
+                    text(shortcut)
+                        .size(type_scale::BADGE)
+                        .font(theme::CODE_FONT)
+                        .color(p.text_muted),
+                );
+            }
+            button(r)
+                .width(Length::Fill)
+                .padding([5, 10])
+                .style(theme::context_menu_item(p, danger))
+                .on_press(Message::ContextAction(Box::new(msg)))
+                .into()
+        };
         let ctx_btn = |icon: Element<'static, Message>, label: String, msg: Message, danger: bool| -> Element<'static, Message> {
-            button(
-                row![
-                    icon,
-                    text(label)
-                        .size(type_scale::BODY)
-                        .line_height(text::LineHeight::Relative(1.15))
-                        .color(if danger { p.danger_fg } else { p.text_primary }),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .width(Length::Fill)
-            .padding([5, 10])
-            .style(theme::context_menu_item(p, danger))
-            .on_press(Message::ContextAction(Box::new(msg)))
-            .into()
+            ctx_btn_sc(icon, label, "", msg, danger)
         };
 
         let mut items = column![].spacing(2);
@@ -69,6 +85,19 @@ impl GitFleetApp {
                     Message::PickSaveWorkspaceAs,
                     false,
                 ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::repo_stack(12.0, p.accent_fg).into(),
+                    "Export Workspace Blueprint…".into(),
+                    Message::OpenExportBlueprintModal(None),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::cloud_download(12.0, p.accent_fg).into(),
+                    "Import Blueprint & Auto-Clone…".into(),
+                    Message::PickImportBlueprintFile(None),
+                    false,
+                ));
                 if !self.service.workspace.is_current_home() {
                     items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     items = items.push(ctx_btn(
@@ -92,15 +121,17 @@ impl GitFleetApp {
                     )
                     .padding([5, 10]),
                 );
-                items = items.push(ctx_btn(
+                items = items.push(ctx_btn_sc(
                     icons::stage_all(12.0, p.success_fg).into(),
                     "Stage All Changes".into(),
+                    "Ctrl+T",
                     Message::StageAll,
                     false,
                 ));
-                items = items.push(ctx_btn(
+                items = items.push(ctx_btn_sc(
                     icons::unstage_all(12.0, p.warning_fg).into(),
                     "Unstage All Changes".into(),
+                    "Ctrl+Shift+T",
                     Message::UnstageAll,
                     false,
                 ));
@@ -111,9 +142,10 @@ impl GitFleetApp {
                     Message::RequestConfirm(PendingConfirm::stash_selected(changed)),
                     false,
                 ));
-                items = items.push(ctx_btn(
+                items = items.push(ctx_btn_sc(
                     icons::trash(12.0, p.danger_fg).into(),
                     "Discard Local Changes…".into(),
+                    "Ctrl+Z",
                     Message::OpenDiscardModal(None),
                     true,
                 ));
@@ -150,8 +182,22 @@ impl GitFleetApp {
                 ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
+                    icons::repo_stack(12.0, p.accent_fg).into(),
+                    "Export Workspace Blueprint…".into(),
+                    Message::OpenExportBlueprintModal(None),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::cloud_download(12.0, p.accent_fg).into(),
+                    "Import Blueprint & Auto-Clone…".into(),
+                    Message::PickImportBlueprintFile(None),
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn_sc(
                     icons::refresh(12.0, p.text_secondary).into(),
                     "Refresh All Repositories".into(),
+                    "Ctrl+Shift+R",
                     Message::RefreshAll,
                     false,
                 ));
@@ -320,6 +366,19 @@ impl GitFleetApp {
                 }
 
                 let child_repo_count = gitfleet_workspace::count_repos_in_group(&ws, name);
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(close_sub(ctx_btn(
+                    icons::repo_stack(12.0, p.accent_fg).into(),
+                    format!("Export Group Blueprint ({child_repo_count})…"),
+                    Message::OpenExportBlueprintModal(Some(name.clone())),
+                    false,
+                )));
+                items = items.push(close_sub(ctx_btn(
+                    icons::cloud_download(12.0, p.accent_fg).into(),
+                    "Import Blueprint into Group…".into(),
+                    Message::PickImportBlueprintFile(Some(name.clone())),
+                    false,
+                )));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
                     icons::pencil(12.0, p.text_secondary).into(),

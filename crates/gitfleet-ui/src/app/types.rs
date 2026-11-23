@@ -166,6 +166,13 @@ pub(crate) enum SettingsTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum WorkspaceModalTab {
+    #[default]
+    Workspaces,
+    GroupsAndBlueprints,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum EncodingModalMode {
     #[default]
     SaveWithEncoding,
