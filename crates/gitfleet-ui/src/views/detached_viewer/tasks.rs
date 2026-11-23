@@ -1,6 +1,6 @@
 //! Async Git diff, file explorer, search, and tab save helpers for GitFleet Studio.
 
-use super::io::{file_display_name, format_editor_text_for_save, jump_editor_to_span};
+use super::io::file_display_name;
 use super::state::{
     DetachedAction, DetachedGitDiffTarget, DetachedViewMode, LoadedTabFile, StudioTab,
 };
@@ -75,16 +75,25 @@ impl GitFleetApp {
         jump_match: Option<(usize, usize, usize)>,
     ) -> Task<Message> {
         let svc = self.service.clone();
+        let theme_mode = self.theme_mode;
         Task::perform(
             async move {
                 let p_clone = path.clone();
-                let doc = tokio::task::spawn_blocking(move || svc.docs.open_document(&p_clone).ok())
-                    .await
-                    .ok()
-                    .flatten();
+                let (doc, prebuilt_preview) = tokio::task::spawn_blocking(move || {
+                    let doc = svc.docs.open_document(&p_clone).ok();
+                    let prebuilt = crate::preview::PreviewState::from_file_prewarmed(
+                        &p_clone,
+                        doc.as_ref().map(|c| c.content.as_str()),
+                        theme_mode,
+                    );
+                    (doc, crate::preview::PrebuiltPreviewSlot::new(prebuilt))
+                })
+                .await
+                .unwrap_or_else(|_| (None, crate::preview::PrebuiltPreviewSlot::empty()));
                 Box::new(LoadedTabFile {
                     path,
                     doc,
+                    prebuilt_preview,
                     jump_match,
                 })
             },
@@ -593,14 +602,8 @@ impl GitFleetApp {
                     {
                         tab.mode = DetachedViewMode::Edit;
                         tab.ensure_editor_hydrated();
-                        jump_editor_to_span(&mut tab.editor_content, line_idx, col_start, col_end);
                         jump_scroll_task =
-                            crate::views::code_editor::scroll_numbered_editor_to_line(
-                                &tab.editor_content,
-                                &mut tab.editor_scroll,
-                                line_idx,
-                                cfg,
-                            );
+                            tab.jump_to_line_and_scroll(line_idx, col_start, col_end, cfg);
                     }
                     v.status_is_error = false;
                     v.status_note = format!("Line {}", line_idx + 1);
@@ -656,11 +659,7 @@ impl GitFleetApp {
                 return (false, Task::none());
             };
 
-            let content = if tab.editor_hydrated {
-                format_editor_text_for_save(&tab.editor_content, tab.trailing_newline)
-            } else {
-                tab.raw_text.clone().unwrap_or_default()
-            };
+            let content = tab.active_full_text().unwrap_or_default();
             match docs.save_document_detailed(
                 &doc_id,
                 &content,
@@ -672,12 +671,19 @@ impl GitFleetApp {
                     tab.doc_version = Some(res.version.clone());
                     tab.line_ending = res.line_ending;
                     tab.encoding = res.encoding;
+                    tab.is_large_file =
+                        crate::views::code_editor::is_large_editor_text(&res.content);
+                    tab.total_raw_lines = res.content.lines().count().max(1);
+                    tab.working_full_text = None;
                     tab.raw_text = Some(res.content.clone());
                     tab.dirty = false;
                     tab.disk_conflict = false;
                     tab.preview_hydrated = false;
                     tab.refresh_git_line_marks();
-                    if tab.mode == DetachedViewMode::Preview || v.split_right_preview {
+                    if tab.mode == DetachedViewMode::Preview
+                        || v.split_right_preview
+                        || tab.is_virtualized_code_mode()
+                    {
                         tab.ensure_preview_hydrated();
                     }
                     let tid = tab.id;

@@ -927,7 +927,7 @@ impl GitFleetApp {
         if v.goto_line_visible {
             let total_lines = v
                 .active_tab()
-                .map(|t| t.editor_content.line_count())
+                .map(|t| t.total_line_count())
                 .unwrap_or(1)
                 .max(1);
             let card = opaque(

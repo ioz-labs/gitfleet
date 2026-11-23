@@ -1262,6 +1262,12 @@ impl GitFleetApp {
             return;
         }
         if let Some(raw) = &self.open_doc_raw_text {
+            if crate::views::code_editor::is_large_editor_text(raw) {
+                self.editor_content = text_editor::Content::new();
+                self.editor_hydrated = true;
+                self.ensure_preview_hydrated();
+                return;
+            }
             self.editor_content = text_editor::Content::with_text(raw);
         } else {
             self.editor_content = text_editor::Content::new();

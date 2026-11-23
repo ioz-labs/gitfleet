@@ -192,7 +192,7 @@ pub(crate) fn render_studio_status_bar<'a>(
     if let Some(tab) = v.active_tab() {
         let active_menu = v.status_menu.map(|(k, _)| k);
         if tab.is_editable() {
-            let (ln, col) = tab.editor_content.cursor_position();
+            let (ln, col) = tab.cursor_display_pos();
             let eol_open = active_menu == Some(StudioStatusMenu::Eol);
             let enc_open = active_menu == Some(StudioStatusMenu::Encoding);
             right = right

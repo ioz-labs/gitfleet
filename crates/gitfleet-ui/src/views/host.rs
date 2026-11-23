@@ -74,7 +74,7 @@ impl GitFleetApp {
         let repo_col_w = self
             .sidebar_width
             .clamp(236.0, (self.window_size.width * 0.30).max(248.0));
-        let show_ws_text = !has_sidebar || repo_col_w >= 288.0;
+        let show_ws_text = !has_sidebar || repo_col_w >= 256.0;
         let has_upstream = active_status.is_some_and(|s| s.upstream.is_some());
         let is_unpublished_local =
             has_repo && active_status.is_some_and(|s| !s.detached && s.upstream.is_none());
@@ -82,18 +82,14 @@ impl GitFleetApp {
         let ws_inner = if show_ws_text {
             row![
                 icons::layers(icon_size::XS, p.accent_fg),
-                text("WS:")
-                    .size(type_scale::BADGE)
-                    .color(p.text_muted)
-                    .wrapping(text::Wrapping::None),
-                text(truncate_chars(&ws.name, 8))
+                text(truncate_chars(&ws.name, 14))
                     .size(type_scale::CAPTION)
                     .font(theme::UI_FONT_MEDIUM)
                     .color(p.text_primary)
                     .wrapping(text::Wrapping::None),
                 icons::chevron_down(10.0, p.text_muted),
             ]
-            .spacing(3)
+            .spacing(4)
             .align_y(Alignment::Center)
         } else {
             row![

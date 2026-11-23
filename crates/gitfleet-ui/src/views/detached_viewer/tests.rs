@@ -149,3 +149,69 @@ use std::path::Path;
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn large_cargo_lock_opens_virtualized_and_splices_edit_window_cleanly() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet-studio-cargolock-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let lock_file = dir.join("Cargo.lock");
+
+        let mut raw = String::with_capacity(190_000);
+        for pkg in 0..1_000 {
+            raw.push_str("[[package]]\n");
+            raw.push_str(&format!("name = \"crate-{pkg}\"\n"));
+            raw.push_str("version = \"0.1.0\"\n");
+            raw.push_str("source = \"registry+https://github.com/rust-lang/crates.io-index\"\n");
+            raw.push_str("checksum = \"abcdef0123456789abcdef0123456789\"\n\n");
+        }
+        let orig_lines = raw.lines().count();
+        assert!(orig_lines >= 6_000);
+        std::fs::write(&lock_file, &raw).unwrap();
+
+        let docs = gitfleet_docs::DocsService::new();
+        let cap = docs.open_document(&lock_file).unwrap();
+        let prebuilt = crate::preview::PreviewState::from_file_prewarmed(
+            &lock_file,
+            Some(&cap.content),
+            crate::theme::ThemeMode::Dark,
+        );
+
+        let mut tab = StudioTab::new_empty(1, "Cargo.lock".into());
+        tab.mode = DetachedViewMode::Edit;
+        let t0 = std::time::Instant::now();
+        assert!(tab.apply_loaded_doc_with_preview(
+            &lock_file,
+            Some(Path::new(&dir)),
+            Some(cap),
+            Some(prebuilt),
+        ));
+        tab.hydrate_active_mode();
+
+        // Must enter fast virtualized mode without feeding 6,000+ lines into `cosmic_text::Editor`
+        assert!(tab.is_large_file);
+        assert!(tab.is_virtualized_code_mode());
+        assert_eq!(tab.total_line_count(), orig_lines);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(50),
+            "hydrating 6,000-line Cargo.lock should be O(1), took {:?}",
+            t0.elapsed()
+        );
+
+        // Open a 300-line edit window around line 3,001, insert a comment, commit slice, and verify full file
+        tab.open_edit_window_around(3_000);
+        assert!(!tab.is_virtualized_code_mode());
+        assert!(tab.editor_content.line_count() <= 305);
+        tab.editor_content
+            .perform(text_editor::Action::Edit(text_editor::Edit::Insert('#')));
+        tab.commit_edit_window(crate::theme::ThemeMode::Dark);
+        assert!(tab.is_virtualized_code_mode());
+        assert!(tab.dirty);
+        let merged = tab.active_full_text().unwrap();
+        assert_eq!(merged.lines().count(), orig_lines);
+        assert!(merged.lines().nth(3_000).unwrap().starts_with('#'));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }

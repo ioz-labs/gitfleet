@@ -15,9 +15,7 @@ use crate::views::image_diff::{
 };
 use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
 use crate::views::overlays::fuzzy::fuzzy_match;
-use super::io::{
-    editor_buffer_text, file_display_name, format_editor_text_for_save, jump_editor_to_span,
-};
+use super::io::{editor_buffer_text, file_display_name, format_editor_text_for_save};
 use super::sidebar_explorer::ExplorerDirNode;
 use super::smart_edit::{EditorSnapshot, MAX_UNDO_HISTORY};
 use super::symbols::{
@@ -142,6 +140,7 @@ pub(crate) struct QuickOpenCandidate {
 pub(crate) struct LoadedTabFile {
     pub(crate) path: PathBuf,
     pub(crate) doc: Option<OpenDocumentCapability>,
+    pub(crate) prebuilt_preview: crate::preview::PrebuiltPreviewSlot,
     pub(crate) jump_match: Option<(usize, usize, usize)>,
 }
 
@@ -308,6 +307,9 @@ pub(crate) enum DetachedAction {
     // Direct Code Editor
     EditorAction(text_editor::Action),
     EditorScrolled(scrollable::Viewport),
+    VirtualCodeLineClicked(usize),
+    OpenEditWindowAround(usize),
+    CommitEditWindow,
     InsertIndent,
     OutdentSelection,
     SmartEnter,
@@ -410,6 +412,12 @@ pub(crate) struct StudioTab {
     pub(crate) line_ending: LineEnding,
     pub(crate) trailing_newline: bool,
     pub(crate) raw_text: Option<String>,
+    pub(crate) working_full_text: Option<String>,
+    pub(crate) is_large_file: bool,
+    pub(crate) total_raw_lines: usize,
+    pub(crate) virtual_cursor_line: usize,
+    pub(crate) last_virtual_line_click: Option<(usize, Instant)>,
+    pub(crate) edit_window: Option<(usize, usize)>,
     pub(crate) editor_hydrated: bool,
     pub(crate) editor_content: text_editor::Content,
     pub(crate) editor_scroll: crate::views::code_editor::CodeScrollState,
@@ -474,6 +482,12 @@ impl StudioTab {
             line_ending: LineEnding::Lf,
             trailing_newline: true,
             raw_text: None,
+            working_full_text: None,
+            is_large_file: false,
+            total_raw_lines: 1,
+            virtual_cursor_line: 0,
+            last_virtual_line_click: None,
+            edit_window: None,
             editor_hydrated: false,
             editor_content: text_editor::Content::new(),
             editor_scroll: crate::views::code_editor::CodeScrollState::new(),
@@ -566,14 +580,160 @@ impl StudioTab {
         self.last_typing_snapshot_at = if coalesce_typing { Some(now) } else { None };
     }
 
+    pub(crate) fn is_virtualized_code_mode(&self) -> bool {
+        self.is_large_file && self.edit_window.is_none()
+    }
+
+    pub(crate) fn total_line_count(&self) -> usize {
+        if self.is_large_file {
+            self.total_raw_lines.max(1)
+        } else if self.editor_hydrated {
+            self.editor_content.line_count().max(1)
+        } else {
+            self.raw_text
+                .as_deref()
+                .map(|s| s.lines().count().max(1))
+                .unwrap_or(1)
+        }
+    }
+
+    pub(crate) fn cursor_display_pos(&self) -> (usize, usize) {
+        if self.is_virtualized_code_mode() {
+            (self.virtual_cursor_line, 0)
+        } else if let Some((win_start, _)) = self.edit_window {
+            let (l, c) = self.editor_content.cursor_position();
+            (win_start + l, c)
+        } else {
+            self.editor_content.cursor_position()
+        }
+    }
+
+    pub(crate) fn active_full_text(&self) -> Option<String> {
+        if !self.is_large_file {
+            if self.editor_hydrated {
+                return Some(format_editor_text_for_save(
+                    &self.editor_content,
+                    self.trailing_newline,
+                ));
+            }
+            return self.raw_text.clone();
+        }
+        let base = self.working_full_text.as_deref().or(self.raw_text.as_deref())?;
+        if let Some((win_start, win_end)) = self.edit_window
+            && self.editor_hydrated
+        {
+            let slice_edited = editor_buffer_text(&self.editor_content);
+            return Some(splice_window_into_text(
+                base,
+                self.trailing_newline,
+                win_start,
+                win_end,
+                &slice_edited,
+            ));
+        }
+        Some(base.to_string())
+    }
+
+    pub(crate) fn open_edit_window_around(&mut self, center_line: usize) {
+        if !self.is_large_file {
+            self.ensure_editor_hydrated();
+            return;
+        }
+        if let Some(full) = self.active_full_text() {
+            self.total_raw_lines = full.lines().count().max(1);
+            self.working_full_text = Some(full);
+        }
+        let Some(base) = self.working_full_text.as_deref().or(self.raw_text.as_deref()) else {
+            return;
+        };
+        let all_lines: Vec<&str> = base.lines().collect();
+        let total = all_lines.len().max(1);
+        let clamped_center = center_line.min(total.saturating_sub(1));
+        const HALF_WIN: usize = 150;
+        let win_start = clamped_center.saturating_sub(HALF_WIN);
+        let win_end = (clamped_center + HALF_WIN).min(total).max(win_start + 1);
+        let mut slice_str = if all_lines.is_empty() {
+            String::new()
+        } else {
+            all_lines[win_start..win_end].join("\n")
+        };
+        if slice_str.ends_with('\n') {
+            // `cosmic_text::BidiParagraphs` treats a final `\n` as a line terminator rather than
+            // a trailing empty line; adding one `\n` preserves exact `win_end - win_start` lines.
+            slice_str.push('\n');
+        }
+        self.editor_content = text_editor::Content::with_text(&slice_str);
+        self.edit_window = Some((win_start, win_end));
+        self.editor_hydrated = true;
+        self.virtual_cursor_line = clamped_center;
+        let rel_ln = clamped_center.saturating_sub(win_start);
+        super::io::jump_editor_to_span(&mut self.editor_content, rel_ln, 0, 0);
+    }
+
+    pub(crate) fn commit_edit_window(&mut self, theme_mode: ThemeMode) {
+        if !self.is_large_file || self.edit_window.is_none() {
+            return;
+        }
+        if let Some(full) = self.active_full_text() {
+            let (abs_ln, _) = self.cursor_display_pos();
+            self.total_raw_lines = full.lines().count().max(1);
+            self.virtual_cursor_line = abs_ln.min(self.total_raw_lines.saturating_sub(1));
+            if let Some(path) = self.file_path.as_deref() {
+                self.preview_state =
+                    PreviewState::from_file_prewarmed(path, Some(&full), theme_mode);
+                self.preview_hydrated = true;
+            }
+            self.working_full_text = Some(full);
+        }
+        self.edit_window = None;
+        self.editor_content = text_editor::Content::new();
+        self.editor_hydrated = true;
+        self.recompute_dirty_flag();
+    }
+
+    pub(crate) fn jump_to_line_and_scroll(
+        &mut self,
+        line_idx: usize,
+        col_start: usize,
+        col_end: usize,
+        cfg: crate::views::code_editor::NumberedEditorConfig,
+    ) -> Task<Message> {
+        if self.is_virtualized_code_mode() {
+            self.virtual_cursor_line = line_idx.min(self.total_raw_lines.saturating_sub(1));
+            return self
+                .editor_scroll
+                .scroll_to_visual_row_centered(self.virtual_cursor_line, cfg);
+        }
+        if let Some((win_start, win_end)) = self.edit_window {
+            if line_idx < win_start || line_idx >= win_end {
+                self.open_edit_window_around(line_idx);
+            }
+            let cur_start = self.edit_window.map(|(s, _)| s).unwrap_or(0);
+            let rel_ln = line_idx.saturating_sub(cur_start);
+            super::io::jump_editor_to_span(&mut self.editor_content, rel_ln, col_start, col_end);
+            return crate::views::code_editor::scroll_numbered_editor_to_line(
+                &self.editor_content,
+                &mut self.editor_scroll,
+                rel_ln,
+                cfg.with_line_offset(cur_start),
+            );
+        }
+        super::io::jump_editor_to_span(&mut self.editor_content, line_idx, col_start, col_end);
+        crate::views::code_editor::scroll_numbered_editor_to_line(
+            &self.editor_content,
+            &mut self.editor_scroll,
+            line_idx,
+            cfg,
+        )
+    }
+
     pub(crate) fn recompute_dirty_flag(&mut self) {
         if self.is_untitled && self.file_path.is_none() {
             self.dirty = !editor_buffer_text(&self.editor_content).is_empty();
             return;
         }
-        if let Some(disk_text) = &self.raw_text {
-            let formatted = format_editor_text_for_save(&self.editor_content, self.trailing_newline);
-            self.dirty = formatted != *disk_text;
+        if let (Some(disk_text), Some(cur_full)) = (&self.raw_text, self.active_full_text()) {
+            self.dirty = cur_full != *disk_text;
         }
         self.refresh_git_line_marks();
     }
@@ -588,10 +748,8 @@ impl StudioTab {
 
     pub(crate) fn refresh_git_line_marks(&mut self) {
         let marks = if self.dirty {
-            if let Some(base) = &self.raw_text
-                && self.editor_hydrated
-            {
-                compute_line_git_marks_vs_base(base, &editor_buffer_text(&self.editor_content))
+            if let (Some(base), Some(cur)) = (&self.raw_text, self.active_full_text()) {
+                compute_line_git_marks_vs_base(base, &cur)
             } else {
                 HashMap::new()
             }
@@ -604,11 +762,7 @@ impl StudioTab {
     }
 
     pub(crate) fn refresh_live_split_preview(&mut self) {
-        let live_text = if self.editor_hydrated {
-            Some(editor_buffer_text(&self.editor_content))
-        } else {
-            self.raw_text.clone()
-        };
+        let live_text = self.active_full_text();
         let virtual_path = match self.file_path.clone() {
             Some(p) => p,
             None => PathBuf::from(match self.language {
@@ -645,7 +799,17 @@ impl StudioTab {
     }
 
     /// Lazily shapes `editor_content` only when entering Code/Edit view (avoids redundant cosmic_text work).
+    /// For large files (`is_large_file && edit_window.is_none()`), bypasses `Content::with_text` completely
+    /// (`0.0ms` UI thread) and ensures `preview_state` is ready for virtualized code rendering.
     pub(crate) fn ensure_editor_hydrated(&mut self) {
+        if self.is_large_file && self.edit_window.is_none() {
+            self.ensure_preview_hydrated();
+            if !self.editor_hydrated {
+                self.editor_content = text_editor::Content::new();
+                self.editor_hydrated = true;
+            }
+            return;
+        }
         if self.editor_hydrated {
             return;
         }
@@ -663,8 +827,8 @@ impl StudioTab {
             return;
         }
         if let Some(path) = self.file_path.as_deref() {
-            let live_text = if self.editor_hydrated && self.dirty {
-                Some(editor_buffer_text(&self.editor_content))
+            let live_text = if self.dirty {
+                self.active_full_text()
             } else {
                 self.raw_text.clone()
             };
@@ -687,23 +851,18 @@ impl StudioTab {
 
     pub(crate) fn current_searchable_text(&self) -> Option<String> {
         if self.is_editable() {
-            if self.editor_hydrated {
-                Some(editor_buffer_text(&self.editor_content))
-            } else {
-                self.raw_text.clone()
-            }
+            self.active_full_text()
         } else {
             self.preview_state.copyable_text().map(str::to_string)
         }
     }
 
-    /// Applies an asynchronously loaded `OpenDocumentCapability` to this tab and hydrates ONLY
-    /// the active view mode (`Edit` or `Preview`), avoiding double `cosmic_text` shaping.
-    pub(crate) fn apply_loaded_doc(
+    pub(crate) fn apply_loaded_doc_with_preview(
         &mut self,
         path: &Path,
         root: Option<&Path>,
         doc: Option<OpenDocumentCapability>,
+        prebuilt_preview: Option<PreviewState>,
     ) -> bool {
         self.title = file_display_name(path);
         self.rel_path = root
@@ -720,6 +879,10 @@ impl StudioTab {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_typing_snapshot_at = None;
+        self.working_full_text = None;
+        self.edit_window = None;
+        self.virtual_cursor_line = 0;
+        self.last_virtual_line_click = None;
         self.editor_hydrated = false;
         self.preview_hydrated = false;
 
@@ -730,8 +893,15 @@ impl StudioTab {
                 self.encoding = cap.encoding;
                 self.line_ending = cap.line_ending;
                 self.trailing_newline = cap.content.ends_with('\n');
+                self.is_large_file = crate::views::code_editor::is_large_editor_text(&cap.content);
+                self.total_raw_lines = cap.content.lines().count().max(1);
                 self.raw_text = Some(cap.content);
-                self.preview_state = PreviewState::Empty;
+                if let Some(prev) = prebuilt_preview {
+                    self.preview_state = prev;
+                    self.preview_hydrated = true;
+                } else {
+                    self.preview_state = PreviewState::Empty;
+                }
                 self.preview_editor = text_editor::Content::new();
                 self.refresh_git_line_marks();
                 true
@@ -740,11 +910,28 @@ impl StudioTab {
                 self.doc_id = None;
                 self.doc_version = None;
                 self.raw_text = None;
+                self.is_large_file = false;
+                self.total_raw_lines = 1;
+                if let Some(prev) = prebuilt_preview {
+                    self.preview_state = prev;
+                    self.preview_hydrated = true;
+                }
                 self.editor_content = text_editor::Content::new();
                 self.editor_hydrated = true;
                 false
             }
         }
+    }
+
+    /// Applies an asynchronously loaded `OpenDocumentCapability` to this tab and hydrates ONLY
+    /// the active view mode (`Edit` or `Preview`), avoiding double `cosmic_text` shaping.
+    pub(crate) fn apply_loaded_doc(
+        &mut self,
+        path: &Path,
+        root: Option<&Path>,
+        doc: Option<OpenDocumentCapability>,
+    ) -> bool {
+        self.apply_loaded_doc_with_preview(path, root, doc, None)
     }
 
     pub(crate) fn load_local_file(
@@ -1204,7 +1391,13 @@ impl DetachedViewerState {
                 tab.encoding = app.open_doc_encoding;
                 tab.line_ending = app.open_doc_line_ending;
                 tab.trailing_newline = raw.ends_with('\n');
+                tab.is_large_file = crate::views::code_editor::is_large_editor_text(&raw);
+                tab.total_raw_lines = raw.lines().count().max(1);
                 tab.raw_text = Some(raw);
+                if app.preview_hydrated && !matches!(app.preview_state, PreviewState::Empty) {
+                    tab.preview_state = app.preview_state.clone_snapshot();
+                    tab.preview_hydrated = true;
+                }
                 can_edit = true;
             } else {
                 tab.loading_file = true;
@@ -1530,33 +1723,19 @@ impl DetachedViewerState {
         let word_wrap = self.editor_word_wrap;
         if let Some(tab) = self.active_tab_mut() {
             if tab.mode == DetachedViewMode::Edit && tab.is_editable() {
-                jump_editor_to_span(
-                    &mut tab.editor_content,
-                    m.line_index,
-                    m.col_start,
-                    m.col_end,
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    font_size, word_wrap,
                 );
-                return crate::views::code_editor::scroll_numbered_editor_to_line(
-                    &tab.editor_content,
-                    &mut tab.editor_scroll,
-                    m.line_index,
-                    crate::views::code_editor::NumberedEditorConfig::studio(font_size, word_wrap),
-                );
+                return tab.jump_to_line_and_scroll(m.line_index, m.col_start, m.col_end, cfg);
             } else if tab.mode == DetachedViewMode::Preview
                 && tab.preview_state.uses_selectable_editor(tab.preview_raw_mode)
             {
-                jump_editor_to_span(
-                    &mut tab.preview_editor,
-                    m.line_index,
-                    m.col_start,
-                    m.col_end,
+                let cfg = crate::views::code_editor::NumberedEditorConfig::preview(
+                    font_size, word_wrap,
                 );
-                return crate::views::code_editor::scroll_numbered_editor_to_line(
-                    &tab.preview_editor,
-                    &mut tab.preview_scroll,
-                    m.line_index,
-                    crate::views::code_editor::NumberedEditorConfig::preview(font_size, word_wrap),
-                );
+                return tab
+                    .preview_scroll
+                    .scroll_to_visual_row_centered(m.line_index, cfg);
             }
         }
         Task::none()
@@ -1756,4 +1935,52 @@ impl DetachedViewerState {
         }
         scored.into_iter().take(limit).map(|(_, c)| c).collect()
     }
+}
+
+fn splice_window_into_text(
+    base: &str,
+    trailing_newline: bool,
+    win_start: usize,
+    win_end: usize,
+    replacement: &str,
+) -> String {
+    let base_lines: Vec<&str> = base.lines().collect();
+    let total = base_lines.len();
+    let clamped_start = win_start.min(total);
+    let clamped_end = win_end.min(total).max(clamped_start);
+    let mut out = String::with_capacity(base.len() + replacement.len().min(4096));
+    let mut first = true;
+
+    for &line in &base_lines[..clamped_start] {
+        if !first {
+            out.push('\n');
+        }
+        out.push_str(line);
+        first = false;
+    }
+    if replacement.is_empty() {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+    } else {
+        for line in replacement.split('\n') {
+            if !first {
+                out.push('\n');
+            }
+            out.push_str(line);
+            first = false;
+        }
+    }
+    for &line in &base_lines[clamped_end..] {
+        if !first {
+            out.push('\n');
+        }
+        out.push_str(line);
+        first = false;
+    }
+    if trailing_newline && (!out.is_empty() || !base_lines.is_empty()) {
+        out.push('\n');
+    }
+    out
 }

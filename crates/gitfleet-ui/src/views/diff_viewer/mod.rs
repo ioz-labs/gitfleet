@@ -683,6 +683,44 @@ impl GitFleetApp {
             .padding(10)
             .into();
         }
+        if let Some(raw) = &self.open_doc_raw_text
+            && !self.editor_dirty
+            && crate::views::code_editor::is_large_editor_text(raw)
+        {
+            let line_cnt = raw.lines().count().max(1);
+            let banner = container(
+                row![
+                    icons::file_code(13.0, p.accent_fg),
+                    theme::clipped_line(
+                        text(format!(
+                            "Large file ({line_cnt} lines) — virtualized for instant scrolling."
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(p.text_secondary),
+                        Length::Fill,
+                    ),
+                    button(
+                        text("Open in GitFleet Studio")
+                            .size(type_scale::BADGE)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([3, 9])
+                    .style(theme::primary_btn(p))
+                    .on_press(Message::OpenDetachedViewer),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([5, 10])
+            .width(Length::Fill)
+            .style(theme::pill_box(p.fill_selected, p.accent_fg, p.border_subtle));
+
+            return column![banner, self.view_file_preview(p)]
+                .spacing(6)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
         let effective_lang = if self.editor_content.line_count() > 4_000 {
             crate::syntax::CodeLanguage::PlainText
         } else {

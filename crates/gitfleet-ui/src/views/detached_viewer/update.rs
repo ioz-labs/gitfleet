@@ -1,6 +1,6 @@
 //! Host-coupled & async action update handlers for GitFleet Studio.
 
-use super::io::{file_display_name, format_editor_text_for_save, jump_editor_to_span};
+use super::io::file_display_name;
 use super::smart_edit::parse_goto_line_spec;
 use super::state::{
     DetachedAction, DetachedGitDiffTarget, DetachedViewMode, StudioCreateEntryKind, StudioTab,
@@ -83,11 +83,7 @@ impl GitFleetApp {
                 if let Some(v) = self.detached_viewers.get_mut(&win_id) {
                     let root = v.search_root.clone();
                     if let Some(tab) = v.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        let content = if tab.editor_hydrated {
-                            format_editor_text_for_save(&tab.editor_content, tab.trailing_newline)
-                        } else {
-                            tab.raw_text.clone().unwrap_or_default()
-                        };
+                        let content = tab.active_full_text().unwrap_or_default();
                         match docs.save_document_as(&dest, &content, tab.line_ending, tab.encoding)
                         {
                             Ok(lossy) => {
@@ -105,11 +101,19 @@ impl GitFleetApp {
                                     tab.line_ending = cap.line_ending;
                                     tab.encoding = cap.encoding;
                                     tab.trailing_newline = cap.content.ends_with('\n');
+                                    tab.is_large_file =
+                                        crate::views::code_editor::is_large_editor_text(
+                                            &cap.content,
+                                        );
+                                    tab.total_raw_lines = cap.content.lines().count().max(1);
+                                    tab.working_full_text = None;
                                     tab.raw_text = Some(cap.content);
                                 }
                                 tab.dirty = false;
                                 tab.preview_hydrated = false;
-                                if tab.mode == DetachedViewMode::Preview {
+                                if tab.mode == DetachedViewMode::Preview
+                                    || tab.is_virtualized_code_mode()
+                                {
                                     tab.ensure_preview_hydrated();
                                 }
                                 let saved_title = tab.title.clone();
@@ -376,19 +380,8 @@ impl GitFleetApp {
                         {
                             tab.mode = DetachedViewMode::Edit;
                             tab.ensure_editor_hydrated();
-                            jump_editor_to_span(
-                                &mut tab.editor_content,
-                                sym.line_idx,
-                                0,
-                                0,
-                            );
                             let scroll_t =
-                                crate::views::code_editor::scroll_numbered_editor_to_line(
-                                    &tab.editor_content,
-                                    &mut tab.editor_scroll,
-                                    sym.line_idx,
-                                    cfg,
-                                );
+                                tab.jump_to_line_and_scroll(sym.line_idx, 0, 0, cfg);
                             v.quick_open_visible = false;
                             v.status_is_error = false;
                             v.status_note = format!(
@@ -411,16 +404,9 @@ impl GitFleetApp {
                         {
                             tab.mode = DetachedViewMode::Edit;
                             tab.ensure_editor_hydrated();
-                            let total = tab.editor_content.line_count();
+                            let total = tab.total_line_count();
                             if let Some((ln, col)) = parse_goto_line_spec(&q, total) {
-                                jump_editor_to_span(&mut tab.editor_content, ln, col, col);
-                                let scroll_t =
-                                    crate::views::code_editor::scroll_numbered_editor_to_line(
-                                        &tab.editor_content,
-                                        &mut tab.editor_scroll,
-                                        ln,
-                                        cfg,
-                                    );
+                                let scroll_t = tab.jump_to_line_and_scroll(ln, col, col, cfg);
                                 v.quick_open_visible = false;
                                 v.status_is_error = false;
                                 v.status_note = format!("Jumped to Ln {}, Col {}", ln + 1, col + 1);
@@ -575,14 +561,7 @@ impl GitFleetApp {
                             (tab.doc_id.clone(), tab.doc_version.clone())
                     {
                         let res = if tab.dirty {
-                            let content = if tab.editor_hydrated {
-                                format_editor_text_for_save(
-                                    &tab.editor_content,
-                                    tab.trailing_newline,
-                                )
-                            } else {
-                                tab.raw_text.clone().unwrap_or_default()
-                            };
+                            let content = tab.active_full_text().unwrap_or_default();
                             docs.save_document_detailed(
                                 &doc_id,
                                 &content,
@@ -599,6 +578,10 @@ impl GitFleetApp {
                                 tab.line_ending = saved.line_ending;
                                 tab.encoding = saved.encoding;
                                 tab.trailing_newline = saved.content.ends_with('\n');
+                                tab.is_large_file =
+                                    crate::views::code_editor::is_large_editor_text(&saved.content);
+                                tab.total_raw_lines = saved.content.lines().count().max(1);
+                                tab.working_full_text = None;
                                 tab.raw_text = Some(saved.content);
                                 tab.dirty = false;
                                 tab.editor_hydrated = false;
