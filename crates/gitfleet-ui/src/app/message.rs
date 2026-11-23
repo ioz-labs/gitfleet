@@ -303,7 +303,6 @@ pub(crate) enum Message {
     ToggleDiffCompact,
     ExpandDiffGap { gap_id: usize, mode: DiffGapExpandMode },
     DiffLeftScrolled(scrollable::Viewport),
-    DiffRightScrolled(scrollable::Viewport),
     DiffUnifiedScrolled(scrollable::Viewport),
     DiffJumpChange(isize),
     DiffSelStart { side: DiffSelectionSide, row: usize, col: usize },

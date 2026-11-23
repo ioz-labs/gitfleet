@@ -178,7 +178,6 @@ pub(crate) enum DetachedAction {
         mode: DiffGapExpandMode,
     },
     LeftScrolled(scrollable::Viewport),
-    RightScrolled(scrollable::Viewport),
     UnifiedScrolled(scrollable::Viewport),
     JumpChange(i32),
     SelStart {
@@ -321,15 +320,11 @@ pub(crate) struct StudioTab {
     pub(crate) diff_compact: bool,
     pub(crate) diff_expanded_gaps: HashMap<usize, DiffGapExpansion>,
     pub(crate) diff_left_scroll_id: scrollable::Id,
-    pub(crate) diff_right_scroll_id: scrollable::Id,
     pub(crate) diff_unified_scroll_id: scrollable::Id,
     pub(crate) diff_left_scroll_y: f32,
-    pub(crate) diff_right_scroll_y: f32,
     pub(crate) diff_unified_scroll_y: f32,
     pub(crate) diff_left_scroll_x: f32,
-    pub(crate) diff_right_scroll_x: f32,
     pub(crate) diff_left_viewport_h: f32,
-    pub(crate) diff_right_viewport_h: f32,
     pub(crate) diff_unified_viewport_h: f32,
     pub(crate) diff_active_change: usize,
     pub(crate) diff_selection: Option<DiffTextSelection>,
@@ -379,15 +374,11 @@ impl StudioTab {
             diff_compact: true,
             diff_expanded_gaps: HashMap::new(),
             diff_left_scroll_id: scrollable::Id::unique(),
-            diff_right_scroll_id: scrollable::Id::unique(),
             diff_unified_scroll_id: scrollable::Id::unique(),
             diff_left_scroll_y: 0.0,
-            diff_right_scroll_y: 0.0,
             diff_unified_scroll_y: 0.0,
             diff_left_scroll_x: 0.0,
-            diff_right_scroll_x: 0.0,
             diff_left_viewport_h: 900.0,
-            diff_right_viewport_h: 900.0,
             diff_unified_viewport_h: 900.0,
             diff_active_change: 0,
             diff_selection: None,
@@ -550,10 +541,8 @@ impl StudioTab {
         self.diff_expanded_gaps.clear();
         self.diff_selection = None;
         self.diff_left_scroll_y = 0.0;
-        self.diff_right_scroll_y = 0.0;
         self.diff_unified_scroll_y = 0.0;
         self.diff_left_scroll_x = 0.0;
-        self.diff_right_scroll_x = 0.0;
         self.diff_active_change = 0;
         self.editor_scroll.reset_offsets();
         self.preview_scroll.reset_offsets();
@@ -563,10 +552,6 @@ impl StudioTab {
         Task::batch([
             scrollable::scroll_to(
                 self.diff_left_scroll_id.clone(),
-                scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
-            ),
-            scrollable::scroll_to(
-                self.diff_right_scroll_id.clone(),
                 scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
             ),
             scrollable::scroll_to(

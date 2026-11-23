@@ -14,7 +14,7 @@ use crate::app::{
 };
 use crate::views::csv_diff::CsvDiffMsg;
 use crate::views::diff_viewer::{
-    diff_line_text_at, diff_row_count, extract_selected_diff_text, map_scroll_y, word_bounds_at,
+    diff_line_text_at, diff_row_count, extract_selected_diff_text, word_bounds_at,
 };
 use crate::views::image_diff::ImageDiffMsg;
 use crate::views::overlays::file_ops_modal::{
@@ -277,7 +277,6 @@ impl GitFleetApp {
                     tab.diff_compact = !tab.diff_compact;
                     tab.diff_selection = None;
                     tab.diff_left_scroll_y = 0.0;
-                    tab.diff_right_scroll_y = 0.0;
                     tab.diff_unified_scroll_y = 0.0;
                     tab.rebuild_diff_cache(theme_mode);
                     return Task::batch([
@@ -285,13 +284,6 @@ impl GitFleetApp {
                             tab.diff_left_scroll_id.clone(),
                             scrollable::AbsoluteOffset {
                                 x: tab.diff_left_scroll_x,
-                                y: 0.0,
-                            },
-                        ),
-                        scrollable::scroll_to(
-                            tab.diff_right_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: tab.diff_right_scroll_x,
                                 y: 0.0,
                             },
                         ),
@@ -317,86 +309,17 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::LeftScrolled(vp) => {
-                let Some(tab) = v.active_tab_mut() else {
-                    return Task::none();
-                };
-                let off = vp.absolute_offset();
-                let pane_h = vp.bounds().height.max(1.0);
-                tab.diff_left_viewport_h = pane_h;
-                tab.diff_right_viewport_h = pane_h;
-                let x_changed = (off.x - tab.diff_left_scroll_x).abs() >= 0.5;
-                let y_changed = (off.y - tab.diff_left_scroll_y).abs() >= 0.5;
-                if !x_changed && !y_changed {
-                    return Task::none();
+                if let Some(tab) = v.active_tab_mut() {
+                    let off = vp.absolute_offset();
+                    tab.diff_left_viewport_h = vp.bounds().height.max(1.0);
+                    if (off.x - tab.diff_left_scroll_x).abs() >= 0.5 {
+                        tab.diff_left_scroll_x = off.x;
+                    }
+                    if (off.y - tab.diff_left_scroll_y).abs() >= 0.5 {
+                        tab.diff_left_scroll_y = off.y;
+                    }
                 }
-                tab.diff_left_scroll_x = off.x;
-                tab.diff_left_scroll_y = off.y;
-
-                let target_right_x = off.x.max(0.0);
-                let target_right_y = if y_changed {
-                    let layout = &tab.diff_cache.layout;
-                    let raw_right_y = map_scroll_y(off.y, &layout.anchors, true);
-                    let max_right_y = ((layout.total_right_h + 10.0) - pane_h).max(0.0);
-                    raw_right_y.clamp(0.0, max_right_y)
-                } else {
-                    tab.diff_right_scroll_y
-                };
-
-                if (target_right_x - tab.diff_right_scroll_x).abs() < 0.5
-                    && (target_right_y - tab.diff_right_scroll_y).abs() < 0.5
-                {
-                    return Task::none();
-                }
-                tab.diff_right_scroll_x = target_right_x;
-                tab.diff_right_scroll_y = target_right_y;
-                scrollable::scroll_to(
-                    tab.diff_right_scroll_id.clone(),
-                    scrollable::AbsoluteOffset {
-                        x: target_right_x,
-                        y: target_right_y,
-                    },
-                )
-            }
-            DetachedAction::RightScrolled(vp) => {
-                let Some(tab) = v.active_tab_mut() else {
-                    return Task::none();
-                };
-                let off = vp.absolute_offset();
-                let pane_h = vp.bounds().height.max(1.0);
-                tab.diff_left_viewport_h = pane_h;
-                tab.diff_right_viewport_h = pane_h;
-                let x_changed = (off.x - tab.diff_right_scroll_x).abs() >= 0.5;
-                let y_changed = (off.y - tab.diff_right_scroll_y).abs() >= 0.5;
-                if !x_changed && !y_changed {
-                    return Task::none();
-                }
-                tab.diff_right_scroll_x = off.x;
-                tab.diff_right_scroll_y = off.y;
-
-                let target_left_x = off.x.max(0.0);
-                let target_left_y = if y_changed {
-                    let layout = &tab.diff_cache.layout;
-                    let raw_left_y = map_scroll_y(off.y, &layout.anchors, false);
-                    let max_left_y = ((layout.total_left_h + 10.0) - pane_h).max(0.0);
-                    raw_left_y.clamp(0.0, max_left_y)
-                } else {
-                    tab.diff_left_scroll_y
-                };
-
-                if (target_left_x - tab.diff_left_scroll_x).abs() < 0.5
-                    && (target_left_y - tab.diff_left_scroll_y).abs() < 0.5
-                {
-                    return Task::none();
-                }
-                tab.diff_left_scroll_x = target_left_x;
-                tab.diff_left_scroll_y = target_left_y;
-                scrollable::scroll_to(
-                    tab.diff_left_scroll_id.clone(),
-                    scrollable::AbsoluteOffset {
-                        x: target_left_x,
-                        y: target_left_y,
-                    },
-                )
+                Task::none()
             }
             DetachedAction::UnifiedScrolled(vp) => {
                 if let Some(tab) = v.active_tab_mut() {
@@ -416,7 +339,7 @@ impl GitFleetApp {
                 let count = tab.diff_cache.layout.connectors.len();
                 if count == 0 {
                     return Task::none();
-                }
+                };
                 let next_idx = if delta < 0 {
                     if tab.diff_active_change == 0 {
                         count - 1
@@ -429,29 +352,18 @@ impl GitFleetApp {
                 tab.diff_active_change = next_idx;
                 let span = tab.diff_cache.layout.connectors[next_idx];
                 let margin = 48.0;
-                let ly = (span.left_top - margin).max(0.0);
-                let ry = (span.right_top - margin).max(0.0);
+                let sy = (span.split_top - margin).max(0.0);
                 let uy = (span.unified_top - margin).max(0.0);
-                tab.diff_left_scroll_y = ly;
-                tab.diff_right_scroll_y = ry;
+                tab.diff_left_scroll_y = sy;
                 tab.diff_unified_scroll_y = uy;
                 match tab.mode {
-                    DetachedViewMode::SideBySideDiff => Task::batch([
-                        scrollable::scroll_to(
-                            tab.diff_left_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: tab.diff_left_scroll_x,
-                                y: ly,
-                            },
-                        ),
-                        scrollable::scroll_to(
-                            tab.diff_right_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: tab.diff_right_scroll_x,
-                                y: ry,
-                            },
-                        ),
-                    ]),
+                    DetachedViewMode::SideBySideDiff => scrollable::scroll_to(
+                        tab.diff_left_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: tab.diff_left_scroll_x,
+                            y: sy,
+                        },
+                    ),
                     DetachedViewMode::UnifiedDiff => scrollable::scroll_to(
                         tab.diff_unified_scroll_id.clone(),
                         scrollable::AbsoluteOffset { x: 0.0, y: uy },
@@ -563,16 +475,12 @@ impl GitFleetApp {
                             .unwrap_or(DiffSelectionSide::Right)
                     };
                     let count = diff_row_count(&tab.diff_parsed, &tab.diff_cache.layout, side);
-                    if count > 0 {
-                        let last_row = count - 1;
-                        let last_col = diff_line_text_at(
-                            &tab.diff_parsed,
-                            &tab.diff_cache.layout,
-                            side,
-                            last_row,
-                        )
-                        .map(|l| l.chars().count())
-                        .unwrap_or(0);
+                    if count > 0
+                        && let Some((last_row, last_col)) = (0..count).rev().find_map(|r| {
+                            diff_line_text_at(&tab.diff_parsed, &tab.diff_cache.layout, side, r)
+                                .map(|l| (r, l.chars().count()))
+                        })
+                    {
                         tab.diff_selection = Some(DiffTextSelection {
                             side,
                             anchor: DiffTextPos { row: 0, col: 0 },

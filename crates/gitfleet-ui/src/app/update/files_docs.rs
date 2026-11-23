@@ -5,8 +5,8 @@ use crate::app::{
 use crate::views::commit_files::apply_file_selection;
 use crate::views::csv_diff::{compute_csv_diff, is_csv_diff_path};
 use crate::views::diff_viewer::{
-    diff_line_text_at, diff_row_count, extract_selected_diff_text, map_scroll_y,
-    parse_and_cache_diff, word_bounds_at,
+    diff_line_text_at, diff_row_count, extract_selected_diff_text, parse_and_cache_diff,
+    word_bounds_at,
 };
 use crate::views::image_diff::{
     ImageDiffData, ImageDiffZoom, decode_image_diff_pair, is_image_diff_path,
@@ -1161,7 +1161,6 @@ impl GitFleetApp {
                 self.diff_compact = !self.diff_compact;
                 self.diff_selection = None;
                 self.diff_left_scroll_y = 0.0;
-                self.diff_right_scroll_y = 0.0;
                 self.diff_unified_scroll_y = 0.0;
                 self.rebuild_diff_cache();
                 Task::batch([
@@ -1169,13 +1168,6 @@ impl GitFleetApp {
                         self.diff_left_scroll_id.clone(),
                         scrollable::AbsoluteOffset {
                             x: self.diff_left_scroll_x,
-                            y: 0.0,
-                        },
-                    ),
-                    scrollable::scroll_to(
-                        self.diff_right_scroll_id.clone(),
-                        scrollable::AbsoluteOffset {
-                            x: self.diff_right_scroll_x,
                             y: 0.0,
                         },
                     ),
@@ -1198,79 +1190,14 @@ impl GitFleetApp {
             }
             Message::DiffLeftScrolled(vp) => {
                 let off = vp.absolute_offset();
-                let pane_h = vp.bounds().height.max(1.0);
-                self.diff_left_viewport_h = pane_h;
-                self.diff_right_viewport_h = pane_h;
-                let x_changed = (off.x - self.diff_left_scroll_x).abs() >= 0.5;
-                let y_changed = (off.y - self.diff_left_scroll_y).abs() >= 0.5;
-                if !x_changed && !y_changed {
-                    return Task::none();
+                self.diff_left_viewport_h = vp.bounds().height.max(1.0);
+                if (off.x - self.diff_left_scroll_x).abs() >= 0.5 {
+                    self.diff_left_scroll_x = off.x;
                 }
-                self.diff_left_scroll_x = off.x;
-                self.diff_left_scroll_y = off.y;
-
-                let target_right_x = off.x.max(0.0);
-                let target_right_y = if y_changed {
-                    let layout = &self.diff_cache.layout;
-                    let raw_right_y = map_scroll_y(off.y, &layout.anchors, true);
-                    let max_right_y = ((layout.total_right_h + 10.0) - pane_h).max(0.0);
-                    raw_right_y.clamp(0.0, max_right_y)
-                } else {
-                    self.diff_right_scroll_y
-                };
-
-                if (target_right_x - self.diff_right_scroll_x).abs() < 0.5
-                    && (target_right_y - self.diff_right_scroll_y).abs() < 0.5
-                {
-                    return Task::none();
+                if (off.y - self.diff_left_scroll_y).abs() >= 0.5 {
+                    self.diff_left_scroll_y = off.y;
                 }
-                self.diff_right_scroll_x = target_right_x;
-                self.diff_right_scroll_y = target_right_y;
-                scrollable::scroll_to(
-                    self.diff_right_scroll_id.clone(),
-                    scrollable::AbsoluteOffset {
-                        x: target_right_x,
-                        y: target_right_y,
-                    },
-                )
-            }
-            Message::DiffRightScrolled(vp) => {
-                let off = vp.absolute_offset();
-                let pane_h = vp.bounds().height.max(1.0);
-                self.diff_left_viewport_h = pane_h;
-                self.diff_right_viewport_h = pane_h;
-                let x_changed = (off.x - self.diff_right_scroll_x).abs() >= 0.5;
-                let y_changed = (off.y - self.diff_right_scroll_y).abs() >= 0.5;
-                if !x_changed && !y_changed {
-                    return Task::none();
-                }
-                self.diff_right_scroll_x = off.x;
-                self.diff_right_scroll_y = off.y;
-
-                let target_left_x = off.x.max(0.0);
-                let target_left_y = if y_changed {
-                    let layout = &self.diff_cache.layout;
-                    let raw_left_y = map_scroll_y(off.y, &layout.anchors, false);
-                    let max_left_y = ((layout.total_left_h + 10.0) - pane_h).max(0.0);
-                    raw_left_y.clamp(0.0, max_left_y)
-                } else {
-                    self.diff_left_scroll_y
-                };
-
-                if (target_left_x - self.diff_left_scroll_x).abs() < 0.5
-                    && (target_left_y - self.diff_left_scroll_y).abs() < 0.5
-                {
-                    return Task::none();
-                }
-                self.diff_left_scroll_x = target_left_x;
-                self.diff_left_scroll_y = target_left_y;
-                scrollable::scroll_to(
-                    self.diff_left_scroll_id.clone(),
-                    scrollable::AbsoluteOffset {
-                        x: target_left_x,
-                        y: target_left_y,
-                    },
-                )
+                Task::none()
             }
             Message::DiffUnifiedScrolled(vp) => {
                 let off = vp.absolute_offset();
@@ -1297,29 +1224,18 @@ impl GitFleetApp {
                 self.diff_active_change = next_idx;
                 let span = self.diff_cache.layout.connectors[next_idx];
                 let margin = 48.0;
-                let ly = (span.left_top - margin).max(0.0);
-                let ry = (span.right_top - margin).max(0.0);
+                let sy = (span.split_top - margin).max(0.0);
                 let uy = (span.unified_top - margin).max(0.0);
-                self.diff_left_scroll_y = ly;
-                self.diff_right_scroll_y = ry;
+                self.diff_left_scroll_y = sy;
                 self.diff_unified_scroll_y = uy;
                 match self.bottom_mode {
-                    BottomViewMode::SideBySideDiff => Task::batch([
-                        scrollable::scroll_to(
-                            self.diff_left_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: self.diff_left_scroll_x,
-                                y: ly,
-                            },
-                        ),
-                        scrollable::scroll_to(
-                            self.diff_right_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: self.diff_right_scroll_x,
-                                y: ry,
-                            },
-                        ),
-                    ]),
+                    BottomViewMode::SideBySideDiff => scrollable::scroll_to(
+                        self.diff_left_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: self.diff_left_scroll_x,
+                            y: sy,
+                        },
+                    ),
                     BottomViewMode::UnifiedDiff => scrollable::scroll_to(
                         self.diff_unified_scroll_id.clone(),
                         scrollable::AbsoluteOffset { x: 0.0, y: uy },
@@ -1456,16 +1372,12 @@ impl GitFleetApp {
                             .unwrap_or(DiffSelectionSide::Right)
                     };
                     let count = diff_row_count(&self.diff_parsed, &self.diff_cache.layout, side);
-                    if count > 0 {
-                        let last_row = count - 1;
-                        let last_col = diff_line_text_at(
-                            &self.diff_parsed,
-                            &self.diff_cache.layout,
-                            side,
-                            last_row,
-                        )
-                        .map(|l| l.chars().count())
-                        .unwrap_or(0);
+                    if count > 0
+                        && let Some((last_row, last_col)) = (0..count).rev().find_map(|r| {
+                            diff_line_text_at(&self.diff_parsed, &self.diff_cache.layout, side, r)
+                                .map(|l| (r, l.chars().count()))
+                        })
+                    {
                         self.diff_selection = Some(DiffTextSelection {
                             side,
                             anchor: DiffTextPos { row: 0, col: 0 },
@@ -1559,10 +1471,8 @@ impl GitFleetApp {
                 self.diff_expanded_gaps.clear();
                 self.diff_selection = None;
                 self.diff_left_scroll_y = 0.0;
-                self.diff_right_scroll_y = 0.0;
                 self.diff_unified_scroll_y = 0.0;
                 self.diff_left_scroll_x = 0.0;
-                self.diff_right_scroll_x = 0.0;
                 self.diff_active_change = 0;
                 match res {
                     Ok((parsed, cache)) => {
@@ -1589,10 +1499,6 @@ impl GitFleetApp {
                 Task::batch([
                     scrollable::scroll_to(
                         self.diff_left_scroll_id.clone(),
-                        scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
-                    ),
-                    scrollable::scroll_to(
-                        self.diff_right_scroll_id.clone(),
                         scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
                     ),
                     scrollable::scroll_to(

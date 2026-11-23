@@ -1,7 +1,7 @@
 //! Character-accurate selection geometry, double-click word bounds, and clean
 //! clipboard text extraction for Unified, Side-by-Side, and Raw diff views.
 
-use super::layout::{DiffLayout, SideRow, UnifiedRow};
+use super::layout::{DiffLayout, SplitRow, UnifiedRow};
 use crate::app::{DiffSelectionSide, DiffTextSelection};
 use crate::theme::{self, type_scale};
 use gitfleet_git::ParsedDiff;
@@ -173,12 +173,16 @@ pub(crate) fn diff_line_text_at(
     row_idx: usize,
 ) -> Option<String> {
     match side {
-        DiffSelectionSide::Left => match layout.left_rows.get(row_idx)? {
-            SideRow::Code { text, .. } => Some(text.clone()),
+        DiffSelectionSide::Left => match layout.split_rows.get(row_idx)? {
+            SplitRow::PairedCode {
+                left: Some(cell), ..
+            } => Some(cell.text.clone()),
             _ => None,
         },
-        DiffSelectionSide::Right => match layout.right_rows.get(row_idx)? {
-            SideRow::Code { text, .. } => Some(text.clone()),
+        DiffSelectionSide::Right => match layout.split_rows.get(row_idx)? {
+            SplitRow::PairedCode {
+                right: Some(cell), ..
+            } => Some(cell.text.clone()),
             _ => None,
         },
         DiffSelectionSide::Unified => match layout.unified_rows.get(row_idx)? {
@@ -199,8 +203,7 @@ pub(crate) fn diff_row_count(
     side: DiffSelectionSide,
 ) -> usize {
     match side {
-        DiffSelectionSide::Left => layout.left_rows.len(),
-        DiffSelectionSide::Right => layout.right_rows.len(),
+        DiffSelectionSide::Left | DiffSelectionSide::Right => layout.split_rows.len(),
         DiffSelectionSide::Unified => layout.unified_rows.len(),
         DiffSelectionSide::Raw => parsed.raw.lines().take(2000).count(),
     }

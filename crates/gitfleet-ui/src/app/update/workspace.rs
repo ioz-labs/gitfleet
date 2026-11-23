@@ -1526,7 +1526,6 @@ impl GitFleetApp {
                     snapshot,
                 });
                 self.show_clone_modal = true;
-                self.busy_label = Some(format!("Cloning '{folder}'…"));
 
                 let opts = gitfleet_git::CloneOptions {
                     url,
@@ -1555,21 +1554,6 @@ impl GitFleetApp {
             Message::CloneProgressTick => {
                 if let Some(active) = &mut self.active_clone {
                     active.snapshot = active.tracker.snapshot();
-                    self.busy_label = Some(if active.snapshot.is_cancelled {
-                        format!("Cancelling clone '{}'…", active.folder_name)
-                    } else if let Some(pct) = active.snapshot.stage_percent {
-                        format!(
-                            "Cloning '{}' — {} ({pct}%)",
-                            active.folder_name,
-                            active.snapshot.phase.short_label()
-                        )
-                    } else {
-                        format!(
-                            "Cloning '{}' — {}",
-                            active.folder_name,
-                            active.snapshot.phase.label()
-                        )
-                    });
                 }
                 Task::none()
             }
@@ -1577,7 +1561,6 @@ impl GitFleetApp {
                 if let Some(active) = &mut self.active_clone {
                     active.tracker.cancel();
                     active.snapshot = active.tracker.snapshot();
-                    self.busy_label = Some(format!("Cancelling clone '{}'…", active.folder_name));
                 }
                 Task::none()
             }
@@ -1591,7 +1574,6 @@ impl GitFleetApp {
                     .map(|a| a.folder_name.clone())
                     .unwrap_or_default();
                 self.active_clone = None;
-                self.busy_label = None;
                 match result {
                     Ok(gitfleet_git::CloneOutcome::Completed(dest)) => {
                         self.clone_modal.url_input.clear();

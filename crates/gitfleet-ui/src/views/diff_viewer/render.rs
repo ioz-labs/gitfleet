@@ -1,14 +1,15 @@
 //! Virtualized Unified Diff, Side-by-Side Diff, and Rich File Preview renderers
 //! shared between the Host Diff Panel and GitFleet Studio.
 
-use super::layout::{DiffLayoutCache, SideRow, UnifiedRow, visible_row_range};
-use super::selection::row_selection_range;
+use super::layout::{DiffLayoutCache, SplitCodeCell, SplitRow, UnifiedRow, visible_row_range};
+use super::selection::{diff_code_char_width, row_selection_range};
 use super::widgets::{
-    DiffConnectorCanvas, DiffOverviewBar, DiffRowSelConfig, change_colors, diff_code_row_box,
-    hidden_gap_bar, render_highlighted_code,
+    DiffOverviewBar, DiffRowSelConfig, SplitSideVisual, change_colors, diff_code_row_box,
+    hidden_gap_bar, render_highlighted_code, split_diff_scroll, split_paired_code_row,
+    sticky_x_row,
 };
 use super::{
-    CONNECTOR_W, DIFF_LINE_H, DIFF_OVERSCAN_PX, DIFF_SEP_H, LINE_NUM_W, OVERVIEW_BAR_W,
+    DIFF_HIDDEN_H, DIFF_LINE_H, DIFF_OVERSCAN_PX, DIFF_SEP_H, LINE_NUM_W, OVERVIEW_BAR_W,
     TextDiffRenderCtx,
 };
 use crate::app::{DiffSelectionSide, DiffTextSelection, Message, PendingConfirm};
@@ -21,120 +22,48 @@ use gitfleet_git::DiffChangeKind;
 use iced::advanced::text as adv_text;
 use iced::widget::canvas::Canvas;
 use iced::widget::{Space, button, column, container, row, text, text_editor};
-use iced::{Alignment, Color, Element, Length, Padding, alignment};
+use iced::{Alignment, Color, Element, Length, alignment};
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 
-fn render_side_row<'a>(
-    item: &SideRow,
+fn build_split_side_visual<'a>(
+    cell: &SplitCodeCell,
     syntax_spans: &[(Range<usize>, TokenFormat)],
     side: DiffSelectionSide,
     row_idx: usize,
     selection: Option<DiffTextSelection>,
     p: Palette,
-) -> Element<'a, Message> {
-    match item {
-        SideRow::Code {
-            line_no,
-            text: code,
-            spans,
-            kind,
-            is_first,
-            is_last,
-            top_seam,
-            bottom_seam,
-        } => {
-            let (bg, border_c, fg) = match kind {
-                Some(k) => {
-                    let (b, a, t) = change_colors(*k, p);
-                    (b, Some(a), t)
-                }
-                None => (Color::TRANSPARENT, None, p.text_secondary),
-            };
-            let top_border = if *is_first { border_c } else { None };
-            let bottom_border = if *is_last { border_c } else { None };
-            let top_seam_c = top_seam.map(|k| change_colors(k, p).1);
-            let bot_seam_c = bottom_seam.map(|k| change_colors(k, p).1);
-
-            let ln_str = line_no.map(|n| n.to_string()).unwrap_or_default();
-            let gutter = container(
-                text(ln_str)
-                    .size(type_scale::CAPTION)
-                    .font(theme::CODE_FONT)
-                    .color(p.text_muted)
-                    .wrapping(text::Wrapping::None),
-            )
-            .width(Length::Fixed(LINE_NUM_W))
-            .height(Length::Fixed(DIFF_LINE_H))
-            .padding([0, 6])
-            .align_x(alignment::Horizontal::Right)
-            .align_y(alignment::Vertical::Center);
-
-            let code_cell = container(render_highlighted_code(
-                code,
-                spans,
-                syntax_spans,
-                fg,
-                border_c,
-            ))
-            .width(Length::Fill)
-            .height(Length::Fixed(DIFF_LINE_H))
-            .padding(Padding {
-                top: 0.0,
-                right: 8.0,
-                bottom: 0.0,
-                left: 8.0,
-            })
-            .align_y(alignment::Vertical::Center);
-
-            let char_len = code.chars().count();
-            let sel_cfg = DiffRowSelConfig {
-                side,
-                row_idx,
-                code_start_x: LINE_NUM_W + 8.0,
-                line_text: code.clone(),
-                sel_range: row_selection_range(selection, side, row_idx, char_len),
-                is_dragging_same_side: selection.is_some_and(|s| s.dragging && s.side == side),
-                sel_bg: Color {
-                    a: 0.42,
-                    ..p.accent_primary
-                },
-                sel_overlay: Color {
-                    a: 0.16,
-                    ..p.accent_hover
-                },
-            };
-
-            diff_code_row_box(
-                bg,
-                top_border,
-                bottom_border,
-                top_seam_c,
-                bot_seam_c,
-                LINE_NUM_W,
-                p.border_subtle,
-                sel_cfg,
-                row![gutter, code_cell].align_y(Alignment::Center),
-            )
+) -> SplitSideVisual<'a> {
+    let (bg, border_c, fg) = match cell.kind {
+        Some(k) => {
+            let (b, a, t) = change_colors(k, p);
+            (b, Some(a), t)
         }
-        SideRow::Hidden {
-            gap_id,
-            hidden_count,
-            can_expand_top,
-            can_expand_bottom,
-        } => hidden_gap_bar(*gap_id, *hidden_count, *can_expand_top, *can_expand_bottom, p),
-        SideRow::Separator(hdr) => container(
-            text(theme::sanitize_code_line(hdr))
-                .size(type_scale::CAPTION)
-                .font(theme::CODE_FONT)
-                .color(p.accent_fg)
-                .wrapping(text::Wrapping::None),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(DIFF_SEP_H))
-        .padding([0, 8])
-        .align_y(alignment::Vertical::Center)
-        .style(theme::diff_line_box(p.fill_selected, p.accent_fg))
-        .into(),
+        None => (Color::TRANSPARENT, None, p.text_secondary),
+    };
+    let top_border = if cell.is_first { border_c } else { None };
+    let bottom_border = if cell.is_last { border_c } else { None };
+    let code_elem = container(render_highlighted_code(
+        &cell.text,
+        &cell.spans,
+        syntax_spans,
+        fg,
+        border_c,
+    ))
+    .height(Length::Fixed(DIFF_LINE_H))
+    .align_y(alignment::Vertical::Center)
+    .into();
+
+    let char_len = cell.text.chars().count();
+    SplitSideVisual {
+        line_no: cell.line_no,
+        line_text: cell.text.clone(),
+        bg,
+        top_border,
+        bottom_border,
+        sel_range: row_selection_range(selection, side, row_idx, char_len),
+        code: code_elem,
     }
 }
 
@@ -441,6 +370,7 @@ pub(crate) fn render_unified_diff_with<'a>(
                     *hidden_count,
                     *can_expand_top,
                     *can_expand_bottom,
+                    false,
                     p,
                 ));
             }
@@ -485,116 +415,139 @@ pub(crate) fn render_side_by_side_diff_with<'a>(
 
     let cache = ctx.cache;
     let layout = &cache.layout;
-    let left_vh = ctx.left_viewport_h.max(600.0);
-    let right_vh = ctx.right_viewport_h.max(600.0);
+    let viewport_h = ctx.left_viewport_h.max(600.0);
+    let viewport_w = Rc::new(Cell::new(800.0));
 
-    let (left_range, left_top_spacer, left_bot_spacer) = visible_row_range(
-        &cache.left_y_offsets,
+    let (vis_range, top_spacer, bot_spacer) = visible_row_range(
+        &cache.split_y_offsets,
         ctx.left_scroll_y,
-        left_vh,
+        viewport_h,
         DIFF_OVERSCAN_PX,
     );
-    let mut left_col = column![Space::with_height(Length::Fixed(left_top_spacer))].spacing(0);
-    for idx in left_range {
-        let item = &layout.left_rows[idx];
-        let syntax_spans = cache
-            .left_syntax
-            .get(idx)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        left_col = left_col.push(render_side_row(
-            item,
-            syntax_spans,
-            DiffSelectionSide::Left,
-            idx,
-            ctx.selection,
-            p,
-        ));
+
+    let dragging_side = ctx
+        .selection
+        .filter(|s| {
+            s.dragging && matches!(s.side, DiffSelectionSide::Left | DiffSelectionSide::Right)
+        })
+        .map(|s| s.side);
+
+    let mut split_col = column![Space::with_height(Length::Fixed(top_spacer))].spacing(0);
+    for idx in vis_range {
+        let item = &layout.split_rows[idx];
+        match item {
+            SplitRow::PairedCode {
+                left,
+                right,
+                block_is_first,
+                block_is_last,
+            } => {
+                let left_syn = cache
+                    .left_syntax
+                    .get(idx)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let right_syn = cache
+                    .right_syntax
+                    .get(idx)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+
+                let left_vis = left.as_ref().map(|cell| {
+                    build_split_side_visual(
+                        cell,
+                        left_syn,
+                        DiffSelectionSide::Left,
+                        idx,
+                        ctx.selection,
+                        p,
+                    )
+                });
+                let right_vis = right.as_ref().map(|cell| {
+                    build_split_side_visual(
+                        cell,
+                        right_syn,
+                        DiffSelectionSide::Right,
+                        idx,
+                        ctx.selection,
+                        p,
+                    )
+                });
+
+                split_col = split_col.push(split_paired_code_row(
+                    idx,
+                    left_vis,
+                    right_vis,
+                    *block_is_first,
+                    *block_is_last,
+                    dragging_side,
+                    Rc::clone(&viewport_w),
+                    p,
+                ));
+            }
+            SplitRow::Hidden {
+                gap_id,
+                hidden_count,
+                can_expand_top,
+                can_expand_bottom,
+            } => {
+                split_col = split_col.push(sticky_x_row(
+                    DIFF_HIDDEN_H,
+                    Rc::clone(&viewport_w),
+                    hidden_gap_bar(
+                        *gap_id,
+                        *hidden_count,
+                        *can_expand_top,
+                        *can_expand_bottom,
+                        true,
+                        p,
+                    ),
+                ));
+            }
+            SplitRow::Separator(hdr) => {
+                split_col = split_col.push(sticky_x_row(
+                    DIFF_SEP_H,
+                    Rc::clone(&viewport_w),
+                    container(
+                        text(theme::sanitize_code_line(hdr))
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.accent_fg)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fixed(DIFF_SEP_H))
+                    .padding([0, 8])
+                    .align_y(alignment::Vertical::Center)
+                    .style(theme::diff_line_box(p.fill_selected, p.accent_fg)),
+                ));
+            }
+        }
     }
-    left_col = left_col.push(Space::with_height(Length::Fixed(left_bot_spacer)));
+    split_col = split_col.push(Space::with_height(Length::Fixed(bot_spacer)));
 
-    let (right_range, right_top_spacer, right_bot_spacer) = visible_row_range(
-        &cache.right_y_offsets,
-        ctx.right_scroll_y,
-        right_vh,
-        DIFF_OVERSCAN_PX,
-    );
-    let mut right_col = column![Space::with_height(Length::Fixed(right_top_spacer))].spacing(0);
-    for idx in right_range {
-        let item = &layout.right_rows[idx];
-        let syntax_spans = cache
-            .right_syntax
-            .get(idx)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        right_col = right_col.push(render_side_row(
-            item,
-            syntax_spans,
-            DiffSelectionSide::Right,
-            idx,
-            ctx.selection,
-            p,
-        ));
-    }
-    right_col = right_col.push(Space::with_height(Length::Fixed(right_bot_spacer)));
+    let char_w = diff_code_char_width().max(7.8);
+    let min_code_w = (layout.max_side_chars as f32 * char_w + 32.0).clamp(160.0, 4800.0);
 
-    let left_min_w =
-        (layout.max_left_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
-    let right_min_w =
-        (layout.max_right_chars as f32 * 8.0 + LINE_NUM_W + 30.0).clamp(240.0, 2600.0);
-    let shared_min_w = left_min_w.max(right_min_w);
-
-    let left_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
-        spans: layout.connectors.clone(),
-        is_left: true,
-        total_h: layout.total_left_h,
-        p,
-    })
-    .width(Length::Fixed(OVERVIEW_BAR_W))
-    .height(Length::Fill)
-    .into();
-
-    let right_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
-        spans: layout.connectors.clone(),
-        is_left: false,
-        total_h: layout.total_right_h,
-        p,
-    })
-    .width(Length::Fixed(OVERVIEW_BAR_W))
-    .height(Length::Fill)
-    .into();
-
-    let left_pane = container(theme::responsive_hscroll_synced(
-        left_col,
-        shared_min_w,
+    let split_pane = split_diff_scroll(
+        split_col,
+        min_code_w,
+        viewport_w,
         ctx.left_scroll_id,
         Message::DiffLeftScrolled,
         p,
-    ))
-    .width(Length::FillPortion(1))
-    .height(Length::Fill);
+    );
 
-    let connector: Element<'_, Message> = Canvas::new(DiffConnectorCanvas {
+    let overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
         spans: layout.connectors.clone(),
-        left_scroll_y: ctx.left_scroll_y,
-        right_scroll_y: ctx.right_scroll_y,
+        total_h: layout.total_split_h,
         p,
     })
-    .width(Length::Fixed(CONNECTOR_W))
+    .width(Length::Fixed(OVERVIEW_BAR_W))
     .height(Length::Fill)
     .into();
 
-    let right_pane = container(theme::responsive_hscroll_synced(
-        right_col,
-        shared_min_w,
-        ctx.right_scroll_id,
-        Message::DiffRightScrolled,
-        p,
-    ))
-    .width(Length::FillPortion(1))
-    .height(Length::Fill);
-
-    row![left_overview, left_pane, connector, right_pane, right_overview]
+    row![split_pane, overview]
         .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill)

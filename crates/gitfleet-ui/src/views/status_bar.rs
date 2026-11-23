@@ -282,6 +282,45 @@ impl GitFleetApp {
             );
         }
 
+        // Active background/modal Git clone indicator (isolated from `busy_label` so watcher refreshes never flicker it)
+        if let Some(active) = &self.active_clone {
+            let is_cancelling = active.snapshot.is_cancelled;
+            let fg = if is_cancelling {
+                p.warning_fg
+            } else {
+                p.accent_fg
+            };
+            let pill_label = if is_cancelling {
+                format!("Cancelling {}", truncate_chars(&active.folder_name, 16))
+            } else {
+                format!(
+                    "Cloning {} {:>2}%",
+                    truncate_chars(&active.folder_name, 16),
+                    active.snapshot.overall_percent
+                )
+            };
+            right = right.push(tip(
+                button(
+                    row![
+                        icons::cloud_download(11.0, fg),
+                        text(pill_label)
+                            .size(type_scale::BADGE)
+                            .font(theme::CODE_FONT)
+                            .color(fg)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([2, 8])
+                .style(theme::filter_pill_btn(p, true))
+                .on_press(Message::OpenCloneModal(None)),
+                "Click to view live Git clone progress or cancel",
+                tooltip::Position::Top,
+                p,
+            ));
+        }
+
         // Subtle software-update indicator (visible ONLY when a new non-skipped release is ready or downloading)
         let skipped_ver = self.service.settings().skipped_update_version;
         match &self.update_status {

@@ -1,5 +1,5 @@
 //! Diff layout builder, cached syntax/offset table (`DiffLayoutCache`),
-//! viewport virtualization slicing, and piecewise scroll synchronization.
+//! and O(log N) viewport virtualization slicing for Unified and Side-by-Side views.
 
 use super::inline_diff::{InlineSpan, compute_inline_diff, full_changed_spans};
 use super::{DIFF_CONTEXT_LINES, DIFF_HIDDEN_H, DIFF_LINE_H, DIFF_SEP_H};
@@ -12,16 +12,22 @@ use std::ops::Range;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub(crate) enum SideRow {
-    Code {
-        line_no: Option<usize>,
-        text: String,
-        spans: Vec<InlineSpan>,
-        kind: Option<DiffChangeKind>,
-        is_first: bool,
-        is_last: bool,
-        top_seam: Option<DiffChangeKind>,
-        bottom_seam: Option<DiffChangeKind>,
+pub(crate) struct SplitCodeCell {
+    pub(crate) line_no: Option<usize>,
+    pub(crate) text: String,
+    pub(crate) spans: Vec<InlineSpan>,
+    pub(crate) kind: Option<DiffChangeKind>,
+    pub(crate) is_first: bool,
+    pub(crate) is_last: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum SplitRow {
+    PairedCode {
+        left: Option<SplitCodeCell>,
+        right: Option<SplitCodeCell>,
+        block_is_first: bool,
+        block_is_last: bool,
     },
     Hidden {
         gap_id: usize,
@@ -32,11 +38,11 @@ pub(crate) enum SideRow {
     Separator(String),
 }
 
-impl SideRow {
+impl SplitRow {
     #[inline]
     pub(crate) fn height(&self) -> f32 {
         match self {
-            Self::Code { .. } => DIFF_LINE_H,
+            Self::PairedCode { .. } => DIFF_LINE_H,
             Self::Hidden { .. } => DIFF_HIDDEN_H,
             Self::Separator(_) => DIFF_SEP_H,
         }
@@ -81,25 +87,19 @@ impl UnifiedRow {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConnectorSpan {
     pub(crate) kind: DiffChangeKind,
-    pub(crate) left_top: f32,
-    pub(crate) left_bot: f32,
-    pub(crate) right_top: f32,
-    pub(crate) right_bot: f32,
+    pub(crate) split_top: f32,
+    pub(crate) split_bot: f32,
     pub(crate) unified_top: f32,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct DiffLayout {
-    pub(crate) left_rows: Vec<SideRow>,
-    pub(crate) right_rows: Vec<SideRow>,
+    pub(crate) split_rows: Vec<SplitRow>,
     pub(crate) unified_rows: Vec<UnifiedRow>,
     pub(crate) connectors: Vec<ConnectorSpan>,
-    pub(crate) anchors: Vec<(f32, f32)>,
-    pub(crate) total_left_h: f32,
-    pub(crate) total_right_h: f32,
+    pub(crate) total_split_h: f32,
     pub(crate) total_unified_h: f32,
-    pub(crate) max_left_chars: usize,
-    pub(crate) max_right_chars: usize,
+    pub(crate) max_side_chars: usize,
     pub(crate) max_unified_chars: usize,
 }
 
@@ -110,8 +110,7 @@ pub(crate) type SyntaxSpans = Vec<(Range<usize>, TokenFormat)>;
 #[derive(Debug)]
 pub(crate) struct DiffLayoutCache {
     pub(crate) layout: DiffLayout,
-    pub(crate) left_y_offsets: Vec<f32>,
-    pub(crate) right_y_offsets: Vec<f32>,
+    pub(crate) split_y_offsets: Vec<f32>,
     pub(crate) unified_y_offsets: Vec<f32>,
     pub(crate) left_syntax: Vec<SyntaxSpans>,
     pub(crate) right_syntax: Vec<SyntaxSpans>,
@@ -127,8 +126,7 @@ impl Default for DiffLayoutCache {
     fn default() -> Self {
         Self {
             layout: DiffLayout::default(),
-            left_y_offsets: vec![0.0],
-            right_y_offsets: vec![0.0],
+            split_y_offsets: vec![0.0],
             unified_y_offsets: vec![0.0],
             left_syntax: Vec::new(),
             right_syntax: Vec::new(),
@@ -184,35 +182,31 @@ pub(crate) fn build_diff_layout_cache(
 
     let layout = build_diff_layout(parsed, compact, expanded_gaps);
 
-    let mut left_y_offsets = Vec::with_capacity(layout.left_rows.len() + 1);
-    let mut left_syntax = Vec::with_capacity(layout.left_rows.len());
+    let mut split_y_offsets = Vec::with_capacity(layout.split_rows.len() + 1);
+    let mut left_syntax = Vec::with_capacity(layout.split_rows.len());
+    let mut right_syntax = Vec::with_capacity(layout.split_rows.len());
     let mut left_hl = DiffSyntaxHighlighter::new(language, theme_mode);
-    let mut y = 0.0_f32;
-    left_y_offsets.push(0.0);
-    for row in &layout.left_rows {
-        y += row.height();
-        left_y_offsets.push(y);
-        match row {
-            SideRow::Code { text, .. } => left_syntax.push(left_hl.highlight_line(text)),
-            SideRow::Hidden { .. } | SideRow::Separator(_) => {
-                left_hl.reset();
-                left_syntax.push(Vec::new());
-            }
-        }
-    }
-
-    let mut right_y_offsets = Vec::with_capacity(layout.right_rows.len() + 1);
-    let mut right_syntax = Vec::with_capacity(layout.right_rows.len());
     let mut right_hl = DiffSyntaxHighlighter::new(language, theme_mode);
-    y = 0.0_f32;
-    right_y_offsets.push(0.0);
-    for row in &layout.right_rows {
+    let mut y = 0.0_f32;
+    split_y_offsets.push(0.0);
+    for row in &layout.split_rows {
         y += row.height();
-        right_y_offsets.push(y);
+        split_y_offsets.push(y);
         match row {
-            SideRow::Code { text, .. } => right_syntax.push(right_hl.highlight_line(text)),
-            SideRow::Hidden { .. } | SideRow::Separator(_) => {
+            SplitRow::PairedCode { left, right, .. } => {
+                match left {
+                    Some(cell) => left_syntax.push(left_hl.highlight_line(&cell.text)),
+                    None => left_syntax.push(Vec::new()),
+                }
+                match right {
+                    Some(cell) => right_syntax.push(right_hl.highlight_line(&cell.text)),
+                    None => right_syntax.push(Vec::new()),
+                }
+            }
+            SplitRow::Hidden { .. } | SplitRow::Separator(_) => {
+                left_hl.reset();
                 right_hl.reset();
+                left_syntax.push(Vec::new());
                 right_syntax.push(Vec::new());
             }
         }
@@ -239,8 +233,7 @@ pub(crate) fn build_diff_layout_cache(
 
     Arc::new(DiffLayoutCache {
         layout,
-        left_y_offsets,
-        right_y_offsets,
+        split_y_offsets,
         unified_y_offsets,
         left_syntax,
         right_syntax,
@@ -281,11 +274,9 @@ pub(crate) fn visible_row_range(
     let view_top = (scroll_y - overscan_px).max(0.0);
     let view_bot = (scroll_y + viewport_h.max(1.0) + overscan_px).min(total_h);
 
-    // First row whose bottom edge (`y_offsets[i + 1]`) is strictly greater than `view_top`.
     let start = y_offsets[1..]
         .partition_point(|&row_bot| row_bot <= view_top)
         .min(row_count);
-    // First row whose top edge (`y_offsets[i]`) is at or past `view_bot`.
     let end = y_offsets[..row_count]
         .partition_point(|&row_top| row_top < view_bot)
         .clamp(start, row_count);
@@ -295,48 +286,22 @@ pub(crate) fn visible_row_range(
     (start..end, top_spacer, bottom_spacer)
 }
 
-fn push_anchor(anchors: &mut Vec<(f32, f32)>, ly: f32, ry: f32) {
-    if let Some(&(last_l, last_r)) = anchors.last()
-        && (last_l - ly).abs() < 0.01
-        && (last_r - ry).abs() < 0.01
-    {
-        return;
-    }
-    anchors.push((ly, ry));
-}
-
-fn mark_side_seam(
-    rows: &mut [SideRow],
-    pending_top: &mut Option<DiffChangeKind>,
-    kind: DiffChangeKind,
-) {
-    if let Some(SideRow::Code { bottom_seam, .. }) = rows.last_mut() {
-        *bottom_seam = Some(kind);
-    } else {
-        *pending_top = Some(kind);
-    }
-}
-
-/// Pure layout generator shared by Side-by-Side view, Unified view, vertical scroll sync,
-/// Next/Prev change jump buttons, and unit tests.
+/// Pure layout generator shared by Side-by-Side view, Unified view, Next/Prev change jump buttons,
+/// and unit tests. Pairs Left and Right rows onto a single unified vertical grid with shared
+/// full-width `Hidden` context expanders.
 pub(crate) fn build_diff_layout(
     parsed: &ParsedDiff,
     compact: bool,
     expanded_gaps: &HashMap<usize, DiffGapExpansion>,
 ) -> DiffLayout {
     let mut out = DiffLayout {
-        anchors: vec![(0.0, 0.0)],
-        max_left_chars: 32,
-        max_right_chars: 32,
+        max_side_chars: 32,
         max_unified_chars: 40,
         ..Default::default()
     };
 
-    let mut left_y = 0.0_f32;
-    let mut right_y = 0.0_f32;
+    let mut split_y = 0.0_f32;
     let mut unified_y = 0.0_f32;
-    let mut pending_left_top: Option<DiffChangeKind> = None;
-    let mut pending_right_top: Option<DiffChangeKind> = None;
     let mut gap_id = 0usize;
 
     let blocks = &parsed.blocks;
@@ -367,7 +332,6 @@ pub(crate) fn build_diff_layout(
                     } else {
                         exp.bottom_shown
                     };
-                    // Never collapse 0 or 1 line into a hidden bar
                     if kt + kb + 1 >= lines.len() {
                         (lines.len(), 0usize, 0usize)
                     } else {
@@ -378,29 +342,28 @@ pub(crate) fn build_diff_layout(
                 for ctx in &lines[..keep_top] {
                     let clean = theme::sanitize_code_line(&ctx.text);
                     let len = clean.chars().count();
-                    out.max_left_chars = out.max_left_chars.max(len);
-                    out.max_right_chars = out.max_right_chars.max(len);
+                    out.max_side_chars = out.max_side_chars.max(len);
                     out.max_unified_chars = out.max_unified_chars.max(len);
 
-                    out.left_rows.push(SideRow::Code {
-                        line_no: Some(ctx.old_line),
-                        text: clean.clone(),
-                        spans: Vec::new(),
-                        kind: None,
-                        is_first: false,
-                        is_last: false,
-                        top_seam: pending_left_top.take(),
-                        bottom_seam: None,
-                    });
-                    out.right_rows.push(SideRow::Code {
-                        line_no: Some(ctx.new_line),
-                        text: clean.clone(),
-                        spans: Vec::new(),
-                        kind: None,
-                        is_first: false,
-                        is_last: false,
-                        top_seam: pending_right_top.take(),
-                        bottom_seam: None,
+                    out.split_rows.push(SplitRow::PairedCode {
+                        left: Some(SplitCodeCell {
+                            line_no: Some(ctx.old_line),
+                            text: clean.clone(),
+                            spans: Vec::new(),
+                            kind: None,
+                            is_first: false,
+                            is_last: false,
+                        }),
+                        right: Some(SplitCodeCell {
+                            line_no: Some(ctx.new_line),
+                            text: clean.clone(),
+                            spans: Vec::new(),
+                            kind: None,
+                            is_first: false,
+                            is_last: false,
+                        }),
+                        block_is_first: false,
+                        block_is_last: false,
                     });
                     out.unified_rows.push(UnifiedRow::Code {
                         old_line: Some(ctx.old_line),
@@ -410,20 +373,12 @@ pub(crate) fn build_diff_layout(
                         spans: Vec::new(),
                         kind: None,
                     });
-                    left_y += DIFF_LINE_H;
-                    right_y += DIFF_LINE_H;
+                    split_y += DIFF_LINE_H;
                     unified_y += DIFF_LINE_H;
                 }
-                push_anchor(&mut out.anchors, left_y, right_y);
 
                 if hidden > 0 {
-                    out.left_rows.push(SideRow::Hidden {
-                        gap_id: cur_gap_id,
-                        hidden_count: hidden,
-                        can_expand_top: has_prev_change,
-                        can_expand_bottom: has_next_change,
-                    });
-                    out.right_rows.push(SideRow::Hidden {
+                    out.split_rows.push(SplitRow::Hidden {
                         gap_id: cur_gap_id,
                         hidden_count: hidden,
                         can_expand_top: has_prev_change,
@@ -435,37 +390,34 @@ pub(crate) fn build_diff_layout(
                         can_expand_top: has_prev_change,
                         can_expand_bottom: has_next_change,
                     });
-                    left_y += DIFF_HIDDEN_H;
-                    right_y += DIFF_HIDDEN_H;
+                    split_y += DIFF_HIDDEN_H;
                     unified_y += DIFF_HIDDEN_H;
-                    push_anchor(&mut out.anchors, left_y, right_y);
 
                     for ctx in &lines[lines.len() - keep_bot..] {
                         let clean = theme::sanitize_code_line(&ctx.text);
                         let len = clean.chars().count();
-                        out.max_left_chars = out.max_left_chars.max(len);
-                        out.max_right_chars = out.max_right_chars.max(len);
+                        out.max_side_chars = out.max_side_chars.max(len);
                         out.max_unified_chars = out.max_unified_chars.max(len);
 
-                        out.left_rows.push(SideRow::Code {
-                            line_no: Some(ctx.old_line),
-                            text: clean.clone(),
-                            spans: Vec::new(),
-                            kind: None,
-                            is_first: false,
-                            is_last: false,
-                            top_seam: pending_left_top.take(),
-                            bottom_seam: None,
-                        });
-                        out.right_rows.push(SideRow::Code {
-                            line_no: Some(ctx.new_line),
-                            text: clean.clone(),
-                            spans: Vec::new(),
-                            kind: None,
-                            is_first: false,
-                            is_last: false,
-                            top_seam: pending_right_top.take(),
-                            bottom_seam: None,
+                        out.split_rows.push(SplitRow::PairedCode {
+                            left: Some(SplitCodeCell {
+                                line_no: Some(ctx.old_line),
+                                text: clean.clone(),
+                                spans: Vec::new(),
+                                kind: None,
+                                is_first: false,
+                                is_last: false,
+                            }),
+                            right: Some(SplitCodeCell {
+                                line_no: Some(ctx.new_line),
+                                text: clean.clone(),
+                                spans: Vec::new(),
+                                kind: None,
+                                is_first: false,
+                                is_last: false,
+                            }),
+                            block_is_first: false,
+                            block_is_last: false,
                         });
                         out.unified_rows.push(UnifiedRow::Code {
                             old_line: Some(ctx.old_line),
@@ -475,16 +427,13 @@ pub(crate) fn build_diff_layout(
                             spans: Vec::new(),
                             kind: None,
                         });
-                        left_y += DIFF_LINE_H;
-                        right_y += DIFF_LINE_H;
+                        split_y += DIFF_LINE_H;
                         unified_y += DIFF_LINE_H;
                     }
-                    push_anchor(&mut out.anchors, left_y, right_y);
                 }
             }
             DiffBlock::Change(cb) => {
-                let left_top = left_y;
-                let right_top = right_y;
+                let split_top = split_y;
                 let unified_top = unified_y;
 
                 out.unified_rows.push(UnifiedRow::HunkHeader {
@@ -505,7 +454,6 @@ pub(crate) fn build_diff_layout(
                     .map(|l| theme::sanitize_code_line(l))
                     .collect();
 
-                // Compute SmartGit-style intra-line highlights for Modified blocks
                 let mut old_spans: Vec<Vec<InlineSpan>> = vec![Vec::new(); old_clean.len()];
                 let mut new_spans: Vec<Vec<InlineSpan>> = vec![Vec::new(); new_clean.len()];
                 if cb.kind == DiffChangeKind::Modified {
@@ -523,158 +471,86 @@ pub(crate) fn build_diff_layout(
                     }
                 }
 
-                if old_clean.is_empty() {
-                    mark_side_seam(&mut out.left_rows, &mut pending_left_top, cb.kind);
-                } else {
-                    let n = old_clean.len();
-                    for (idx, clean) in old_clean.into_iter().enumerate() {
-                        let len = clean.chars().count();
-                        out.max_left_chars = out.max_left_chars.max(len);
-                        out.max_unified_chars = out.max_unified_chars.max(len);
-                        let ln = cb.old_start + idx;
-                        let sp = std::mem::take(&mut old_spans[idx]);
-
-                        out.left_rows.push(SideRow::Code {
-                            line_no: Some(ln),
-                            text: clean.clone(),
-                            spans: sp.clone(),
-                            kind: Some(cb.kind),
-                            is_first: idx == 0,
-                            is_last: idx + 1 == n,
-                            top_seam: pending_left_top.take(),
-                            bottom_seam: None,
-                        });
-                        out.unified_rows.push(UnifiedRow::Code {
-                            old_line: Some(ln),
-                            new_line: None,
-                            sign: '-',
-                            text: clean,
-                            spans: sp,
-                            kind: Some(DiffChangeKind::Removed),
-                        });
-                        left_y += DIFF_LINE_H;
-                        unified_y += DIFF_LINE_H;
-                    }
+                // Unified view: all `-` lines followed by all `+` lines
+                for (idx, clean) in old_clean.iter().enumerate() {
+                    let len = clean.chars().count();
+                    out.max_side_chars = out.max_side_chars.max(len);
+                    out.max_unified_chars = out.max_unified_chars.max(len);
+                    out.unified_rows.push(UnifiedRow::Code {
+                        old_line: Some(cb.old_start + idx),
+                        new_line: None,
+                        sign: '-',
+                        text: clean.clone(),
+                        spans: old_spans[idx].clone(),
+                        kind: Some(DiffChangeKind::Removed),
+                    });
+                    unified_y += DIFF_LINE_H;
+                }
+                for (idx, clean) in new_clean.iter().enumerate() {
+                    let len = clean.chars().count();
+                    out.max_side_chars = out.max_side_chars.max(len);
+                    out.max_unified_chars = out.max_unified_chars.max(len);
+                    out.unified_rows.push(UnifiedRow::Code {
+                        old_line: None,
+                        new_line: Some(cb.new_start + idx),
+                        sign: '+',
+                        text: clean.clone(),
+                        spans: new_spans[idx].clone(),
+                        kind: Some(DiffChangeKind::Added),
+                    });
+                    unified_y += DIFF_LINE_H;
                 }
 
-                if new_clean.is_empty() {
-                    mark_side_seam(&mut out.right_rows, &mut pending_right_top, cb.kind);
-                } else {
-                    let n = new_clean.len();
-                    for (idx, clean) in new_clean.into_iter().enumerate() {
-                        let len = clean.chars().count();
-                        out.max_right_chars = out.max_right_chars.max(len);
-                        out.max_unified_chars = out.max_unified_chars.max(len);
-                        let ln = cb.new_start + idx;
-                        let sp = std::mem::take(&mut new_spans[idx]);
+                // Side-by-Side view: pair Left and Right row-by-row on identical Y coordinates
+                let old_n = old_clean.len();
+                let new_n = new_clean.len();
+                let row_len = old_n.max(new_n);
+                let mut old_iter = old_clean.into_iter().zip(old_spans).enumerate();
+                let mut new_iter = new_clean.into_iter().zip(new_spans).enumerate();
 
-                        out.right_rows.push(SideRow::Code {
-                            line_no: Some(ln),
-                            text: clean.clone(),
-                            spans: sp.clone(),
-                            kind: Some(cb.kind),
-                            is_first: idx == 0,
-                            is_last: idx + 1 == n,
-                            top_seam: pending_right_top.take(),
-                            bottom_seam: None,
-                        });
-                        out.unified_rows.push(UnifiedRow::Code {
-                            old_line: None,
-                            new_line: Some(ln),
-                            sign: '+',
-                            text: clean,
-                            spans: sp,
-                            kind: Some(DiffChangeKind::Added),
-                        });
-                        right_y += DIFF_LINE_H;
-                        unified_y += DIFF_LINE_H;
-                    }
+                for row_i in 0..row_len {
+                    let left = old_iter.next().map(|(idx, (clean, sp))| SplitCodeCell {
+                        line_no: Some(cb.old_start + idx),
+                        text: clean,
+                        spans: sp,
+                        kind: Some(cb.kind),
+                        is_first: idx == 0,
+                        is_last: idx + 1 == old_n,
+                    });
+                    let right = new_iter.next().map(|(idx, (clean, sp))| SplitCodeCell {
+                        line_no: Some(cb.new_start + idx),
+                        text: clean,
+                        spans: sp,
+                        kind: Some(cb.kind),
+                        is_first: idx == 0,
+                        is_last: idx + 1 == new_n,
+                    });
+                    out.split_rows.push(SplitRow::PairedCode {
+                        left,
+                        right,
+                        block_is_first: row_i == 0,
+                        block_is_last: row_i + 1 == row_len,
+                    });
+                    split_y += DIFF_LINE_H;
                 }
 
                 out.connectors.push(ConnectorSpan {
                     kind: cb.kind,
-                    left_top,
-                    left_bot: left_y,
-                    right_top,
-                    right_bot: right_y,
+                    split_top,
+                    split_bot: split_y,
                     unified_top,
                 });
-                push_anchor(&mut out.anchors, left_y, right_y);
             }
             DiffBlock::Separator(hdr) => {
-                out.left_rows.push(SideRow::Separator(hdr.clone()));
-                out.right_rows.push(SideRow::Separator(hdr.clone()));
+                out.split_rows.push(SplitRow::Separator(hdr.clone()));
                 out.unified_rows.push(UnifiedRow::Separator(hdr.clone()));
-                left_y += DIFF_SEP_H;
-                right_y += DIFF_SEP_H;
+                split_y += DIFF_SEP_H;
                 unified_y += DIFF_SEP_H;
-                push_anchor(&mut out.anchors, left_y, right_y);
             }
         }
     }
 
-    // Pure-add or pure-delete file: ensure opposite side still renders a visible marker seam
-    if let Some(seam) = pending_left_top.take() {
-        out.left_rows.push(SideRow::Code {
-            line_no: None,
-            text: String::new(),
-            spans: Vec::new(),
-            kind: None,
-            is_first: false,
-            is_last: false,
-            top_seam: Some(seam),
-            bottom_seam: None,
-        });
-        left_y += DIFF_LINE_H;
-    }
-    if let Some(seam) = pending_right_top.take() {
-        out.right_rows.push(SideRow::Code {
-            line_no: None,
-            text: String::new(),
-            spans: Vec::new(),
-            kind: None,
-            is_first: false,
-            is_last: false,
-            top_seam: Some(seam),
-            bottom_seam: None,
-        });
-        right_y += DIFF_LINE_H;
-    }
-
-    out.total_left_h = left_y;
-    out.total_right_h = right_y;
+    out.total_split_h = split_y;
     out.total_unified_h = unified_y;
     out
-}
-
-/// Piecewise-linear vertical scroll synchronization across `(left_y, right_y)` anchor pairs.
-pub(crate) fn map_scroll_y(y: f32, anchors: &[(f32, f32)], left_to_right: bool) -> f32 {
-    if anchors.is_empty() {
-        return y.max(0.0);
-    }
-    let get = |pair: (f32, f32)| -> (f32, f32) {
-        if left_to_right {
-            (pair.0, pair.1)
-        } else {
-            (pair.1, pair.0)
-        }
-    };
-    let (s0, d0) = get(anchors[0]);
-    if y <= s0 {
-        return d0;
-    }
-    for win in anchors.windows(2) {
-        let (sa, da) = get(win[0]);
-        let (sb, db) = get(win[1]);
-        if y <= sb {
-            let span = sb - sa;
-            if span.abs() < 0.001 {
-                return da;
-            }
-            let t = ((y - sa) / span).clamp(0.0, 1.0);
-            return da + t * (db - da);
-        }
-    }
-    let (s_last, d_last) = get(*anchors.last().unwrap());
-    (d_last + (y - s_last)).max(0.0)
 }

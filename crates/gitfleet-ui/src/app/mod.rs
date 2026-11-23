@@ -132,15 +132,11 @@ pub(crate) struct GitFleetApp {
     pub(crate) diff_compact: bool,
     pub(crate) diff_expanded_gaps: HashMap<usize, DiffGapExpansion>,
     pub(crate) diff_left_scroll_id: scrollable::Id,
-    pub(crate) diff_right_scroll_id: scrollable::Id,
     pub(crate) diff_unified_scroll_id: scrollable::Id,
     pub(crate) diff_left_scroll_y: f32,
-    pub(crate) diff_right_scroll_y: f32,
     pub(crate) diff_unified_scroll_y: f32,
     pub(crate) diff_left_scroll_x: f32,
-    pub(crate) diff_right_scroll_x: f32,
     pub(crate) diff_left_viewport_h: f32,
-    pub(crate) diff_right_viewport_h: f32,
     pub(crate) diff_unified_viewport_h: f32,
     pub(crate) diff_active_change: usize,
     pub(crate) diff_selection: Option<DiffTextSelection>,
@@ -451,15 +447,11 @@ impl GitFleetApp {
             diff_compact: true,
             diff_expanded_gaps: HashMap::new(),
             diff_left_scroll_id: scrollable::Id::unique(),
-            diff_right_scroll_id: scrollable::Id::unique(),
             diff_unified_scroll_id: scrollable::Id::unique(),
             diff_left_scroll_y: 0.0,
-            diff_right_scroll_y: 0.0,
             diff_unified_scroll_y: 0.0,
             diff_left_scroll_x: 0.0,
-            diff_right_scroll_x: 0.0,
             diff_left_viewport_h: 900.0,
-            diff_right_viewport_h: 900.0,
             diff_unified_viewport_h: 900.0,
             diff_active_change: 0,
             diff_selection: None,
@@ -1069,10 +1061,8 @@ impl GitFleetApp {
         self.diff_expanded_gaps.clear();
         self.diff_selection = None;
         self.diff_left_scroll_y = 0.0;
-        self.diff_right_scroll_y = 0.0;
         self.diff_unified_scroll_y = 0.0;
         self.diff_left_scroll_x = 0.0;
-        self.diff_right_scroll_x = 0.0;
         self.diff_active_change = 0;
     }
 

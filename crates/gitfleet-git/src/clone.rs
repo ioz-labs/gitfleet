@@ -235,27 +235,38 @@ impl CloneProgressTracker {
             return;
         };
 
-        if clean.starts_with("Submodule ") || (guard.overall_percent >= 85 && clean.starts_with("Cloning into ")) {
+        if clean.starts_with("Submodule ")
+            || (guard.overall_percent >= 85 && clean.starts_with("Cloning into "))
+        {
             guard.in_submodule = true;
         }
 
+        let prev_phase = guard.phase;
         if let Some(mut next_phase) = parsed.phase {
             if guard.in_submodule && next_phase == ClonePhase::Connecting {
                 next_phase = ClonePhase::Submodules;
             }
-            guard.phase = next_phase;
+            if guard.in_submodule || phase_rank(next_phase) >= phase_rank(guard.phase) {
+                guard.phase = next_phase;
+            }
         } else if guard.in_submodule && guard.phase != ClonePhase::Cancelling {
             guard.phase = ClonePhase::Submodules;
         }
 
         if parsed.phase.is_some() {
-            guard.stage_percent = parsed.percent;
+            let phase_changed = guard.phase != prev_phase;
+            if let Some(pct) = parsed.percent {
+                guard.stage_percent = Some(pct);
+            } else if phase_changed {
+                guard.stage_percent = None;
+            }
             if !parsed.detail.is_empty() {
                 guard.transfer_detail = parsed.detail;
-            } else if parsed.percent.is_none() {
+            } else if phase_changed {
                 guard.transfer_detail.clear();
             }
-            let mapped = compute_overall_percent(guard.phase, guard.stage_percent, guard.in_submodule);
+            let mapped =
+                compute_overall_percent(guard.phase, guard.stage_percent, guard.in_submodule);
             if mapped > guard.overall_percent {
                 guard.overall_percent = mapped;
             }
@@ -285,6 +296,18 @@ struct ParsedProgress {
     percent: Option<u8>,
     detail: String,
     is_progress_counter: bool,
+}
+
+fn phase_rank(phase: ClonePhase) -> u8 {
+    match phase {
+        ClonePhase::Connecting => 0,
+        ClonePhase::Counting => 1,
+        ClonePhase::Receiving => 2,
+        ClonePhase::Resolving => 3,
+        ClonePhase::CheckingOut => 4,
+        ClonePhase::Submodules => 5,
+        ClonePhase::Cancelling => 6,
+    }
 }
 
 fn compute_overall_percent(phase: ClonePhase, stage_pct: Option<u8>, in_submodule: bool) -> u8 {

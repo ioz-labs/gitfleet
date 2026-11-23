@@ -218,9 +218,6 @@ pub(crate) fn map_text_diff_msg(win_id: window::Id, msg: Message) -> Message {
         Message::DiffLeftScrolled(vp) => {
             Message::Detached(win_id, DetachedAction::LeftScrolled(vp))
         }
-        Message::DiffRightScrolled(vp) => {
-            Message::Detached(win_id, DetachedAction::RightScrolled(vp))
-        }
         Message::DiffUnifiedScrolled(vp) => {
             Message::Detached(win_id, DetachedAction::UnifiedScrolled(vp))
         }

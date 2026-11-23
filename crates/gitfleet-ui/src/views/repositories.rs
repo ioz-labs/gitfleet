@@ -1026,10 +1026,8 @@ impl GitFleetApp {
         let clone_btn_label = if let Some(active) = &self.active_clone {
             if active.snapshot.is_cancelled {
                 "Cancelling".to_string()
-            } else if let Some(pct) = active.snapshot.stage_percent {
-                format!("{pct}%")
             } else {
-                "Cloning".to_string()
+                format!("{:>2}%", active.snapshot.overall_percent)
             }
         } else {
             "Clone".to_string()

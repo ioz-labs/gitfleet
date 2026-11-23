@@ -11,7 +11,7 @@ pub(crate) mod widgets;
 mod tests;
 
 pub(crate) use layout::{
-    DiffLayoutCache, build_diff_layout_cache, map_scroll_y, parse_and_cache_diff,
+    DiffLayoutCache, build_diff_layout_cache, parse_and_cache_diff,
 };
 pub(crate) use render::{
     render_file_preview, render_side_by_side_diff_with, render_unified_diff_with,
@@ -36,7 +36,6 @@ pub(crate) const DIFF_SEP_H: f32 = 26.0;
 pub(crate) const DIFF_CONTEXT_LINES: usize = 3;
 pub(crate) const DIFF_EXPAND_STEP: usize = 20;
 pub(crate) const LINE_NUM_W: f32 = 48.0;
-pub(crate) const CONNECTOR_W: f32 = 28.0;
 pub(crate) const OVERVIEW_BAR_W: f32 = 5.0;
 /// Overscan buffer above & below the visible diff viewport (~17 lines) so wheel scrolling stays seamless.
 pub(crate) const DIFF_OVERSCAN_PX: f32 = 360.0;
@@ -49,13 +48,10 @@ pub(crate) struct TextDiffRenderCtx<'a> {
     pub(crate) diff_title: &'a str,
     pub(crate) selection: Option<DiffTextSelection>,
     pub(crate) left_scroll_id: scrollable::Id,
-    pub(crate) right_scroll_id: scrollable::Id,
     pub(crate) unified_scroll_id: scrollable::Id,
     pub(crate) left_scroll_y: f32,
-    pub(crate) right_scroll_y: f32,
     pub(crate) unified_scroll_y: f32,
     pub(crate) left_viewport_h: f32,
-    pub(crate) right_viewport_h: f32,
     pub(crate) unified_viewport_h: f32,
 }
 
@@ -291,7 +287,7 @@ impl GitFleetApp {
                         self.bottom_mode == BottomViewMode::SideBySideDiff,
                     ))
                     .on_press(Message::SetBottomViewMode(BottomViewMode::SideBySideDiff)),
-                    "SmartGit-style Side-by-Side Diff (Synced Vertical & Horizontal Scroll + Connectors)",
+                    "Side-by-Side Diff (Unified Vertical & Horizontal Scroll + Shared Context)",
                     tooltip::Position::Top,
                     p,
                 ));
@@ -493,13 +489,10 @@ impl GitFleetApp {
             diff_title: &self.diff_title,
             selection: self.diff_selection,
             left_scroll_id: self.diff_left_scroll_id.clone(),
-            right_scroll_id: self.diff_right_scroll_id.clone(),
             unified_scroll_id: self.diff_unified_scroll_id.clone(),
             left_scroll_y: self.diff_left_scroll_y,
-            right_scroll_y: self.diff_right_scroll_y,
             unified_scroll_y: self.diff_unified_scroll_y,
             left_viewport_h: self.diff_left_viewport_h,
-            right_viewport_h: self.diff_right_viewport_h,
             unified_viewport_h: self.diff_unified_viewport_h,
         }
     }
