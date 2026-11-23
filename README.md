@@ -15,53 +15,59 @@
   <a href="#architecture"><img src="https://img.shields.io/badge/unsafe__code-forbid-brightgreen.svg" alt="unsafe_code forbid" /></a>
 </p>
 
-Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or WebView overhead, **GitFleet** pairs SmartGit-inspired commit graph & branch ergonomics with multi-repository fleet operations, **GitFleet Studio** (an integrated multi-tab code editor & standalone diff workbench), visual Image/CSV diffing, an interactive conflict solver, a multi-profile encrypted secrets vault, and a built-in PTY terminal.
+Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or WebView overhead, **GitFleet** pairs a SmartGit-inspired column-aligned Cockpit & commit graph with multi-repository fleet operations, **GitFleet Studio** (an integrated multi-tab code editor & standalone diff workbench), a 3-layer semantic theme engine, visual Image/CSV diffing, an interactive conflict solver, a multi-profile encrypted secrets vault, and a built-in PTY terminal.
 
 <p align="center">
-  <img src="assets/screenshots/gitfleet-workspace.jpg" alt="GitFleet Main Workspace — multi-repository groups, commit graph, branch tree, files panel, and side-by-side diff" />
+  <img src="assets/screenshots/gitfleet-workspace.jpg" alt="GitFleet Main Cockpit — column-aligned SmartGit ribbon, nested repository groups, commit graph, multi-line commit composer, and workspace status bar" />
 </p>
 
 ---
 
 ## Highlights & Features
 
-### Multi-Repository Fleet Workspace
-- **Nested Repository Groups**: Organize dozens of repositories into nested groups with auto-grouped folder scanning, drag-and-drop regrouping, cascading **Rename Group** (updates subgroups, collapse state, and group secret keys), and workspace renaming.
-- **Live Sync & Submodule Indicators**: Real-time `↑ ahead` / `↓ behind` counters and dirty badges on repositories and submodules, `All` / `Dirty` / `Sync` filters, and saved `.gitfleet` workspaces with multi-instance **Lock / Claim** ownership protection.
-- **Fleet Bulk Operations**: Run Fetch, Pull, Push, ordered dependency pushes, or quick Repo Commit popups across selected repositories with live progress and instant cancellation.
+### Multi-Repository Fleet Cockpit
+- **SmartGit-Aligned Ribbon & 4 Workspace Layouts**: Column-aligned action Ribbon (`Pull` / `Sync` / `Push` with split-dropdown options, `Stage` / `Unstage` / `Discard` / `Save Stash` / `Apply`, `Merge` / `Rebase` / `Git-Flow` / `Undo`, and `Studio`) paired with instant layout presets (**Cockpit**, **Changes**, **History**, and **Zen**).
+- **Auto-Stash Pull & Sync**: Pull or Sync safely even with dirty working-tree changes — GitFleet can automatically stash local modifications before pulling/rebasing and re-apply them cleanly afterward (preserving the stash safely if conflicts arise).
+- **Nested Repository Groups & Portable Blueprints**: Organize dozens of repositories into nested groups with auto-grouped folder scanning, drag-and-drop regrouping, cascading **Rename Group**, and **Portable Group Blueprints** (export a group hierarchy to JSON and auto-clone every repo on another machine with SSH/HTTPS URL rewriting).
+- **Live Sync, Clone & Submodule Indicators**: Real-time `↑ ahead` / `↓ behind` counters and dirty badges on repositories and submodules, standalone **Clone Repository** modal with live progress & cancellation, `All` / `Dirty` / `Sync` filters, and `.gitfleet` workspaces with multi-instance **Lock / Claim** ownership protection.
 
-### Commit Graph & Branch Tree
-- **Smart Commit Graph**: Multi-lane graph showing upstream `origin` divergence (`+9 ▶ main`, `origin = ▶ main`, `-10 ▶ develop`), Working Tree / Index node above `HEAD`, automatic graph & branch refresh on external commits/ref updates, reflog inspection, cherry-pick, revert, and soft/mixed/hard reset with per-repo undo history.
-- **Unified Branch Tree**: Nested branch groups with checkboxes, sleek ahead/behind counters, worktree indicators, `Add Branch… (F7)`, `Rename Branch… (F2)`, smart unmerged branch deletion, and `Merge… (Ctrl+M)` / `Rebase… (Ctrl+D)` / `Fast-Forward Merge`.
+### Commit Graph, Interactive Rebase & Branch Tree
+- **Smart Commit Graph**: Multi-lane graph showing upstream `origin` divergence (`+17 ▶ main`, `origin = ▶ main`), Working Tree / Index node above `HEAD`, two-commit **Range Compare**, per-file **Stash Inspector**, file history (`--follow` across renames), reflog inspection, cherry-pick, revert, and soft/mixed/hard reset with per-repo undo history.
+- **Visual Interactive Rebase & Multi-Line Commit Composer**: Reorder commits and toggle `pick` / `reword` / `squash` / `fixup` / `drop` visually without terminal editors; compose commits with Conventional Commit quick chips (`feat`, `fix`, `refactor`, `perf`, `docs`, `chore`), multi-line body editor, commit templates, and GPG/SSH commit signing.
+- **Unified Branch Tree**: Nested branch groups with checkboxes, sleek ahead/behind counters, worktree & stash tabs, `Add Branch… (F7)`, `Rename Branch… (F2)`, smart unmerged branch deletion, and `Merge… (Ctrl+M)` / `Rebase… (Ctrl+D)` / `Fast-Forward Merge`.
 
 ### GitFleet Studio — Native Multi-Tab Code Editor & Diff Workbench
 
 <p align="center">
-  <img src="assets/screenshots/gitfleet-studio.jpg" alt="GitFleet Studio — explorer with dimmed gitignored folders, syntax-highlighted code editor with sticky line numbers, and interactive status bar" />
+  <img src="assets/screenshots/gitfleet-studio.jpg" alt="GitFleet Studio — git-aware explorer, Quick Open, breadcrumb symbol outline, syntax-highlighted code editor with sticky line numbers, and status bar" />
 </p>
 
-- **Native Multi-Tab Code Editor**: Instant asynchronous file opening with lazy buffer hydration, syntax highlighting across **19 languages**, sticky pixel-aligned **line numbers** (wrap-aware & zoom-aware), active-line highlighting, `Tab` indentation, **Word Wrap (`Alt+Z`)**, and live **Font Zoom (`Ctrl+=` / `Ctrl+-`)**.
-- **Explorer Sidebar & File Operations**: Dimmed gitignored files and lazy-expanded ignored directories (such as `target/` and `node_modules/`), plus inline **Rename**, **Delete** (with `.git` and path-traversal protection), and **Add to `.gitignore`** (Glob & Regex modes with live match preview).
-- **Search & Replace**: VS Code-style **Folder Search & Replace** (regex, case sensitivity, whole-word, include/exclude globs, single-match and replace-all) alongside **In-File Find & Replace** (`Ctrl+F` / `Ctrl+H`).
-- **Encoding, EOL & Standalone Compare**: Interactive status bar menus for file **Encoding** (`UTF-8`, `UTF-8 BOM`, `UTF-16`, `Windows-1252` — Save or Reopen), **Line Endings** (`LF` / `CRLF`), and **Syntax Language**, plus standalone **Compare Any Two Local Files** (text, image, and CSV).
+- **Native Multi-Tab Code Editor**: Instant asynchronous file opening, per-tab **Undo / Redo**, untitled scratch tabs & **Save As**, **Quick Open (`Ctrl+P`)**, **Symbol Outline (`Ctrl+Shift+O`)**, **Go to Line (`Ctrl+G`)**, syntax highlighting across **19 languages**, sticky pixel-aligned **line numbers**, indent guides, bracket matching, toggle comments (`Ctrl+/`), move lines (`Alt+↑/↓`), **Word Wrap (`Alt+Z`)**, and live **Font Zoom (`Ctrl+=` / `Ctrl+-`)**.
+- **Virtualized Large-File Engine**: Opens multi-thousand-line files (such as `Cargo.lock` or large logs) with zero UI lag via O(visible) line virtualization and on-demand windowed slice editing.
+- **Git-Aware Explorer & Split Live Preview**: Color-coded Git status badges on files/folders, live added/modified/deleted gutter marks, one-click **Diff HEAD**, side-by-side live Markdown/JSON/code preview, dimmed gitignored entries, and inline **Create / Duplicate / Rename / Delete / Add to `.gitignore`**.
+- **Search, Replace & Standalone Compare**: VS Code-style **Folder Search & Replace** alongside **In-File Find & Replace** (`Ctrl+F` / `Ctrl+H`), interactive status bar menus for **Encoding**, **Line Endings** (`LF` / `CRLF`), and **Syntax Language**, plus standalone **Compare Any Two Local Files** (text, image, and CSV).
 
-### Virtualized Diff, Rich Preview & Live Editor
-- **Side-by-Side & Unified Diffs**: Virtualized diff engine with synced scrolling, cubic Bezier change connectors, edge overview minimaps, compact/expandable unchanged gaps, inline token highlights, selectable/copyable diff text, and hunk-level stage/unstage/discard.
+### Virtualized Diff, Blame, Rich Preview & Live Editor
+- **SmartGit-Grade Side-by-Side & Unified Diffs**: Virtualized diff engine with unified vertical & horizontal scrollbars, **28px cubic-Bezier S-curve change connectors**, 2px insertion/deletion seams, **dual Left/Right diff-position overview bars** with live viewport indicator & click/drag-to-jump, shared expandable `hidden lines` bars, intra-line token highlights, and **partial line & hunk stage/unstage/discard**.
+- **Per-Line Git Blame**: Virtualized blame view showing commit hash, author, timestamp, and one-click jump to the originating commit in the graph.
 - **Visual Image Diff & CSV Table Diff**:
   - **Image Diff**: 2-Up, Swipe, Onion Skin, Blink, and Pixel Diff for raster images (PNG, JPEG, WebP, GIF, BMP) and SVG.
   - **CSV / TSV Table Diff**: Keyed row pairing, cell-level change highlights, and format-noise detection.
-- **Rich Preview & Inline Editor**: Rendered previews for Markdown, SVG, images, formatted JSON, CSV tables, and configs; syntax-highlighted **Code Preview** and inline **Live File Editor (`Ctrl+S`)** both equipped with **sticky line numbers**, scrollbars, and automatic live reload on external edits.
-- **Calm Files Panel**: Unstaged & auto-showing Staged split views (`Changed` / `Dir` / `All` tabs), color-coded file states, multi-file selection (`Shift+Click`, `Ctrl+Click`, `Ctrl+A`), and full file operations (Rename, Delete, Add to `.gitignore`, Open in GitFleet Studio).
+- **Virtualized Rich Preview & Inline Editor**: Instant O(visible) syntax-highlighted **Code Preview**, rendered Markdown/SVG/JSON/CSV views, historical commit snapshot viewer, and inline **Live File Editor (`Ctrl+S`)**.
 
 ### Live Merge Forecast & Interactive Conflict Solver
 - **Zero-Touch Merge Forecast**: Runs in-memory conflict detection (`git merge-tree --write-tree`) before modifying your working tree, supporting **Create Merge-Commit** (`--no-ff`), **Merge to Working Tree** (`--no-commit --no-ff`), **Squash-Merge** (`--squash`), **Fast-Forward**, and **Rebase**.
 - **Hunk-by-Hunk Conflict Solver**: Parses 2-way and `diff3`/`zdiff3` markers with side-by-side Ours vs Theirs inspection, `Accept Ours` / `Accept Theirs` / `Accept Both` / `Theirs + Ours` / inline manual edit, Prev/Next navigation, EOL preservation, and one-click **Save & Mark Resolved** (`git add`).
 
-### Multi-Profile Secrets Vault & Integrated Developer Tools
-- **Multi-Profile [`age`](https://age-encryption.org/) Secrets Vault**: Encrypted `.gitfleet/secrets.age` vault supporting multiple machine profiles and named per-group/per-repo secret keys, selective `.env` / TOML / YAML syncing across machines, auto-decrypt & rekey, staged secret scanning with allowlists, oversized-file guard, and multi-layer `.gitignore` management (Glob & Regex).
-- **Integrated PTY Terminal**: Multi-tab terminal with split panes, automatic shell profile detection (PowerShell, CMD, Git Bash, WSL, zsh/bash), customizable system fonts, and clipboard support.
-- **Fleet Search**: Streaming cross-repository code search with instant cancellation.
-- **Dark & Light Themes**: Carefully tuned native themes with 12px+ readable typography and resizable split panes.
+### 3-Layer Semantic Themes, Secrets Vault & Integrated Dock
+
+<p align="center">
+  <img src="assets/screenshots/gitfleet-themes.jpg" alt="GitFleet Settings & Appearance — 5 semantic theme presets, custom JSON theme import/export, and integrated PTY terminal dock" />
+</p>
+
+- **5 Curated Theme Presets + Custom JSON**: Built on a 3-layer semantic color token architecture with **Precision Obsidian**, **Daylight Crisp**, **GitHub Dimmed**, **Catppuccin Mocha**, and **Tokyo Night** out of the box, bundled *Inter* & *JetBrains Mono* fonts, WCAG-verified diff contrast, and custom `.json` theme import/export.
+- **Multi-Profile [`age`](https://age-encryption.org/) Secrets Vault**: Encrypted `.gitfleet/secrets.age` vault supporting multiple machine profiles and named per-group/per-repo secret keys, selective `.env` / TOML / YAML syncing across machines, auto-decrypt & rekey, staged secret scanning with allowlists, and oversized-file guard.
+- **Integrated Developer Dock**: Multi-tab **PTY Terminal** with split panes & automatic shell detection (PowerShell, CMD, Git Bash, WSL, zsh/bash), workspace **Problems** aggregator, streaming cross-repo **Fleet Search & Replace**, interactive **Ignore Rule Tester**, and structured **Git Command Log Inspector**.
 
 ---
 
@@ -94,13 +100,17 @@ Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or 
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Ctrl+O` | Open Local File |
-| `Ctrl+S` | Save Active Tab |
-| `Ctrl+W` | Close Active Tab |
+| `Ctrl+N` / `Ctrl+O` | New Scratch Tab / Open Local File |
+| `Ctrl+P` / `Ctrl+Shift+O` | Quick Open File / Symbol Outline |
+| `Ctrl+G` | Go to Line (`line` or `line:col`) |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / Save As |
+| `Ctrl+W` / `Ctrl+Shift+T` | Close Active Tab / Reopen Closed Tab |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo (per tab) |
+| `Ctrl+/` · `Alt+↑` / `Alt+↓` | Toggle Comment · Move Line Up / Down |
 | `Ctrl+F` / `Ctrl+H` | In-File Find / Find & Replace |
 | `Ctrl+Shift+F` | Folder Search & Replace Sidebar |
-| `Ctrl+Shift+E` | Focus Explorer Sidebar |
-| `Ctrl+B` | Toggle Sidebar |
+| `Ctrl+Shift+E` / `Ctrl+B` | Focus Explorer / Toggle Sidebar |
+| `Ctrl+\` | Toggle Split Live Preview |
 | `Alt+Z` | Toggle Word Wrap |
 | `Ctrl+=` / `Ctrl+-` | Increase / Decrease Editor Font Size |
 
@@ -225,8 +235,8 @@ cargo build --release --locked -p gitfleet-ui
 GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) runs strict checks (`-D warnings`), native unit tests, and packages all 5 platform/architecture targets automatically whenever a version tag matching `v*` is pushed (or when triggered manually via **Actions → Release → Run workflow**):
 
 ```bash
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 ---

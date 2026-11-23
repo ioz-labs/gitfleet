@@ -1,6 +1,6 @@
 # Maintainer: GitFleet Contributors <https://github.com/ioz-labs/gitfleet>
 pkgname=gitfleet
-pkgver=0.6.1
+pkgver=0.7.0
 pkgrel=1
 pkgdesc="Open-source, 100% pure-Rust multi-repository Git desktop workspace manager"
 arch=('x86_64' 'aarch64')
