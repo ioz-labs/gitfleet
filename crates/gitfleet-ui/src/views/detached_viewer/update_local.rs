@@ -4,9 +4,14 @@
 use super::io::{
     editor_buffer_text, file_display_name, jump_editor_to_span, spawn_compare_task,
 };
+use super::smart_edit::{
+    AutoPairDecision, MAX_UNDO_HISTORY, SmartEnterPlan, auto_pair_close_char, block_indent_text,
+    decide_auto_pair, move_lines_vertical, parse_goto_line_spec, resolve_selection_line_range,
+    select_line_block, smart_enter_plan, toggle_line_comments,
+};
 use super::state::{
-    DetachedAction, DetachedViewMode, StudioExplorerMenu, StudioPendingDelete, StudioSidebarPanel,
-    StudioStatusMenu,
+    DetachedAction, DetachedViewMode, StudioCreateEntryKind, StudioCreateEntryModal,
+    StudioExplorerMenu, StudioPendingDelete, StudioSidebarPanel, StudioStatusMenu, StudioTab,
 };
 use crate::app::{
     DiffGapExpandMode, DiffSelectionSide, DiffTextPos, DiffTextSelection, EncodingModalMode,
@@ -75,6 +80,104 @@ impl GitFleetApp {
                         v.remove_tab_at(idx);
                     }
                 }
+                Task::none()
+            }
+            DetachedAction::NewUntitledTab => {
+                v.status_menu = None;
+                v.explorer_menu = None;
+                v.quick_open_visible = false;
+                v.goto_line_visible = false;
+                let id = v.alloc_tab_id();
+                let num = v.next_untitled_num;
+                v.next_untitled_num = v.next_untitled_num.saturating_add(1);
+                let tab = StudioTab::new_untitled(id, num);
+                let title = tab.title.clone();
+                v.tabs.push(tab);
+                v.active_tab = Some(v.tabs.len() - 1);
+                v.recompute_in_file_matches(false);
+                v.status_is_error = false;
+                v.status_note = format!("New scratch tab {title} (Ctrl+S to save)");
+                Task::none()
+            }
+            DetachedAction::ToggleQuickOpen => {
+                v.status_menu = None;
+                v.explorer_menu = None;
+                v.goto_line_visible = false;
+                v.quick_open_visible = !v.quick_open_visible;
+                v.quick_open_query.clear();
+                v.quick_open_selected = 0;
+                if v.quick_open_visible {
+                    return text_input::focus(v.quick_open_input_id.clone());
+                }
+                Task::none()
+            }
+            DetachedAction::CloseQuickOpen => {
+                v.quick_open_visible = false;
+                Task::none()
+            }
+            DetachedAction::QuickOpenQueryChanged(q) => {
+                v.quick_open_query = q;
+                v.quick_open_selected = 0;
+                Task::none()
+            }
+            DetachedAction::QuickOpenMoveSelection(delta) => {
+                let len = v.quick_open_candidates(60).len();
+                if len > 0 {
+                    let cur = v.quick_open_selected.min(len - 1) as isize;
+                    v.quick_open_selected = (cur + delta).rem_euclid(len as isize) as usize;
+                }
+                Task::none()
+            }
+            DetachedAction::OpenGoToLine => {
+                let can_jump = v.active_tab().is_some_and(|t| t.is_editable());
+                if !can_jump {
+                    v.status_is_error = false;
+                    v.status_note = "Open an editable file to jump to a line".into();
+                    return Task::none();
+                }
+                v.status_menu = None;
+                v.explorer_menu = None;
+                v.quick_open_visible = false;
+                v.goto_line_visible = true;
+                v.goto_line_input.clear();
+                text_input::focus(v.goto_line_input_id.clone())
+            }
+            DetachedAction::CloseGoToLine => {
+                v.goto_line_visible = false;
+                Task::none()
+            }
+            DetachedAction::GoToLineInputChanged(val) => {
+                v.goto_line_input = val;
+                Task::none()
+            }
+            DetachedAction::SubmitGoToLine => {
+                let spec = v.goto_line_input.clone();
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                if let Some(tab) = v.active_tab_mut()
+                    && tab.is_editable()
+                {
+                    tab.mode = DetachedViewMode::Edit;
+                    tab.ensure_editor_hydrated();
+                    let total = tab.editor_content.line_count();
+                    if let Some((ln, col)) = parse_goto_line_spec(&spec, total) {
+                        jump_editor_to_span(&mut tab.editor_content, ln, col, col);
+                        let scroll_t = crate::views::code_editor::scroll_numbered_editor_to_line(
+                            &tab.editor_content,
+                            &mut tab.editor_scroll,
+                            ln,
+                            cfg,
+                        );
+                        v.goto_line_visible = false;
+                        v.status_is_error = false;
+                        v.status_note = format!("Ln {}, Col {}", ln + 1, col + 1);
+                        return scroll_t;
+                    }
+                }
+                v.status_is_error = true;
+                v.status_note = "Invalid line number (use e.g. 42 or 42:10)".into();
                 Task::none()
             }
             DetachedAction::CancelCloseTab => {
@@ -152,6 +255,57 @@ impl GitFleetApp {
                 v.status_is_error = false;
                 v.status_note = format!("Copied path '{rel_path}'");
                 clipboard::write(rel_path)
+            }
+            DetachedAction::OpenExplorerCreate { parent_rel, is_dir } => {
+                v.explorer_menu = None;
+                v.status_menu = None;
+                v.pending_delete = None;
+                v.rename_modal = None;
+                v.gitignore_modal = None;
+                if v.search_root.is_none() {
+                    v.status_is_error = true;
+                    v.status_note = "Open a folder first to create files or folders".into();
+                    return Task::none();
+                }
+                v.create_modal = Some(StudioCreateEntryModal {
+                    kind: if is_dir {
+                        StudioCreateEntryKind::Folder { parent_rel }
+                    } else {
+                        StudioCreateEntryKind::File { parent_rel }
+                    },
+                    input: String::new(),
+                    error: None,
+                });
+                text_input::focus(v.create_input_id.clone())
+            }
+            DetachedAction::OpenExplorerDuplicate { src_rel } => {
+                v.explorer_menu = None;
+                v.status_menu = None;
+                v.pending_delete = None;
+                v.rename_modal = None;
+                v.gitignore_modal = None;
+                let leaf = src_rel.rsplit('/').next().unwrap_or(&src_rel);
+                let suggested = match leaf.rsplit_once('.') {
+                    Some((stem, ext)) if !stem.is_empty() => format!("{stem}_copy.{ext}"),
+                    _ => format!("{leaf}_copy"),
+                };
+                v.create_modal = Some(StudioCreateEntryModal {
+                    kind: StudioCreateEntryKind::Duplicate { src_rel },
+                    input: suggested,
+                    error: None,
+                });
+                text_input::focus(v.create_input_id.clone())
+            }
+            DetachedAction::ExplorerCreateInputChanged(val) => {
+                if let Some(m) = &mut v.create_modal {
+                    m.input = val;
+                    m.error = None;
+                }
+                Task::none()
+            }
+            DetachedAction::CancelExplorerCreate => {
+                v.create_modal = None;
+                Task::none()
             }
             DetachedAction::RequestDeleteExplorerEntry { rel_path, is_dir } => {
                 v.explorer_menu = None;
@@ -823,6 +977,14 @@ impl GitFleetApp {
                     v.editor_word_wrap,
                 );
                 let scroll_task = if let Some(tab) = v.active_tab_mut() {
+                    if is_edit {
+                        let coalesce = matches!(
+                            &action,
+                            text_editor::Action::Edit(text_editor::Edit::Insert(ch))
+                                if *ch != '\n' && *ch != ' '
+                        ) && tab.editor_content.selection().is_none();
+                        tab.record_undo_snapshot(coalesce);
+                    }
                     let task = crate::views::code_editor::perform_numbered_editor_action(
                         &mut tab.editor_content,
                         action,
@@ -830,7 +992,7 @@ impl GitFleetApp {
                         cfg,
                     );
                     if is_edit {
-                        tab.dirty = true;
+                        tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
                     }
                     task
@@ -848,6 +1010,93 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            DetachedAction::Undo => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let mut did_undo = false;
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    if let Some(prev) = tab.undo_stack.pop_back() {
+                        let cur = tab.current_snapshot();
+                        tab.redo_stack.push(cur);
+                        tab.last_typing_snapshot_at = None;
+                        tab.editor_content = text_editor::Content::with_text(&prev.text);
+                        jump_editor_to_span(&mut tab.editor_content, prev.line, prev.col, prev.col);
+                        tab.recompute_dirty_flag();
+                        tab.preview_hydrated = false;
+                        did_undo = true;
+                        let vrow = crate::views::code_editor::estimate_visual_row_for_line(
+                            &tab.editor_content,
+                            prev.line,
+                            tab.editor_scroll.viewport_w,
+                            cfg,
+                        );
+                        tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
+                    } else {
+                        Task::none()
+                    }
+                } else {
+                    Task::none()
+                };
+                if did_undo {
+                    if v.in_file_find_open && !v.in_file_query.is_empty() {
+                        v.recompute_in_file_matches(true);
+                    }
+                    v.status_is_error = false;
+                    v.status_note = "Undo".into();
+                }
+                scroll_task
+            }
+            DetachedAction::Redo => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let mut did_redo = false;
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    if let Some(next) = tab.redo_stack.pop() {
+                        let cur = tab.current_snapshot();
+                        if tab.undo_stack.len() >= MAX_UNDO_HISTORY {
+                            tab.undo_stack.pop_front();
+                        }
+                        tab.undo_stack.push_back(cur);
+                        tab.last_typing_snapshot_at = None;
+                        tab.editor_content = text_editor::Content::with_text(&next.text);
+                        jump_editor_to_span(&mut tab.editor_content, next.line, next.col, next.col);
+                        tab.recompute_dirty_flag();
+                        tab.preview_hydrated = false;
+                        did_redo = true;
+                        let vrow = crate::views::code_editor::estimate_visual_row_for_line(
+                            &tab.editor_content,
+                            next.line,
+                            tab.editor_scroll.viewport_w,
+                            cfg,
+                        );
+                        tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
+                    } else {
+                        Task::none()
+                    }
+                } else {
+                    Task::none()
+                };
+                if did_redo {
+                    if v.in_file_find_open && !v.in_file_query.is_empty() {
+                        v.recompute_in_file_matches(true);
+                    }
+                    v.status_is_error = false;
+                    v.status_note = "Redo".into();
+                }
+                scroll_task
+            }
             DetachedAction::InsertIndent => {
                 let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
                     v.editor_font_size,
@@ -858,16 +1107,350 @@ impl GitFleetApp {
                     && tab.is_editable()
                 {
                     tab.ensure_editor_hydrated();
-                    let spaces = " ".repeat(tab.language.default_indent_spaces());
-                    let task = crate::views::code_editor::perform_numbered_editor_action(
-                        &mut tab.editor_content,
-                        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(spaces))),
-                        &mut tab.editor_scroll,
-                        cfg,
-                    );
-                    tab.dirty = true;
+                    tab.record_undo_snapshot(false);
+                    let spaces_count = tab.language.default_indent_spaces();
+                    let has_sel = tab
+                        .editor_content
+                        .selection()
+                        .is_some_and(|s| !s.is_empty());
+                    let task = if has_sel {
+                        let full = editor_buffer_text(&tab.editor_content);
+                        let (lo, hi, _, _) = resolve_selection_line_range(&mut tab.editor_content);
+                        let (updated, _, last_len) =
+                            block_indent_text(&full, lo, hi, spaces_count, false);
+                        tab.editor_content = text_editor::Content::with_text(&updated);
+                        select_line_block(&mut tab.editor_content, lo, hi, last_len);
+                        let vrow = crate::views::code_editor::estimate_visual_row_for_line(
+                            &tab.editor_content,
+                            hi,
+                            tab.editor_scroll.viewport_w,
+                            cfg,
+                        );
+                        tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
+                    } else {
+                        let spaces = " ".repeat(spaces_count);
+                        crate::views::code_editor::perform_numbered_editor_action(
+                            &mut tab.editor_content,
+                            text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(spaces))),
+                            &mut tab.editor_scroll,
+                            cfg,
+                        )
+                    };
+                    tab.recompute_dirty_flag();
                     tab.preview_hydrated = false;
                     task
+                } else {
+                    Task::none()
+                };
+                if v.in_file_find_open && !v.in_file_query.is_empty() {
+                    v.recompute_in_file_matches(true);
+                }
+                scroll_task
+            }
+            DetachedAction::OutdentSelection => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    tab.record_undo_snapshot(false);
+                    let full = editor_buffer_text(&tab.editor_content);
+                    let spaces_count = tab.language.default_indent_spaces();
+                    let (lo, hi, had_sel, orig_col) =
+                        resolve_selection_line_range(&mut tab.editor_content);
+                    let (updated, first_delta, last_len) =
+                        block_indent_text(&full, lo, hi, spaces_count, true);
+                    tab.editor_content = text_editor::Content::with_text(&updated);
+                    if had_sel && hi > lo {
+                        select_line_block(&mut tab.editor_content, lo, hi, last_len);
+                    } else {
+                        let next_col = (orig_col as isize + first_delta).max(0) as usize;
+                        jump_editor_to_span(&mut tab.editor_content, lo, next_col, next_col);
+                    }
+                    tab.recompute_dirty_flag();
+                    tab.preview_hydrated = false;
+                    let vrow = crate::views::code_editor::estimate_visual_row_for_line(
+                        &tab.editor_content,
+                        lo,
+                        tab.editor_scroll.viewport_w,
+                        cfg,
+                    );
+                    tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
+                } else {
+                    Task::none()
+                };
+                if v.in_file_find_open && !v.in_file_query.is_empty() {
+                    v.recompute_in_file_matches(true);
+                }
+                scroll_task
+            }
+            DetachedAction::SmartEnter => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    tab.record_undo_snapshot(false);
+                    if tab
+                        .editor_content
+                        .selection()
+                        .is_some_and(|s| !s.is_empty())
+                    {
+                        tab.editor_content
+                            .perform(text_editor::Action::Edit(text_editor::Edit::Backspace));
+                    }
+                    let (cur_line, cur_col) = tab.editor_content.cursor_position();
+                    let line_str = tab
+                        .editor_content
+                        .lines()
+                        .nth(cur_line)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default();
+                    let plan = smart_enter_plan(
+                        &line_str,
+                        cur_col,
+                        tab.language.default_indent_spaces(),
+                    );
+                    let task = match plan {
+                        SmartEnterPlan::Paste(s) => {
+                            crate::views::code_editor::perform_numbered_editor_action(
+                                &mut tab.editor_content,
+                                text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(s))),
+                                &mut tab.editor_scroll,
+                                cfg,
+                            )
+                        }
+                        SmartEnterPlan::SplitBrackets(s) => {
+                            tab.editor_content.perform(text_editor::Action::Edit(
+                                text_editor::Edit::Paste(Arc::new(s)),
+                            ));
+                            tab.editor_content
+                                .perform(text_editor::Action::Move(text_editor::Motion::Up));
+                            crate::views::code_editor::perform_numbered_editor_action(
+                                &mut tab.editor_content,
+                                text_editor::Action::Move(text_editor::Motion::End),
+                                &mut tab.editor_scroll,
+                                cfg,
+                            )
+                        }
+                    };
+                    tab.recompute_dirty_flag();
+                    tab.preview_hydrated = false;
+                    task
+                } else {
+                    Task::none()
+                };
+                if v.in_file_find_open && !v.in_file_query.is_empty() {
+                    v.recompute_in_file_matches(true);
+                }
+                scroll_task
+            }
+            DetachedAction::ToggleComment => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    tab.record_undo_snapshot(false);
+                    let full = editor_buffer_text(&tab.editor_content);
+                    let (lo, hi, had_sel, orig_col) =
+                        resolve_selection_line_range(&mut tab.editor_content);
+                    let (updated, first_delta, last_len) =
+                        toggle_line_comments(&full, lo, hi, tab.language);
+                    tab.editor_content = text_editor::Content::with_text(&updated);
+                    if had_sel && hi > lo {
+                        select_line_block(&mut tab.editor_content, lo, hi, last_len);
+                    } else {
+                        let next_col = (orig_col as isize + first_delta).max(0) as usize;
+                        jump_editor_to_span(&mut tab.editor_content, lo, next_col, next_col);
+                    }
+                    tab.recompute_dirty_flag();
+                    tab.preview_hydrated = false;
+                    let vrow = crate::views::code_editor::estimate_visual_row_for_line(
+                        &tab.editor_content,
+                        lo,
+                        tab.editor_scroll.viewport_w,
+                        cfg,
+                    );
+                    tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
+                } else {
+                    Task::none()
+                };
+                if v.in_file_find_open && !v.in_file_query.is_empty() {
+                    v.recompute_in_file_matches(true);
+                }
+                scroll_task
+            }
+            DetachedAction::MoveLine(delta) => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    let full = editor_buffer_text(&tab.editor_content);
+                    let pre_snap = tab.current_snapshot();
+                    let (lo, hi, had_sel, orig_col) =
+                        resolve_selection_line_range(&mut tab.editor_content);
+                    if let Some((updated, new_lo, new_hi)) =
+                        move_lines_vertical(&full, lo, hi, delta)
+                    {
+                        if tab.undo_stack.len() >= MAX_UNDO_HISTORY {
+                            tab.undo_stack.pop_front();
+                        }
+                        tab.undo_stack.push_back(pre_snap);
+                        tab.redo_stack.clear();
+                        tab.last_typing_snapshot_at = None;
+                        tab.editor_content = text_editor::Content::with_text(&updated);
+                        if had_sel && new_hi > new_lo {
+                            let last_len = tab
+                                .editor_content
+                                .lines()
+                                .nth(new_hi)
+                                .map(|l| l.chars().count())
+                                .unwrap_or(0);
+                            select_line_block(&mut tab.editor_content, new_lo, new_hi, last_len);
+                        } else {
+                            jump_editor_to_span(
+                                &mut tab.editor_content,
+                                new_lo,
+                                orig_col,
+                                orig_col,
+                            );
+                        }
+                        tab.recompute_dirty_flag();
+                        tab.preview_hydrated = false;
+                        let vrow = crate::views::code_editor::estimate_visual_row_for_line(
+                            &tab.editor_content,
+                            new_lo,
+                            tab.editor_scroll.viewport_w,
+                            cfg,
+                        );
+                        tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
+                    } else {
+                        // Restore intact buffer if already at top/bottom boundary
+                        if had_sel {
+                            tab.editor_content = text_editor::Content::with_text(&full);
+                            let last_len = tab
+                                .editor_content
+                                .lines()
+                                .nth(hi)
+                                .map(|l| l.chars().count())
+                                .unwrap_or(0);
+                            select_line_block(&mut tab.editor_content, lo, hi, last_len);
+                        }
+                        Task::none()
+                    }
+                } else {
+                    Task::none()
+                };
+                if v.in_file_find_open && !v.in_file_query.is_empty() {
+                    v.recompute_in_file_matches(true);
+                }
+                scroll_task
+            }
+            DetachedAction::TypeAutoPairChar(ch) => {
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                let scroll_task = if let Some(tab) = v.active_tab_mut()
+                    && tab.mode == DetachedViewMode::Edit
+                    && tab.is_editable()
+                {
+                    tab.ensure_editor_hydrated();
+                    if let Some(sel) = tab
+                        .editor_content
+                        .selection()
+                        .filter(|s| !s.is_empty() && !s.contains('\n'))
+                        && let Some(close) = auto_pair_close_char(ch)
+                    {
+                        tab.record_undo_snapshot(false);
+                        let wrapped = format!("{ch}{sel}{close}");
+                        let task = crate::views::code_editor::perform_numbered_editor_action(
+                            &mut tab.editor_content,
+                            text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(wrapped))),
+                            &mut tab.editor_scroll,
+                            cfg,
+                        );
+                        tab.recompute_dirty_flag();
+                        tab.preview_hydrated = false;
+                        task
+                    } else if tab.editor_content.selection().is_none() {
+                        let (cur_line, cur_col) = tab.editor_content.cursor_position();
+                        let line_str = tab
+                            .editor_content
+                            .lines()
+                            .nth(cur_line)
+                            .map(|l| l.to_string())
+                            .unwrap_or_default();
+                        match decide_auto_pair(&line_str, cur_col, ch) {
+                            AutoPairDecision::SkipOverClosing => {
+                                crate::views::code_editor::perform_numbered_editor_action(
+                                    &mut tab.editor_content,
+                                    text_editor::Action::Move(text_editor::Motion::Right),
+                                    &mut tab.editor_scroll,
+                                    cfg,
+                                )
+                            }
+                            AutoPairDecision::InsertPair(close) => {
+                                tab.record_undo_snapshot(true);
+                                let pair = format!("{ch}{close}");
+                                tab.editor_content.perform(text_editor::Action::Edit(
+                                    text_editor::Edit::Paste(Arc::new(pair)),
+                                ));
+                                let task =
+                                    crate::views::code_editor::perform_numbered_editor_action(
+                                        &mut tab.editor_content,
+                                        text_editor::Action::Move(text_editor::Motion::Left),
+                                        &mut tab.editor_scroll,
+                                        cfg,
+                                    );
+                                tab.recompute_dirty_flag();
+                                tab.preview_hydrated = false;
+                                task
+                            }
+                            AutoPairDecision::Normal => {
+                                tab.record_undo_snapshot(true);
+                                let task =
+                                    crate::views::code_editor::perform_numbered_editor_action(
+                                        &mut tab.editor_content,
+                                        text_editor::Action::Edit(text_editor::Edit::Insert(ch)),
+                                        &mut tab.editor_scroll,
+                                        cfg,
+                                    );
+                                tab.recompute_dirty_flag();
+                                tab.preview_hydrated = false;
+                                task
+                            }
+                        }
+                    } else {
+                        tab.record_undo_snapshot(false);
+                        let task = crate::views::code_editor::perform_numbered_editor_action(
+                            &mut tab.editor_content,
+                            text_editor::Action::Edit(text_editor::Edit::Insert(ch)),
+                            &mut tab.editor_scroll,
+                            cfg,
+                        );
+                        tab.recompute_dirty_flag();
+                        tab.preview_hydrated = false;
+                        task
+                    }
                 } else {
                     Task::none()
                 };
@@ -1066,9 +1649,10 @@ impl GitFleetApp {
                 match res {
                     Some(Ok(updated)) => {
                         if let Some(tab) = v.active_tab_mut() {
+                            tab.record_undo_snapshot(false);
                             tab.editor_content = text_editor::Content::with_text(&updated);
                             tab.editor_hydrated = true;
-                            tab.dirty = true;
+                            tab.recompute_dirty_flag();
                             tab.preview_hydrated = false;
                         }
                         v.recompute_in_file_matches(true);
@@ -1105,9 +1689,10 @@ impl GitFleetApp {
                     Some(Ok((updated, count))) => {
                         if count > 0 {
                             if let Some(tab) = v.active_tab_mut() {
+                                tab.record_undo_snapshot(false);
                                 tab.editor_content = text_editor::Content::with_text(&updated);
                                 tab.editor_hydrated = true;
-                                tab.dirty = true;
+                                tab.recompute_dirty_flag();
                                 tab.preview_hydrated = false;
                             }
                             v.recompute_in_file_matches(false);
@@ -1236,7 +1821,13 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::EscapePressed => {
-                if v.rename_modal.is_some() {
+                if v.quick_open_visible {
+                    v.quick_open_visible = false;
+                } else if v.goto_line_visible {
+                    v.goto_line_visible = false;
+                } else if v.create_modal.is_some() {
+                    v.create_modal = None;
+                } else if v.rename_modal.is_some() {
                     v.rename_modal = None;
                 } else if v.gitignore_modal.is_some() {
                     v.gitignore_modal = None;
@@ -1258,6 +1849,13 @@ impl GitFleetApp {
 
             // Already handled in `update_detached_viewer`
             DetachedAction::SaveEditor
+            | DetachedAction::SaveTabAs
+            | DetachedAction::SaveTabAsPicked(_, _)
+            | DetachedAction::SaveAllTabs
+            | DetachedAction::SubmitExplorerCreate
+            | DetachedAction::ExplorerEntryCreated { .. }
+            | DetachedAction::QuickOpenConfirmSelected
+            | DetachedAction::QuickOpenSelectRelPath(_)
             | DetachedAction::ConfirmCloseTab { .. }
             | DetachedAction::RevertEditor
             | DetachedAction::SetEditorEol(_)

@@ -196,13 +196,25 @@ pub(crate) fn render_studio_status_bar<'a>(
             let eol_open = active_menu == Some(StudioStatusMenu::Eol);
             let enc_open = active_menu == Some(StudioStatusMenu::Encoding);
             right = right
-                .push(
-                    text(format!("Ln {}, Col {}", ln + 1, col + 1))
-                        .size(type_scale::BADGE)
-                        .font(theme::CODE_FONT)
-                        .color(p.text_secondary)
-                        .wrapping(text::Wrapping::None),
-                )
+                .push(tip(
+                    button(
+                        text(format!("Ln {}, Col {}", ln + 1, col + 1))
+                            .size(type_scale::BADGE)
+                            .font(theme::CODE_FONT)
+                            .color(if v.goto_line_visible {
+                                p.accent_fg
+                            } else {
+                                p.text_secondary
+                            })
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([1, 5])
+                    .style(theme::vscode_status_item(p))
+                    .on_press(Message::Detached(win_id, DetachedAction::OpenGoToLine)),
+                    "Go to Line / Column (Ctrl+G)",
+                    tooltip::Position::Top,
+                    p,
+                ))
                 .push(
                     text(format!("Spaces: {}", tab.language.default_indent_spaces()))
                         .size(type_scale::BADGE)

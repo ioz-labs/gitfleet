@@ -14,8 +14,12 @@ use crate::views::image_diff::{
     is_image_diff_path,
 };
 use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
-use super::io::{editor_buffer_text, file_display_name, jump_editor_to_span};
+use crate::views::overlays::fuzzy::fuzzy_match;
+use super::io::{
+    editor_buffer_text, file_display_name, format_editor_text_for_save, jump_editor_to_span,
+};
 use super::sidebar_explorer::ExplorerDirNode;
+use super::smart_edit::{EditorSnapshot, MAX_UNDO_HISTORY};
 use gitfleet_core::DocumentId;
 use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
 use gitfleet_git::{FileChange, IgnoredDirListing, IgnoredEntries, ParsedDiff};
@@ -25,10 +29,10 @@ use gitfleet_search::{
 use gitfleet_security::IgnoreLayer;
 use iced::widget::{scrollable, text_editor, text_input};
 use iced::{Point, Task};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DetachedViewMode {
@@ -95,6 +99,28 @@ pub(crate) struct StudioPendingDelete {
     pub(crate) is_dir: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StudioCreateEntryKind {
+    File { parent_rel: String },
+    Folder { parent_rel: String },
+    Duplicate { src_rel: String },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StudioCreateEntryModal {
+    pub(crate) kind: StudioCreateEntryKind,
+    pub(crate) input: String,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QuickOpenCandidate {
+    pub(crate) rel_path: String,
+    pub(crate) is_ignored: bool,
+    pub(crate) is_open_tab: bool,
+    pub(crate) positions: Vec<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedTabFile {
     pub(crate) path: PathBuf,
@@ -108,6 +134,7 @@ pub(crate) enum DetachedAction {
     SelectTab(usize),
     CloseTab(usize),
     CloseActiveTab,
+    NewUntitledTab,
     ConfirmCloseTab {
         tab_id: u64,
         save_first: bool,
@@ -117,6 +144,18 @@ pub(crate) enum DetachedAction {
     ToggleSidebar,
     OpenAndFocusExplorer,
     OpenAndFocusSearchSidebar,
+
+    // Quick Open (Ctrl+P) & Go to Line (Ctrl+G)
+    ToggleQuickOpen,
+    CloseQuickOpen,
+    QuickOpenQueryChanged(String),
+    QuickOpenMoveSelection(isize),
+    QuickOpenConfirmSelected,
+    QuickOpenSelectRelPath(String),
+    OpenGoToLine,
+    CloseGoToLine,
+    GoToLineInputChanged(String),
+    SubmitGoToLine,
 
     // Explorer Tree
     ExplorerFilterChanged(String),
@@ -133,6 +172,20 @@ pub(crate) enum DetachedAction {
     CloseExplorerMenu,
     RevealExplorerEntry(String),
     CopyExplorerPath(String),
+    OpenExplorerCreate {
+        parent_rel: String,
+        is_dir: bool,
+    },
+    OpenExplorerDuplicate {
+        src_rel: String,
+    },
+    ExplorerCreateInputChanged(String),
+    CancelExplorerCreate,
+    SubmitExplorerCreate,
+    ExplorerEntryCreated {
+        is_dir: bool,
+        result: Result<String, String>,
+    },
     RequestDeleteExplorerEntry {
         rel_path: String,
         is_dir: bool,
@@ -220,7 +273,17 @@ pub(crate) enum DetachedAction {
     EditorAction(text_editor::Action),
     EditorScrolled(scrollable::Viewport),
     InsertIndent,
+    OutdentSelection,
+    SmartEnter,
+    ToggleComment,
+    MoveLine(isize),
+    TypeAutoPairChar(char),
+    Undo,
+    Redo,
     SaveEditor,
+    SaveTabAs,
+    SaveTabAsPicked(u64, Option<PathBuf>),
+    SaveAllTabs,
     RevertEditor,
     OpenStatusMenu(StudioStatusMenu),
     CloseStatusMenu,
@@ -296,6 +359,7 @@ pub(crate) struct StudioTab {
     pub(crate) last_text_diff_mode: DetachedViewMode,
 
     // Editable local document
+    pub(crate) is_untitled: bool,
     pub(crate) file_path: Option<PathBuf>,
     pub(crate) doc_id: Option<DocumentId>,
     pub(crate) doc_version: Option<String>,
@@ -307,6 +371,9 @@ pub(crate) struct StudioTab {
     pub(crate) editor_hydrated: bool,
     pub(crate) editor_content: text_editor::Content,
     pub(crate) editor_scroll: crate::views::code_editor::CodeScrollState,
+    pub(crate) undo_stack: VecDeque<EditorSnapshot>,
+    pub(crate) redo_stack: Vec<EditorSnapshot>,
+    pub(crate) last_typing_snapshot_at: Option<Instant>,
     pub(crate) dirty: bool,
     pub(crate) loading_file: bool,
     pub(crate) file_load_req_id: u64,
@@ -352,6 +419,7 @@ impl StudioTab {
             rel_path: None,
             mode: DetachedViewMode::Edit,
             last_text_diff_mode: DetachedViewMode::SideBySideDiff,
+            is_untitled: false,
             file_path: None,
             doc_id: None,
             doc_version: None,
@@ -363,6 +431,9 @@ impl StudioTab {
             editor_hydrated: false,
             editor_content: text_editor::Content::new(),
             editor_scroll: crate::views::code_editor::CodeScrollState::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: Vec::new(),
+            last_typing_snapshot_at: None,
             dirty: false,
             loading_file: false,
             file_load_req_id: 0,
@@ -405,8 +476,57 @@ impl StudioTab {
         }
     }
 
+    pub(crate) fn new_untitled(id: u64, num: usize) -> Self {
+        let mut tab = Self::new_empty(id, format!("Untitled-{num}"));
+        tab.is_untitled = true;
+        tab.editor_hydrated = true;
+        tab.mode = DetachedViewMode::Edit;
+        tab
+    }
+
     pub(crate) fn is_editable(&self) -> bool {
-        self.file_path.is_some() && self.doc_id.is_some()
+        (self.file_path.is_some() && self.doc_id.is_some()) || self.is_untitled
+    }
+
+    pub(crate) fn current_snapshot(&self) -> EditorSnapshot {
+        let (line, col) = self.editor_content.cursor_position();
+        EditorSnapshot {
+            text: editor_buffer_text(&self.editor_content),
+            line,
+            col,
+        }
+    }
+
+    pub(crate) fn record_undo_snapshot(&mut self, coalesce_typing: bool) {
+        let now = Instant::now();
+        if coalesce_typing
+            && let Some(prev_at) = self.last_typing_snapshot_at
+            && now.duration_since(prev_at) <= Duration::from_millis(450)
+        {
+            self.last_typing_snapshot_at = Some(now);
+            self.redo_stack.clear();
+            return;
+        }
+        let snap = self.current_snapshot();
+        if self.undo_stack.back().is_none_or(|last| last.text != snap.text) {
+            if self.undo_stack.len() >= MAX_UNDO_HISTORY {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(snap);
+        }
+        self.redo_stack.clear();
+        self.last_typing_snapshot_at = if coalesce_typing { Some(now) } else { None };
+    }
+
+    pub(crate) fn recompute_dirty_flag(&mut self) {
+        if self.is_untitled && self.file_path.is_none() {
+            self.dirty = !editor_buffer_text(&self.editor_content).is_empty();
+            return;
+        }
+        if let Some(disk_text) = &self.raw_text {
+            let formatted = format_editor_text_for_save(&self.editor_content, self.trailing_newline);
+            self.dirty = formatted != *disk_text;
+        }
     }
 
     pub(crate) fn has_preview_available(&self) -> bool {
@@ -494,8 +614,12 @@ impl StudioTab {
             .map(|p| p.to_string_lossy().replace('\\', "/"));
         self.language = CodeLanguage::from_path(path);
         self.file_path = Some(path.to_path_buf());
+        self.is_untitled = false;
         self.loading_file = false;
         self.dirty = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_typing_snapshot_at = None;
         self.editor_hydrated = false;
         self.preview_hydrated = false;
 
@@ -576,7 +700,17 @@ pub(crate) struct DetachedViewerState {
     pub(crate) tabs: Vec<StudioTab>,
     pub(crate) active_tab: Option<usize>,
     pub(crate) next_tab_id: u64,
+    pub(crate) next_untitled_num: usize,
     pub(crate) pending_close_tab: Option<u64>,
+
+    // Quick Open (Ctrl+P) & Go to Line (Ctrl+G)
+    pub(crate) quick_open_visible: bool,
+    pub(crate) quick_open_query: String,
+    pub(crate) quick_open_selected: usize,
+    pub(crate) quick_open_input_id: text_input::Id,
+    pub(crate) goto_line_visible: bool,
+    pub(crate) goto_line_input: String,
+    pub(crate) goto_line_input_id: text_input::Id,
 
     pub(crate) request_id: u64,
     pub(crate) loading: bool,
@@ -612,6 +746,8 @@ pub(crate) struct DetachedViewerState {
     pub(crate) explorer_expanded_dirs: HashSet<String>,
     pub(crate) explorer_menu: Option<StudioExplorerMenu>,
     pub(crate) pending_delete: Option<StudioPendingDelete>,
+    pub(crate) create_modal: Option<StudioCreateEntryModal>,
+    pub(crate) create_input_id: text_input::Id,
     pub(crate) rename_modal: Option<RenameEntryModalState>,
     pub(crate) rename_input_id: text_input::Id,
     pub(crate) gitignore_modal: Option<AddGitignoreModalState>,
@@ -665,7 +801,15 @@ impl DetachedViewerState {
             tabs: Vec::new(),
             active_tab: None,
             next_tab_id: 1,
+            next_untitled_num: 1,
             pending_close_tab: None,
+            quick_open_visible: false,
+            quick_open_query: String::new(),
+            quick_open_selected: 0,
+            quick_open_input_id: text_input::Id::unique(),
+            goto_line_visible: false,
+            goto_line_input: String::new(),
+            goto_line_input_id: text_input::Id::unique(),
             request_id: 0,
             loading: false,
             status_note: "Ready".into(),
@@ -692,6 +836,8 @@ impl DetachedViewerState {
             explorer_expanded_dirs: HashSet::new(),
             explorer_menu: None,
             pending_delete: None,
+            create_modal: None,
+            create_input_id: text_input::Id::unique(),
             rename_modal: None,
             rename_input_id: text_input::Id::unique(),
             gitignore_modal: None,
@@ -1312,5 +1458,122 @@ impl DetachedViewerState {
             }
         };
         self.recompute_in_file_matches(false);
+    }
+
+    pub(crate) fn quick_open_candidates(&self, limit: usize) -> Vec<QuickOpenCandidate> {
+        let q = self.quick_open_query.trim();
+        if q.starts_with(':') {
+            return Vec::new();
+        }
+        let open_rels: HashSet<&str> = self
+            .tabs
+            .iter()
+            .filter_map(|t| t.rel_path.as_deref())
+            .collect();
+
+        let mut scored: Vec<(i32, QuickOpenCandidate)> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+
+        // 1. Open tabs first
+        for tab in &self.tabs {
+            if let Some(rel) = tab.rel_path.as_deref()
+                && seen.insert(rel)
+            {
+                if q.is_empty() {
+                    scored.push((
+                        10_000,
+                        QuickOpenCandidate {
+                            rel_path: rel.to_string(),
+                            is_ignored: false,
+                            is_open_tab: true,
+                            positions: Vec::new(),
+                        },
+                    ));
+                } else if let Some((score, positions)) = fuzzy_match(q, rel) {
+                    scored.push((
+                        score + 40,
+                        QuickOpenCandidate {
+                            rel_path: rel.to_string(),
+                            is_ignored: false,
+                            is_open_tab: true,
+                            positions,
+                        },
+                    ));
+                }
+            }
+        }
+
+        // 2. Tracked workspace files
+        for rel in &self.explorer_files {
+            if !seen.insert(rel.as_str()) {
+                continue;
+            }
+            let is_open = open_rels.contains(rel.as_str());
+            if q.is_empty() {
+                if scored.len() < limit {
+                    scored.push((
+                        0,
+                        QuickOpenCandidate {
+                            rel_path: rel.clone(),
+                            is_ignored: false,
+                            is_open_tab: is_open,
+                            positions: Vec::new(),
+                        },
+                    ));
+                }
+            } else if let Some((score, positions)) = fuzzy_match(q, rel) {
+                scored.push((
+                    score,
+                    QuickOpenCandidate {
+                        rel_path: rel.clone(),
+                        is_ignored: false,
+                        is_open_tab: is_open,
+                        positions,
+                    },
+                ));
+            }
+        }
+
+        // 3. Ignored files (dimmed, slightly lower priority)
+        if self.explorer_show_ignored {
+            for rel in &self.explorer_ignored_files {
+                if !seen.insert(rel.as_str()) {
+                    continue;
+                }
+                let is_open = open_rels.contains(rel.as_str());
+                if q.is_empty() {
+                    if scored.len() < limit {
+                        scored.push((
+                            -10,
+                            QuickOpenCandidate {
+                                rel_path: rel.clone(),
+                                is_ignored: true,
+                                is_open_tab: is_open,
+                                positions: Vec::new(),
+                            },
+                        ));
+                    }
+                } else if let Some((score, positions)) = fuzzy_match(q, rel) {
+                    scored.push((
+                        score - 20,
+                        QuickOpenCandidate {
+                            rel_path: rel.clone(),
+                            is_ignored: true,
+                            is_open_tab: is_open,
+                            positions,
+                        },
+                    ));
+                }
+            }
+        }
+
+        if !q.is_empty() {
+            scored.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| a.1.rel_path.len().cmp(&b.1.rel_path.len()))
+                    .then_with(|| a.1.rel_path.cmp(&b.1.rel_path))
+            });
+        }
+        scored.into_iter().take(limit).map(|(_, c)| c).collect()
     }
 }

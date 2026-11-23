@@ -7,6 +7,7 @@ pub(crate) mod io;
 pub(crate) mod sidebar_compare;
 pub(crate) mod sidebar_explorer;
 pub(crate) mod sidebar_search;
+pub(crate) mod smart_edit;
 pub(crate) mod state;
 pub(crate) mod status_bar;
 pub(crate) mod tasks;
@@ -20,9 +21,9 @@ mod tests;
 pub(crate) use state::{DetachedAction, DetachedViewerState};
 
 use self::sidebar_compare::render_compare_sidebar;
-use self::sidebar_explorer::{render_activity_rail, render_explorer_sidebar};
+use self::sidebar_explorer::{lang_tag, render_activity_rail, render_explorer_sidebar};
 use self::sidebar_search::render_search_sidebar;
-use self::state::{StudioSidebarPanel, StudioStatusMenu};
+use self::state::{StudioCreateEntryKind, StudioSidebarPanel, StudioStatusMenu};
 use self::status_bar::render_studio_status_bar;
 use self::workbench::render_editor_workbench;
 use crate::app::{GitFleetApp, Message};
@@ -33,9 +34,11 @@ use crate::views::overlays::doc_format_modal::{
     build_encoding_menu_card, build_eol_menu_card, build_syntax_menu_card,
 };
 use crate::views::overlays::file_ops_modal::{build_add_gitignore_modal, build_rename_entry_modal};
-use crate::views::truncate_chars;
+use crate::views::overlays::fuzzy::render_fuzzy_text;
+use crate::views::{slim_scroll, truncate_chars};
 use iced::widget::{
-    Space, Stack, button, column, container, horizontal_rule, opaque, row, text, vertical_rule,
+    Space, Stack, button, column, container, horizontal_rule, opaque, row, text, text_input,
+    vertical_rule,
 };
 use iced::{Alignment, Element, Length, window};
 use std::path::Path;
@@ -106,8 +109,11 @@ impl GitFleetApp {
         let has_overlay = v.status_menu.is_some()
             || v.explorer_menu.is_some()
             || v.pending_delete.is_some()
+            || v.create_modal.is_some()
             || v.rename_modal.is_some()
-            || v.gitignore_modal.is_some();
+            || v.gitignore_modal.is_some()
+            || v.quick_open_visible
+            || v.goto_line_visible;
         let mut layers: Vec<Element<'_, Message>> = vec![theme::inert_when(base, has_overlay)];
 
         if let Some((menu_kind, anchor)) = v.status_menu
@@ -201,19 +207,61 @@ impl GitFleetApp {
             .spacing(2);
 
             if menu.is_dir {
-                items = items.push(ctx_btn(
-                    icons::folder_open(12.0, p.accent_fg).into(),
-                    "Toggle Expand / Collapse",
-                    DetachedAction::ToggleExplorerDir(menu.rel_path.clone()),
-                    false,
-                ));
+                items = items
+                    .push(ctx_btn(
+                        icons::folder_open(12.0, p.accent_fg).into(),
+                        "Toggle Expand / Collapse",
+                        DetachedAction::ToggleExplorerDir(menu.rel_path.clone()),
+                        false,
+                    ))
+                    .push(ctx_btn(
+                        icons::file_plus(12.0, p.text_secondary).into(),
+                        "New File Here…",
+                        DetachedAction::OpenExplorerCreate {
+                            parent_rel: menu.rel_path.clone(),
+                            is_dir: false,
+                        },
+                        false,
+                    ))
+                    .push(ctx_btn(
+                        icons::folder_plus(12.0, p.text_secondary).into(),
+                        "New Folder Here…",
+                        DetachedAction::OpenExplorerCreate {
+                            parent_rel: menu.rel_path.clone(),
+                            is_dir: true,
+                        },
+                        false,
+                    ));
             } else {
-                items = items.push(ctx_btn(
-                    icons::file_code(12.0, p.accent_fg).into(),
-                    "Open in Editor",
-                    DetachedAction::OpenExplorerFile(menu.rel_path.clone()),
-                    false,
-                ));
+                let parent_dir = menu
+                    .rel_path
+                    .rsplit_once('/')
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_default();
+                items = items
+                    .push(ctx_btn(
+                        icons::file_code(12.0, p.accent_fg).into(),
+                        "Open in Editor",
+                        DetachedAction::OpenExplorerFile(menu.rel_path.clone()),
+                        false,
+                    ))
+                    .push(ctx_btn(
+                        icons::file_plus(12.0, p.text_secondary).into(),
+                        "New File in Folder…",
+                        DetachedAction::OpenExplorerCreate {
+                            parent_rel: parent_dir,
+                            is_dir: false,
+                        },
+                        false,
+                    ))
+                    .push(ctx_btn(
+                        icons::copy(12.0, p.text_secondary).into(),
+                        "Duplicate File…",
+                        DetachedAction::OpenExplorerDuplicate {
+                            src_rel: menu.rel_path.clone(),
+                        },
+                        false,
+                    ));
             }
 
             items = items
@@ -356,6 +404,313 @@ impl GitFleetApp {
             layers.push(theme::overlay_backdrop(
                 centered,
                 Message::Detached(win_id, DetachedAction::CancelDeleteExplorerEntry),
+            ));
+        }
+
+        if let Some(modal) = &v.create_modal {
+            let (title, subtitle, placeholder, submit_lbl) = match &modal.kind {
+                StudioCreateEntryKind::File { parent_rel } => (
+                    "New File",
+                    if parent_rel.is_empty() {
+                        "Create inside workspace root (nested paths like src/foo.rs supported)"
+                            .to_string()
+                    } else {
+                        format!("Create inside '{parent_rel}/'")
+                    },
+                    "e.g. components/Card.tsx",
+                    "Create File",
+                ),
+                StudioCreateEntryKind::Folder { parent_rel } => (
+                    "New Folder",
+                    if parent_rel.is_empty() {
+                        "Create folder inside workspace root".to_string()
+                    } else {
+                        format!("Create folder inside '{parent_rel}/'")
+                    },
+                    "e.g. utils",
+                    "Create Folder",
+                ),
+                StudioCreateEntryKind::Duplicate { src_rel } => (
+                    "Duplicate File",
+                    format!("Copy '{src_rel}' into same directory as:"),
+                    "New file name…",
+                    "Duplicate",
+                ),
+            };
+
+            let mut body_col = column![
+                text_input(placeholder, &modal.input)
+                    .id(v.create_input_id.clone())
+                    .on_input(move |s| {
+                        Message::Detached(win_id, DetachedAction::ExplorerCreateInputChanged(s))
+                    })
+                    .on_submit(Message::Detached(
+                        win_id,
+                        DetachedAction::SubmitExplorerCreate,
+                    ))
+                    .padding([7, 10])
+                    .size(type_scale::BODY)
+                    .font(theme::CODE_FONT)
+                    .style(theme::dark_input(p)),
+            ]
+            .spacing(space::SM);
+
+            if let Some(err) = &modal.error {
+                body_col = body_col.push(
+                    text(err)
+                        .size(type_scale::CAPTION)
+                        .color(p.danger_fg),
+                );
+            }
+
+            let footer = row![
+                Space::with_width(Length::Fill),
+                button(text("Cancel").size(type_scale::BODY))
+                    .padding([6, 14])
+                    .style(theme::subtle_btn(p))
+                    .on_press(Message::Detached(
+                        win_id,
+                        DetachedAction::CancelExplorerCreate,
+                    )),
+                button(text(submit_lbl).size(type_scale::BODY))
+                    .padding([6, 16])
+                    .style(theme::primary_btn(p))
+                    .on_press(Message::Detached(
+                        win_id,
+                        DetachedAction::SubmitExplorerCreate,
+                    )),
+            ]
+            .spacing(space::SM)
+            .align_y(Alignment::Center);
+
+            layers.push(
+                theme::kit::ModalShell::new(p, title, body_col)
+                    .subtitle(subtitle)
+                    .size(theme::kit::ModalSize::Sm)
+                    .scrollable_body(false)
+                    .on_close(Message::Detached(
+                        win_id,
+                        DetachedAction::CancelExplorerCreate,
+                    ))
+                    .footer(footer)
+                    .into_element(),
+            );
+        }
+
+        if v.quick_open_visible {
+            let candidates = v.quick_open_candidates(60);
+            let q_trimmed = v.quick_open_query.trim();
+            let is_line_mode = q_trimmed.starts_with(':');
+
+            let input = text_input(
+                "Type file name to open, or :line[:col] to jump…",
+                &v.quick_open_query,
+            )
+            .id(v.quick_open_input_id.clone())
+            .on_input(move |s| Message::Detached(win_id, DetachedAction::QuickOpenQueryChanged(s)))
+            .on_submit(Message::Detached(
+                win_id,
+                DetachedAction::QuickOpenConfirmSelected,
+            ))
+            .padding([8, 12])
+            .size(type_scale::BODY)
+            .style(theme::dark_input(p));
+
+            let list_body: Element<'_, Message> = if is_line_mode {
+                let total = v
+                    .active_tab()
+                    .map(|t| t.editor_content.line_count())
+                    .unwrap_or(0);
+                container(
+                    row![
+                        icons::file_code(13.0, p.accent_fg),
+                        text(format!(
+                            "Press Enter to jump to {} (1..={})",
+                            q_trimmed,
+                            total.max(1)
+                        ))
+                        .size(type_scale::BODY)
+                        .color(p.text_primary),
+                    ]
+                    .spacing(space::SM)
+                    .align_y(Alignment::Center),
+                )
+                .padding([10, 12])
+                .into()
+            } else if candidates.is_empty() {
+                container(
+                    text(if v.search_root.is_none() && v.tabs.is_empty() {
+                        "Open a folder or file first to browse workspace files."
+                    } else {
+                        "No matching files."
+                    })
+                    .size(type_scale::CAPTION)
+                    .color(p.text_muted),
+                )
+                .padding([12, 14])
+                .into()
+            } else {
+                let mut rows_col = column![].spacing(2);
+                let sel_idx = v.quick_open_selected.min(candidates.len().saturating_sub(1));
+                for (idx, item) in candidates.into_iter().enumerate() {
+                    let is_sel = idx == sel_idx;
+                    let lang = CodeLanguage::from_path(Path::new(&item.rel_path));
+                    let normal_col = if item.is_ignored {
+                        p.text_muted
+                    } else if is_sel {
+                        p.text_primary
+                    } else {
+                        p.text_secondary
+                    };
+                    let mut line_row = row![
+                        theme::kit::focus_accent_bar(p, is_sel, true, 16.0),
+                        lang_tag(lang, self.theme_mode),
+                        theme::clipped_line(
+                            render_fuzzy_text(
+                                &item.rel_path,
+                                &item.positions,
+                                normal_col,
+                                p.accent_fg,
+                            ),
+                            Length::Fill,
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center);
+
+                    if item.is_open_tab {
+                        line_row = line_row.push(theme::kit::status_pill(
+                            "open",
+                            p.accent_fg,
+                            p.fill_selected,
+                        ));
+                    } else if item.is_ignored {
+                        line_row = line_row.push(
+                            text("ignored")
+                                .size(type_scale::BADGE)
+                                .color(p.text_muted),
+                        );
+                    }
+
+                    let rel_target = item.rel_path.clone();
+                    rows_col = rows_col.push(
+                        button(line_row)
+                            .width(Length::Fill)
+                            .padding([6, 10])
+                            .style(theme::repo_row_btn(p, is_sel))
+                            .on_press(Message::Detached(
+                                win_id,
+                                DetachedAction::QuickOpenSelectRelPath(rel_target),
+                            )),
+                    );
+                }
+                slim_scroll(rows_col, p)
+                    .height(Length::Shrink)
+                    .into()
+            };
+
+            let card = opaque(
+                container(
+                    column![
+                        input,
+                        horizontal_rule(1).style(theme::subtle_rule(p)),
+                        container(list_body).max_height(340.0).width(Length::Fill),
+                        horizontal_rule(1).style(theme::subtle_rule(p)),
+                        row![
+                            theme::kit::kbd_pill(p, "↑↓"),
+                            text("navigate").size(type_scale::BADGE).color(p.text_muted),
+                            theme::kit::kbd_pill(p, "Enter"),
+                            text("open").size(type_scale::BADGE).color(p.text_muted),
+                            theme::kit::kbd_pill(p, ":42"),
+                            text("go to line").size(type_scale::BADGE).color(p.text_muted),
+                            Space::with_width(Length::Fill),
+                            theme::kit::kbd_pill(p, "Esc"),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center)
+                        .padding([2, 4]),
+                    ]
+                    .spacing(6),
+                )
+                .padding(10)
+                .width(Length::Fixed(layout::MODAL_MD))
+                .style(theme::modal_box(p)),
+            );
+
+            let top_overlay = container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(iced::Padding {
+                    top: 48.0,
+                    right: 16.0,
+                    bottom: 16.0,
+                    left: 16.0,
+                })
+                .align_x(iced::alignment::Horizontal::Center)
+                .style(theme::backdrop_box);
+
+            layers.push(theme::overlay_backdrop(
+                top_overlay,
+                Message::Detached(win_id, DetachedAction::CloseQuickOpen),
+            ));
+        }
+
+        if v.goto_line_visible {
+            let total_lines = v
+                .active_tab()
+                .map(|t| t.editor_content.line_count())
+                .unwrap_or(1)
+                .max(1);
+            let card = opaque(
+                container(
+                    column![
+                        row![
+                            text("Go to Line / Column")
+                                .size(type_scale::CAPTION)
+                                .color(p.text_primary),
+                            Space::with_width(Length::Fill),
+                            text(format!("1..={total_lines}"))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_muted),
+                        ]
+                        .align_y(Alignment::Center),
+                        text_input(
+                            &format!("Enter line[:col] (1..={total_lines})…"),
+                            &v.goto_line_input,
+                        )
+                        .id(v.goto_line_input_id.clone())
+                        .on_input(move |s| {
+                            Message::Detached(win_id, DetachedAction::GoToLineInputChanged(s))
+                        })
+                        .on_submit(Message::Detached(win_id, DetachedAction::SubmitGoToLine))
+                        .padding([7, 10])
+                        .size(type_scale::BODY)
+                        .font(theme::CODE_FONT)
+                        .style(theme::dark_input(p)),
+                    ]
+                    .spacing(6),
+                )
+                .padding(10)
+                .width(Length::Fixed(360.0))
+                .style(theme::modal_box(p)),
+            );
+
+            let top_overlay = container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(iced::Padding {
+                    top: 52.0,
+                    right: 16.0,
+                    bottom: 16.0,
+                    left: 16.0,
+                })
+                .align_x(iced::alignment::Horizontal::Center)
+                .style(theme::backdrop_box);
+
+            layers.push(theme::overlay_backdrop(
+                top_overlay,
+                Message::Detached(win_id, DetachedAction::CloseGoToLine),
             ));
         }
 

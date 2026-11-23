@@ -1,8 +1,9 @@
 use crate::app::{BottomViewMode, DrawerTab, GitFleetApp, HostLayoutMode, Message};
+use crate::views::detached_viewer::DetachedAction;
 use crate::views::image_diff::ImageDiffMode;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::{Point, Subscription, event, mouse, time, window};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -11,6 +12,8 @@ static STREAM_CURSOR_EVENTS: AtomicBool = AtomicBool::new(false);
 static PALETTE_NAV_ACTIVE: AtomicBool = AtomicBool::new(false);
 static BRANCH_POPOVER_NAV_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LAST_CURSOR_POS: OnceLock<Mutex<HashMap<window::Id, Point>>> = OnceLock::new();
+static STUDIO_WINDOWS: OnceLock<Mutex<HashSet<window::Id>>> = OnceLock::new();
+static QUICK_OPEN_WINDOWS: OnceLock<Mutex<HashSet<window::Id>>> = OnceLock::new();
 
 fn record_cursor_pos(id: window::Id, pos: Point) {
     let map = LAST_CURSOR_POS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -28,6 +31,35 @@ pub(crate) fn set_stream_cursor_events(enabled: bool) {
     STREAM_CURSOR_EVENTS.store(enabled, Ordering::Relaxed);
 }
 
+fn sync_window_sets(studio: HashSet<window::Id>, quick_open: HashSet<window::Id>) {
+    if let Ok(mut guard) = STUDIO_WINDOWS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        *guard = studio;
+    }
+    if let Ok(mut guard) = QUICK_OPEN_WINDOWS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        *guard = quick_open;
+    }
+}
+
+fn is_studio_window(id: window::Id) -> bool {
+    STUDIO_WINDOWS
+        .get()
+        .and_then(|m| m.lock().ok())
+        .is_some_and(|s| s.contains(&id))
+}
+
+fn is_quick_open_window(id: window::Id) -> bool {
+    QUICK_OPEN_WINDOWS
+        .get()
+        .and_then(|m| m.lock().ok())
+        .is_some_and(|s| s.contains(&id))
+}
+
 impl GitFleetApp {
     pub(crate) fn subscription(&self) -> Subscription<Message> {
         let needs_cursor_stream = self.active_resize.is_some()
@@ -36,6 +68,13 @@ impl GitFleetApp {
         set_stream_cursor_events(needs_cursor_stream);
         PALETTE_NAV_ACTIVE.store(self.show_palette, Ordering::Relaxed);
         BRANCH_POPOVER_NAV_ACTIVE.store(self.show_branch_popover, Ordering::Relaxed);
+        sync_window_sets(
+            self.detached_viewers.keys().copied().collect(),
+            self.detached_viewers
+                .iter()
+                .filter_map(|(id, v)| v.quick_open_visible.then_some(*id))
+                .collect(),
+        );
 
         let close_sub = window::close_events().map(Message::WindowClosed);
         let tick_sub = time::every(Duration::from_millis(250)).map(|_| Message::BackgroundTick);
@@ -78,55 +117,118 @@ impl GitFleetApp {
         if terminal_capture_keys {
             subs.push(event::listen_with(handle_window_and_terminal_event));
         } else {
-            subs.push(keyboard::on_key_press(|key, modifiers| match key.as_ref() {
-                Key::Character("k") | Key::Character("p") if modifiers.command() => {
-                    Some(Message::ToggleCommandPalette)
-                }
-                Key::Character("`") | Key::Character("~")
-                    if modifiers.command() && modifiers.shift() =>
-                {
-                    Some(Message::TerminalNewTab(None))
-                }
-                Key::Character("5") | Key::Character("%")
-                    if modifiers.command() && modifiers.shift() =>
-                {
-                    Some(Message::TerminalSplitPane(None))
-                }
-                Key::Character("`") if modifiers.command() => {
-                    Some(Message::ToggleDrawer(DrawerTab::Terminal))
-                }
-                Key::Character("r") if modifiers.command() && modifiers.shift() => {
-                    Some(Message::RefreshAll)
-                }
-                Key::Named(keyboard::key::Named::F2) => Some(Message::OpenRenameBranchModal(None)),
-                Key::Named(keyboard::key::Named::F5) => Some(Message::RefreshSelected),
-                Key::Named(keyboard::key::Named::F7) => Some(Message::OpenCreateBranch {
-                    base_ref: None,
-                    prefix: None,
-                }),
-                Key::Character("m") | Key::Character("M")
-                    if modifiers.command() && !modifiers.shift() && !modifiers.alt() =>
-                {
-                    Some(Message::ShortcutMergeSelectedBranch)
-                }
-                Key::Character("d") | Key::Character("D")
-                    if modifiers.command() && !modifiers.shift() && !modifiers.alt() =>
-                {
-                    Some(Message::ShortcutRebaseSelectedBranch)
-                }
-                Key::Named(keyboard::key::Named::ArrowUp) if modifiers == Modifiers::ALT => {
-                    Some(Message::SelectPrevRepo)
-                }
-                Key::Named(keyboard::key::Named::ArrowDown) if modifiers == Modifiers::ALT => {
-                    Some(Message::SelectNextRepo)
-                }
-                _ => None,
-            }));
             subs.push(event::listen_with(handle_window_event));
         }
 
         Subscription::batch(subs)
     }
+}
+
+fn handle_studio_key_pressed(
+    key: Key,
+    modifiers: Modifiers,
+    status: event::Status,
+    id: window::Id,
+) -> Option<Message> {
+    if !modifiers.command() && !modifiers.alt() && !modifiers.shift() {
+        if is_quick_open_window(id) {
+            match key.as_ref() {
+                Key::Named(keyboard::key::Named::ArrowUp) => {
+                    return Some(Message::Detached(
+                        id,
+                        DetachedAction::QuickOpenMoveSelection(-1),
+                    ));
+                }
+                Key::Named(keyboard::key::Named::ArrowDown) => {
+                    return Some(Message::Detached(
+                        id,
+                        DetachedAction::QuickOpenMoveSelection(1),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        match key.as_ref() {
+            Key::Named(keyboard::key::Named::F5) => {
+                return Some(Message::Detached(id, DetachedAction::ReloadFiles));
+            }
+            Key::Named(keyboard::key::Named::Escape) => {
+                return Some(Message::ShortcutEscape(id));
+            }
+            _ => {}
+        }
+    }
+
+    if modifiers.command() && modifiers.shift() && !modifiers.alt() {
+        return match key.as_ref() {
+            Key::Character("s") | Key::Character("S") => {
+                Some(Message::Detached(id, DetachedAction::SaveTabAs))
+            }
+            Key::Character("f") | Key::Character("F") => Some(Message::ShortcutSearchFiles(id)),
+            Key::Character("e") | Key::Character("E") => Some(Message::ShortcutExplorer(id)),
+            Key::Character("p") | Key::Character("P") => {
+                Some(Message::Detached(id, DetachedAction::ToggleQuickOpen))
+            }
+            Key::Character("z") | Key::Character("Z") if status == event::Status::Ignored => {
+                Some(Message::Detached(id, DetachedAction::Redo))
+            }
+            Key::Character("=") | Key::Character("+") => Some(Message::ShortcutZoomFont(id, 1.0)),
+            _ => None,
+        };
+    }
+
+    if modifiers.command() && modifiers.alt() && !modifiers.shift() {
+        return match key.as_ref() {
+            Key::Character("s") | Key::Character("S") => {
+                Some(Message::Detached(id, DetachedAction::SaveAllTabs))
+            }
+            _ => None,
+        };
+    }
+
+    if modifiers.command() && !modifiers.shift() && !modifiers.alt() {
+        return match key.as_ref() {
+            Key::Character("p")
+            | Key::Character("P")
+            | Key::Character("k")
+            | Key::Character("K") => Some(Message::Detached(id, DetachedAction::ToggleQuickOpen)),
+            Key::Character("g") | Key::Character("G") => {
+                Some(Message::Detached(id, DetachedAction::OpenGoToLine))
+            }
+            Key::Character("n") | Key::Character("N") => {
+                Some(Message::Detached(id, DetachedAction::NewUntitledTab))
+            }
+            Key::Character("s") | Key::Character("S") => Some(Message::ShortcutSave(id)),
+            Key::Character("f") | Key::Character("F") => Some(Message::ShortcutFind(id)),
+            Key::Character("h") | Key::Character("H") => Some(Message::ShortcutReplace(id)),
+            Key::Character("b") | Key::Character("B") => Some(Message::ShortcutToggleSidebar(id)),
+            Key::Character("w") | Key::Character("W") => Some(Message::ShortcutCloseTab(id)),
+            Key::Character("o") | Key::Character("O") => Some(Message::ShortcutOpenFile(id)),
+            Key::Character("=") | Key::Character("+") => Some(Message::ShortcutZoomFont(id, 1.0)),
+            Key::Character("-") => Some(Message::ShortcutZoomFont(id, -1.0)),
+            Key::Character("z") | Key::Character("Z") if status == event::Status::Ignored => {
+                Some(Message::Detached(id, DetachedAction::Undo))
+            }
+            Key::Character("y") | Key::Character("Y") if status == event::Status::Ignored => {
+                Some(Message::Detached(id, DetachedAction::Redo))
+            }
+            Key::Character("c") | Key::Character("C") if status == event::Status::Ignored => {
+                Some(Message::CopyDiffSelection(id))
+            }
+            Key::Character("a") | Key::Character("A") if status == event::Status::Ignored => {
+                Some(Message::SelectAllFocused(id))
+            }
+            _ => None,
+        };
+    }
+
+    if modifiers.alt() && !modifiers.command() && !modifiers.shift() {
+        if matches!(key.as_ref(), Key::Character("z") | Key::Character("Z")) {
+            return Some(Message::ShortcutToggleWrap(id));
+        }
+    }
+
+    None
 }
 
 fn handle_window_event(
@@ -152,6 +254,11 @@ fn handle_window_event(
             Some(Message::ModifiersChanged(modifiers))
         }
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            if is_studio_window(id) {
+                return handle_studio_key_pressed(key, modifiers, status, id);
+            }
+
+            // ── Host Window Shortcuts ────────────────────────────────────────
             if !modifiers.command() && !modifiers.alt() && !modifiers.shift() {
                 if PALETTE_NAV_ACTIVE.load(Ordering::Relaxed) {
                     match key.as_ref() {
@@ -174,15 +281,41 @@ fn handle_window_event(
                         _ => {}
                     }
                 }
+                if status == event::Status::Ignored {
+                    match key.as_ref() {
+                        Key::Named(keyboard::key::Named::F2) => {
+                            return Some(Message::OpenRenameBranchModal(None));
+                        }
+                        Key::Named(keyboard::key::Named::F5) => {
+                            return Some(Message::RefreshSelected);
+                        }
+                        Key::Named(keyboard::key::Named::F7) => {
+                            return Some(Message::OpenCreateBranch {
+                                base_ref: None,
+                                prefix: None,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
             }
-            // Window-scoped shortcuts that work even while text inputs / code editors are focused
+
             if modifiers.command() && modifiers.shift() && !modifiers.alt() {
                 match key.as_ref() {
                     Key::Character("f") | Key::Character("F") => {
                         return Some(Message::ShortcutSearchFiles(id));
                     }
-                    Key::Character("e") | Key::Character("E") => {
-                        return Some(Message::ShortcutExplorer(id));
+                    Key::Character("p") | Key::Character("P") => {
+                        return Some(Message::ToggleCommandPalette);
+                    }
+                    Key::Character("`") | Key::Character("~") => {
+                        return Some(Message::TerminalNewTab(None));
+                    }
+                    Key::Character("5") | Key::Character("%") => {
+                        return Some(Message::TerminalSplitPane(None));
+                    }
+                    Key::Character("r") | Key::Character("R") => {
+                        return Some(Message::RefreshAll);
                     }
                     Key::Character("t") | Key::Character("T")
                         if status == event::Status::Ignored =>
@@ -193,29 +326,30 @@ fn handle_window_event(
                 }
             } else if modifiers.command() && !modifiers.shift() && !modifiers.alt() {
                 match key.as_ref() {
+                    Key::Character("k")
+                    | Key::Character("K")
+                    | Key::Character("p")
+                    | Key::Character("P") => {
+                        return Some(Message::ToggleCommandPalette);
+                    }
+                    Key::Character("`") => {
+                        return Some(Message::ToggleDrawer(DrawerTab::Terminal));
+                    }
                     Key::Character("s") | Key::Character("S") => {
                         return Some(Message::ShortcutSave(id));
-                    }
-                    Key::Character("f") | Key::Character("F") => {
-                        return Some(Message::ShortcutFind(id));
-                    }
-                    Key::Character("h") | Key::Character("H") => {
-                        return Some(Message::ShortcutReplace(id));
                     }
                     Key::Character("b") | Key::Character("B") => {
                         return Some(Message::ShortcutToggleSidebar(id));
                     }
-                    Key::Character("w") | Key::Character("W") => {
-                        return Some(Message::ShortcutCloseTab(id));
+                    Key::Character("m") | Key::Character("M")
+                        if status == event::Status::Ignored =>
+                    {
+                        return Some(Message::ShortcutMergeSelectedBranch);
                     }
-                    Key::Character("o") | Key::Character("O") => {
-                        return Some(Message::ShortcutOpenFile(id));
-                    }
-                    Key::Character("=") | Key::Character("+") => {
-                        return Some(Message::ShortcutZoomFont(id, 1.0));
-                    }
-                    Key::Character("-") => {
-                        return Some(Message::ShortcutZoomFont(id, -1.0));
+                    Key::Character("d") | Key::Character("D")
+                        if status == event::Status::Ignored =>
+                    {
+                        return Some(Message::ShortcutRebaseSelectedBranch);
                     }
                     Key::Character("t") | Key::Character("T")
                         if status == event::Status::Ignored =>
@@ -253,6 +387,12 @@ fn handle_window_event(
                     Key::Character("z") | Key::Character("Z") => {
                         return Some(Message::ShortcutToggleWrap(id));
                     }
+                    Key::Named(keyboard::key::Named::ArrowUp) => {
+                        return Some(Message::SelectPrevRepo);
+                    }
+                    Key::Named(keyboard::key::Named::ArrowDown) => {
+                        return Some(Message::SelectNextRepo);
+                    }
                     _ => {}
                 }
             } else if matches!(key.as_ref(), Key::Named(keyboard::key::Named::Escape)) {
@@ -269,6 +409,10 @@ fn handle_window_and_terminal_event(
     status: event::Status,
     id: window::Id,
 ) -> Option<Message> {
+    if is_studio_window(id) {
+        return handle_window_event(ev, status, id);
+    }
+
     match ev {
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
             record_cursor_pos(id, position);

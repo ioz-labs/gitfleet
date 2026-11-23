@@ -1,7 +1,8 @@
 //! Host-coupled & async action update handlers for GitFleet Studio.
 
-use super::io::{file_display_name, format_editor_text_for_save};
-use super::state::{DetachedAction, StudioTab};
+use super::io::{file_display_name, format_editor_text_for_save, jump_editor_to_span};
+use super::smart_edit::parse_goto_line_spec;
+use super::state::{DetachedAction, DetachedViewMode, StudioCreateEntryKind, StudioTab};
 use crate::app::{GitFleetApp, Message};
 use crate::preview::PreviewState;
 use crate::syntax::CodeLanguage;
@@ -20,13 +21,326 @@ impl GitFleetApp {
     ) -> Task<Message> {
         match action {
             DetachedAction::SaveEditor => {
-                let idx = self
+                let (idx_opt, needs_save_as) = self
                     .detached_viewers
                     .get(&win_id)
-                    .and_then(|v| v.active_tab);
-                if let Some(i) = idx {
+                    .map(|v| {
+                        let idx = v.active_tab;
+                        let untitled = idx
+                            .and_then(|i| v.tabs.get(i))
+                            .is_some_and(|t| t.is_untitled || t.file_path.is_none());
+                        (idx, untitled)
+                    })
+                    .unwrap_or((None, false));
+                if needs_save_as {
+                    return self.update_detached_viewer(win_id, DetachedAction::SaveTabAs);
+                }
+                if let Some(i) = idx_opt {
                     let (_, task) = self.save_tab_by_index(win_id, i);
                     return task;
+                }
+                Task::none()
+            }
+            DetachedAction::SaveTabAs => {
+                let params = self.detached_viewers.get(&win_id).and_then(|v| {
+                    let tab = v.active_tab()?;
+                    if !tab.is_editable() {
+                        return None;
+                    }
+                    let start_dir = tab
+                        .file_path
+                        .as_deref()
+                        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                        .or_else(|| v.search_root.clone());
+                    Some((tab.id, tab.title.clone(), start_dir))
+                });
+                let Some((tab_id, default_name, start_dir)) = params else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        let mut dlg = rfd::AsyncFileDialog::new()
+                            .set_title("Save File As…")
+                            .set_file_name(default_name);
+                        if let Some(d) = start_dir {
+                            dlg = dlg.set_directory(d);
+                        }
+                        dlg.save_file().await.map(|f| f.path().to_path_buf())
+                    },
+                    move |p| Message::Detached(win_id, DetachedAction::SaveTabAsPicked(tab_id, p)),
+                )
+            }
+            DetachedAction::SaveTabAsPicked(tab_id, Some(dest)) => {
+                let svc = self.service.clone();
+                let docs = &svc.docs;
+                let host_repo_path = self.current_repo().map(|r| r.path);
+                let mut rescan_explorer = false;
+                let mut refresh_host = false;
+
+                if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                    let root = v.search_root.clone();
+                    if let Some(tab) = v.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        let content = if tab.editor_hydrated {
+                            format_editor_text_for_save(&tab.editor_content, tab.trailing_newline)
+                        } else {
+                            tab.raw_text.clone().unwrap_or_default()
+                        };
+                        match docs.save_document_as(&dest, &content, tab.line_ending, tab.encoding)
+                        {
+                            Ok(lossy) => {
+                                tab.file_path = Some(dest.clone());
+                                tab.is_untitled = false;
+                                tab.title = file_display_name(&dest);
+                                tab.language = CodeLanguage::from_path(&dest);
+                                tab.rel_path = root
+                                    .as_deref()
+                                    .and_then(|r| dest.strip_prefix(r).ok())
+                                    .map(|p| p.to_string_lossy().replace('\\', "/"));
+                                if let Ok(cap) = docs.open_document(&dest) {
+                                    tab.doc_id = Some(cap.document_id);
+                                    tab.doc_version = Some(cap.version);
+                                    tab.line_ending = cap.line_ending;
+                                    tab.encoding = cap.encoding;
+                                    tab.trailing_newline = cap.content.ends_with('\n');
+                                    tab.raw_text = Some(cap.content);
+                                }
+                                tab.dirty = false;
+                                tab.preview_hydrated = false;
+                                if tab.mode == DetachedViewMode::Preview {
+                                    tab.ensure_preview_hydrated();
+                                }
+                                let saved_title = tab.title.clone();
+                                if let Some(rel) = tab.rel_path.clone() {
+                                    v.expand_ancestors_for_rel(&rel);
+                                }
+                                v.status_is_error = false;
+                                v.status_note = if lossy > 0 {
+                                    format!("Saved as {saved_title} ({lossy} lossy char(s))")
+                                } else {
+                                    format!("Saved as {saved_title}")
+                                };
+                                rescan_explorer = root
+                                    .as_deref()
+                                    .is_some_and(|r| dest.starts_with(r));
+                                refresh_host = host_repo_path
+                                    .as_deref()
+                                    .is_some_and(|rp| dest.starts_with(rp));
+                            }
+                            Err(e) => {
+                                v.status_is_error = true;
+                                v.status_note = format!("Save As failed: {e}");
+                            }
+                        }
+                    }
+                }
+
+                let mut tasks = Vec::new();
+                if rescan_explorer {
+                    tasks.push(self.spawn_explorer_scan_task(win_id));
+                }
+                if refresh_host {
+                    tasks.push(self.update(Message::RefreshSelected));
+                }
+                Task::batch(tasks)
+            }
+            DetachedAction::SaveTabAsPicked(_, None) => Task::none(),
+            DetachedAction::SaveAllTabs => {
+                let indices: Vec<usize> = self
+                    .detached_viewers
+                    .get(&win_id)
+                    .map(|v| {
+                        v.tabs
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, t)| {
+                                (t.dirty && t.file_path.is_some() && t.doc_id.is_some())
+                                    .then_some(i)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if indices.is_empty() {
+                    if let Some(v) = self.detached_viewers.get(&win_id)
+                        && v.active_tab().is_some_and(|t| t.is_untitled && t.dirty)
+                    {
+                        return self.update_detached_viewer(win_id, DetachedAction::SaveTabAs);
+                    }
+                    return Task::none();
+                }
+                let mut tasks = Vec::new();
+                let mut saved_count = 0usize;
+                for idx in indices {
+                    let (ok, t) = self.save_tab_by_index(win_id, idx);
+                    if ok {
+                        saved_count += 1;
+                    }
+                    tasks.push(t);
+                }
+                if saved_count > 0
+                    && let Some(v) = self.detached_viewers.get_mut(&win_id)
+                {
+                    v.status_is_error = false;
+                    v.status_note = format!("Saved {saved_count} file(s)");
+                }
+                Task::batch(tasks)
+            }
+            DetachedAction::SubmitExplorerCreate => {
+                let params = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    let root = v.search_root.clone()?;
+                    let modal = v.create_modal.as_mut()?;
+                    let trimmed = modal.input.trim().to_string();
+                    if trimmed.is_empty() {
+                        modal.error = Some("Please enter a name.".into());
+                        return None;
+                    }
+                    Some((root, modal.kind.clone(), trimmed))
+                });
+                let Some((root, kind, name_input)) = params else {
+                    return Task::none();
+                };
+                let is_dir = matches!(kind, StudioCreateEntryKind::Folder { .. });
+                Task::perform(
+                    async move {
+                        let result = tokio::task::spawn_blocking(move || match kind {
+                            StudioCreateEntryKind::File { parent_rel } => {
+                                gitfleet_git::create_workspace_entry(
+                                    &root,
+                                    &parent_rel,
+                                    &name_input,
+                                    false,
+                                )
+                                .map_err(|e| e.to_string())
+                            }
+                            StudioCreateEntryKind::Folder { parent_rel } => {
+                                gitfleet_git::create_workspace_entry(
+                                    &root,
+                                    &parent_rel,
+                                    &name_input,
+                                    true,
+                                )
+                                .map_err(|e| e.to_string())
+                            }
+                            StudioCreateEntryKind::Duplicate { src_rel } => {
+                                gitfleet_git::duplicate_workspace_file(&root, &src_rel, &name_input)
+                                    .map_err(|e| e.to_string())
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("File operation failed: {e}")));
+                        (is_dir, result)
+                    },
+                    move |(is_dir, result)| {
+                        Message::Detached(
+                            win_id,
+                            DetachedAction::ExplorerEntryCreated { is_dir, result },
+                        )
+                    },
+                )
+            }
+            DetachedAction::ExplorerEntryCreated { is_dir, result } => {
+                let host_repo_path = self.current_repo().map(|r| r.path);
+                match result {
+                    Ok(created_rel) => {
+                        let abs_opt = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                            v.create_modal = None;
+                            v.expand_ancestors_for_rel(&created_rel);
+                            if is_dir {
+                                v.explorer_expanded_dirs.insert(created_rel.clone());
+                            }
+                            v.status_is_error = false;
+                            v.status_note = if is_dir {
+                                format!("Created folder '{created_rel}'")
+                            } else {
+                                format!("Created '{created_rel}'")
+                            };
+                            v.search_root.as_ref().map(|r| r.join(&created_rel))
+                        });
+
+                        let mut tasks = vec![self.spawn_explorer_scan_task(win_id)];
+                        if let Some(abs) = abs_opt {
+                            if host_repo_path
+                                .as_deref()
+                                .is_some_and(|rp| abs.starts_with(rp))
+                            {
+                                tasks.push(self.update(Message::RefreshSelected));
+                            }
+                            if !is_dir {
+                                tasks.push(self.open_or_focus_file_tab(win_id, abs, None, false));
+                            }
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Err(err) => {
+                        if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                            if let Some(m) = &mut v.create_modal {
+                                m.error = Some(err.clone());
+                            }
+                            v.status_is_error = true;
+                            v.status_note = err;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            DetachedAction::QuickOpenConfirmSelected => {
+                let action_plan = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    let q = v.quick_open_query.trim().to_string();
+                    if q.starts_with(':') {
+                        let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                            v.editor_font_size,
+                            v.editor_word_wrap,
+                        );
+                        if let Some(tab) = v.active_tab_mut()
+                            && tab.is_editable()
+                        {
+                            tab.mode = DetachedViewMode::Edit;
+                            tab.ensure_editor_hydrated();
+                            let total = tab.editor_content.line_count();
+                            if let Some((ln, col)) = parse_goto_line_spec(&q, total) {
+                                jump_editor_to_span(&mut tab.editor_content, ln, col, col);
+                                let scroll_t =
+                                    crate::views::code_editor::scroll_numbered_editor_to_line(
+                                        &tab.editor_content,
+                                        &mut tab.editor_scroll,
+                                        ln,
+                                        cfg,
+                                    );
+                                v.quick_open_visible = false;
+                                v.status_is_error = false;
+                                v.status_note = format!("Jumped to Ln {}, Col {}", ln + 1, col + 1);
+                                return Some((None, Some(scroll_t)));
+                            }
+                        }
+                        return None;
+                    }
+                    let list = v.quick_open_candidates(60);
+                    let chosen = list.get(v.quick_open_selected)?.rel_path.clone();
+                    v.quick_open_visible = false;
+                    let abs = v
+                        .tabs
+                        .iter()
+                        .find(|t| t.rel_path.as_deref() == Some(chosen.as_str()))
+                        .and_then(|t| t.file_path.clone())
+                        .or_else(|| v.search_root.as_ref().map(|r| r.join(&chosen)))?;
+                    Some((Some(abs), None))
+                });
+                match action_plan {
+                    Some((Some(abs), _)) => self.open_or_focus_file_tab(win_id, abs, None, false),
+                    Some((None, Some(scroll_t))) => scroll_t,
+                    _ => Task::none(),
+                }
+            }
+            DetachedAction::QuickOpenSelectRelPath(rel) => {
+                let abs_opt = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    v.quick_open_visible = false;
+                    v.tabs
+                        .iter()
+                        .find(|t| t.rel_path.as_deref() == Some(rel.as_str()))
+                        .and_then(|t| t.file_path.clone())
+                        .or_else(|| v.search_root.as_ref().map(|r| r.join(&rel)))
+                });
+                if let Some(abs) = abs_opt {
+                    return self.open_or_focus_file_tab(win_id, abs, None, false);
                 }
                 Task::none()
             }

@@ -153,6 +153,22 @@ pub fn undo(size: f32, color: Color) -> svg::Svg<'static> {
     )
 }
 
+pub fn redo(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>"#,
+        size,
+        color,
+    )
+}
+
+pub fn file_plus(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/></svg>"#,
+        size,
+        color,
+    )
+}
+
 pub fn check(size: f32, color: Color) -> svg::Svg<'static> {
     icon(
         br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#,

@@ -272,6 +272,36 @@ pub(crate) fn render_explorer_sidebar<'a>(
             Length::Fill,
         ),
         tip(
+            button(icons::file_plus(12.0, p.text_muted))
+                .padding([3, 5])
+                .style(theme::vscode_icon_btn(p, false))
+                .on_press(Message::Detached(
+                    win_id,
+                    DetachedAction::OpenExplorerCreate {
+                        parent_rel: String::new(),
+                        is_dir: false,
+                    },
+                )),
+            "New File…",
+            tooltip::Position::Bottom,
+            p,
+        ),
+        tip(
+            button(icons::folder_plus(12.0, p.text_muted))
+                .padding([3, 5])
+                .style(theme::vscode_icon_btn(p, false))
+                .on_press(Message::Detached(
+                    win_id,
+                    DetachedAction::OpenExplorerCreate {
+                        parent_rel: String::new(),
+                        is_dir: true,
+                    },
+                )),
+            "New Folder…",
+            tooltip::Position::Bottom,
+            p,
+        ),
+        tip(
             button(if v.explorer_show_ignored {
                 icons::eye(12.0, p.accent_fg)
             } else {

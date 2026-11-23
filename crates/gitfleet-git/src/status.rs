@@ -1202,6 +1202,151 @@ pub fn rename_workspace_entry(root: &Path, rel_path: &str, new_name: &str) -> Ap
     Ok(new_rel)
 }
 
+/// Safely creates a new empty file or directory inside `root` under `parent_rel`.
+/// `name_or_rel` may be a single name (`"mod.rs"`) or a nested relative path (`"ui/button.rs"`).
+/// Rejects path traversal (`..`), `.git` segments, invalid Windows characters, and existing files.
+/// Returns the created normalized relative path (using `/` separators).
+pub fn create_workspace_entry(
+    root: &Path,
+    parent_rel: &str,
+    name_or_rel: &str,
+    is_dir: bool,
+) -> AppResult<String> {
+    let parent_norm = parent_rel.replace('\\', "/");
+    let parent_trimmed = parent_norm.trim_matches('/');
+    if !parent_trimmed.is_empty()
+        && (!is_safe_rel_path(parent_trimmed)
+            || parent_trimmed == ".git"
+            || parent_trimmed.starts_with(".git/"))
+    {
+        return Err(AppError::Git(format!(
+            "Invalid parent folder path: '{parent_rel}'"
+        )));
+    }
+
+    let child_norm = name_or_rel.trim().replace('\\', "/");
+    let child_trimmed = child_norm.trim_matches('/');
+    if child_trimmed.is_empty() || !is_safe_rel_path(child_trimmed) {
+        return Err(AppError::Git(format!(
+            "Invalid path: '{name_or_rel}'"
+        )));
+    }
+
+    for seg in child_trimmed.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg == ".git" || seg.contains('\0') {
+            return Err(AppError::Git(format!(
+                "Invalid path segment '{seg}' in '{name_or_rel}'"
+            )));
+        }
+        #[cfg(target_os = "windows")]
+        if seg
+            .chars()
+            .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+            || seg.ends_with('.')
+            || seg.ends_with(' ')
+        {
+            return Err(AppError::Git(format!(
+                "Invalid Windows path segment: '{seg}'"
+            )));
+        }
+    }
+
+    let full_rel = if parent_trimmed.is_empty() {
+        child_trimmed.to_string()
+    } else {
+        format!("{parent_trimmed}/{child_trimmed}")
+    };
+
+    let dst = root.join(&full_rel);
+    if std::fs::symlink_metadata(&dst).is_ok() {
+        return Err(AppError::Git(format!(
+            "Entry '{full_rel}' already exists"
+        )));
+    }
+
+    if is_dir {
+        std::fs::create_dir_all(&dst)?;
+    } else {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dst)?;
+    }
+
+    Ok(full_rel)
+}
+
+/// Safely duplicates a file inside `root` into the same parent directory as `new_name`.
+/// Rejects directories, `.git` paths, path separators in `new_name`, and existing targets.
+/// Returns the duplicated file's normalized relative path.
+pub fn duplicate_workspace_file(root: &Path, src_rel: &str, new_name: &str) -> AppResult<String> {
+    let norm = src_rel.replace('\\', "/");
+    let trimmed = norm.trim_matches('/');
+    if trimmed.is_empty()
+        || !is_safe_rel_path(trimmed)
+        || trimmed == ".git"
+        || trimmed.starts_with(".git/")
+    {
+        return Err(AppError::Git(format!(
+            "Refusing to duplicate unsafe path: '{src_rel}'"
+        )));
+    }
+
+    let cleaned_name = new_name.trim();
+    if cleaned_name.is_empty()
+        || cleaned_name == "."
+        || cleaned_name == ".."
+        || cleaned_name == ".git"
+        || cleaned_name.contains('/')
+        || cleaned_name.contains('\\')
+        || cleaned_name.contains('\0')
+    {
+        return Err(AppError::Git(format!(
+            "Invalid target file name: '{new_name}'"
+        )));
+    }
+
+    #[cfg(target_os = "windows")]
+    if cleaned_name
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        || cleaned_name.ends_with('.')
+    {
+        return Err(AppError::Git(format!(
+            "Invalid Windows file name: '{cleaned_name}'"
+        )));
+    }
+
+    let src = root.join(trimmed);
+    let meta = std::fs::metadata(&src).map_err(|_| {
+        AppError::Git(format!("Source file does not exist: '{trimmed}'"))
+    })?;
+    if !meta.is_file() {
+        return Err(AppError::Git(format!(
+            "Only regular files can be duplicated: '{trimmed}'"
+        )));
+    }
+
+    let parent = trimmed.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    let dst_rel = if parent.is_empty() {
+        cleaned_name.to_string()
+    } else {
+        format!("{parent}/{cleaned_name}")
+    };
+    let dst = root.join(&dst_rel);
+    if std::fs::symlink_metadata(&dst).is_ok() {
+        return Err(AppError::Git(format!(
+            "An entry named '{cleaned_name}' already exists here"
+        )));
+    }
+
+    std::fs::copy(&src, &dst)?;
+    Ok(dst_rel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1666,6 +1811,29 @@ mod tests {
         assert!(rename_workspace_entry(&dir, "src/sub/Alpha_New.rs", ".git").is_err());
         assert!(rename_workspace_entry(&dir, ".git", "nope").is_err());
         assert!(rename_workspace_entry(&dir, "../outside", "x").is_err());
+
+        // Safe create & duplicate helpers
+        let created_file =
+            create_workspace_entry(&dir, "src/sub", "nested/widget.rs", false).unwrap();
+        assert_eq!(created_file, "src/sub/nested/widget.rs");
+        assert!(dir.join("src/sub/nested/widget.rs").is_file());
+        std::fs::write(dir.join("src/sub/nested/widget.rs"), "pub struct W;\n").unwrap();
+
+        let created_dir = create_workspace_entry(&dir, "src/sub", "assets", true).unwrap();
+        assert_eq!(created_dir, "src/sub/assets");
+        assert!(dir.join("src/sub/assets").is_dir());
+
+        let dup_file =
+            duplicate_workspace_file(&dir, "src/sub/nested/widget.rs", "widget_copy.rs").unwrap();
+        assert_eq!(dup_file, "src/sub/nested/widget_copy.rs");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/sub/nested/widget_copy.rs")).unwrap(),
+            "pub struct W;\n"
+        );
+
+        assert!(create_workspace_entry(&dir, "src/sub", "../escape.rs", false).is_err());
+        assert!(create_workspace_entry(&dir, "", ".git/hooks/x", false).is_err());
+        assert!(duplicate_workspace_file(&dir, "src/sub/nested/widget.rs", "widget.rs").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

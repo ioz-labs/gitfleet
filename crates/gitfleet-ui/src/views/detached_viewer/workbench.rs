@@ -295,30 +295,83 @@ fn render_tab_bar<'a>(
         tabs_row = tabs_row.push(tab_pill);
     }
 
-    tabs_row = tabs_row.push(tip(
-        button(icons::plus(12.0, p.text_muted))
-            .padding([5, 7])
-            .style(theme::vscode_icon_btn(p, false))
-            .on_press(Message::Detached(win_id, DetachedAction::PickSingleFile)),
-        "Open File (Ctrl+O)",
-        tooltip::Position::Bottom,
-        p,
-    ));
+    tabs_row = tabs_row
+        .push(tip(
+            button(icons::plus(12.0, p.text_muted))
+                .padding([5, 7])
+                .style(theme::vscode_icon_btn(p, false))
+                .on_press(Message::Detached(win_id, DetachedAction::NewUntitledTab)),
+            "New Scratch Tab (Ctrl+N)",
+            tooltip::Position::Bottom,
+            p,
+        ))
+        .push(tip(
+            button(icons::folder_open(12.0, p.text_muted))
+                .padding([5, 7])
+                .style(theme::vscode_icon_btn(p, false))
+                .on_press(Message::Detached(win_id, DetachedAction::PickSingleFile)),
+            "Open File… (Ctrl+O)",
+            tooltip::Position::Bottom,
+            p,
+        ));
 
     let tabs_scroll = scrollable(tabs_row)
         .direction(theme::slim_horizontal_direction())
         .style(theme::slim_scrollable(p))
         .width(Length::Fill);
 
+    let dirty_file_tabs = v
+        .tabs
+        .iter()
+        .filter(|t| t.dirty && t.file_path.is_some() && t.doc_id.is_some())
+        .count();
+
     let mut right_actions = row![].spacing(4).align_y(Alignment::Center);
 
+    right_actions = right_actions.push(tip(
+        button(
+            row![
+                icons::search(11.0, p.text_muted),
+                text("Quick Open")
+                    .size(type_scale::BADGE)
+                    .color(p.text_secondary)
+                    .wrapping(text::Wrapping::None),
+                theme::kit::kbd_pill(p, "Ctrl+P"),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+        )
+        .padding([3, 7])
+        .style(theme::subtle_btn(p))
+        .on_press(Message::Detached(win_id, DetachedAction::ToggleQuickOpen)),
+        "Go to File or :line (Ctrl+P)",
+        tooltip::Position::Bottom,
+        p,
+    ));
+
+    if dirty_file_tabs >= 2 {
+        right_actions = right_actions.push(tip(
+            button(
+                text(format!("Save All ({dirty_file_tabs})"))
+                    .size(type_scale::BADGE)
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding([4, 8])
+            .style(theme::subtle_btn(p))
+            .on_press(Message::Detached(win_id, DetachedAction::SaveAllTabs)),
+            "Save all modified tabs (Ctrl+Alt+S)",
+            tooltip::Position::Bottom,
+            p,
+        ));
+    }
+
     if let Some(tab) = v.active_tab() {
-        if tab.is_editable() && tab.dirty {
+        if tab.is_editable() && (tab.dirty || tab.is_untitled) {
             right_actions = right_actions.push(tip(
                 button(
                     row![
                         icons::save(11.0, Color::WHITE),
-                        text("Save")
+                        text(if tab.is_untitled { "Save As…" } else { "Save" })
                             .size(type_scale::BADGE)
                             .wrapping(text::Wrapping::None),
                     ]
@@ -329,6 +382,18 @@ fn render_tab_bar<'a>(
                 .style(theme::primary_btn(p))
                 .on_press(Message::Detached(win_id, DetachedAction::SaveEditor)),
                 "Save changes (Ctrl+S)",
+                tooltip::Position::Bottom,
+                p,
+            ));
+        }
+
+        if tab.is_editable() && !tab.is_untitled {
+            right_actions = right_actions.push(tip(
+                button(icons::save(12.0, p.text_muted))
+                    .padding([4, 6])
+                    .style(theme::vscode_icon_btn(p, false))
+                    .on_press(Message::Detached(win_id, DetachedAction::SaveTabAs)),
+                "Save As… (Ctrl+Shift+S)",
                 tooltip::Position::Bottom,
                 p,
             ));
@@ -533,9 +598,48 @@ fn render_breadcrumb_bar<'a>(
         );
     }
 
-    if tab.dirty {
+    if tab.is_editable() && tab.mode == DetachedViewMode::Edit {
+        let can_undo = !tab.undo_stack.is_empty();
+        let can_redo = !tab.redo_stack.is_empty();
+        let mut undo_btn = button(icons::undo(
+            12.0,
+            if can_undo {
+                p.text_secondary
+            } else {
+                p.text_muted
+            },
+        ))
+        .padding([2, 5])
+        .style(theme::vscode_icon_btn(p, false));
+        if can_undo {
+            undo_btn = undo_btn.on_press(Message::Detached(win_id, DetachedAction::Undo));
+        }
+        let mut redo_btn = button(icons::redo(
+            12.0,
+            if can_redo {
+                p.text_secondary
+            } else {
+                p.text_muted
+            },
+        ))
+        .padding([2, 5])
+        .style(theme::vscode_icon_btn(p, false));
+        if can_redo {
+            redo_btn = redo_btn.on_press(Message::Detached(win_id, DetachedAction::Redo));
+        }
+        modes = modes
+            .push(tip(undo_btn, "Undo (Ctrl+Z)", tooltip::Position::Bottom, p))
+            .push(tip(
+                redo_btn,
+                "Redo (Ctrl+Y / Ctrl+Shift+Z)",
+                tooltip::Position::Bottom,
+                p,
+            ));
+    }
+
+    if tab.dirty && tab.file_path.is_some() {
         modes = modes.push(tip(
-            button(icons::undo(12.0, p.warning_fg))
+            button(icons::refresh(11.0, p.warning_fg))
                 .padding([2, 5])
                 .style(theme::vscode_icon_btn(p, false))
                 .on_press(Message::Detached(win_id, DetachedAction::RevertEditor)),
@@ -647,12 +751,24 @@ fn render_studio_code_editor<'a>(
         .on_action(move |a| Message::Detached(win_id, DetachedAction::EditorAction(a)))
         .highlight_with::<CodeSyntaxHighlighter>(hl_settings, format_code_token)
         .key_binding(move |key_press| {
-            // Let window-level shortcuts handle Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+W / Ctrl+O / Ctrl+B / Ctrl+Shift+E / Ctrl+=/- / Alt+Z cleanly once
-            if key_press.modifiers.command()
+            let cmd = key_press.modifiers.command();
+            let shift = key_press.modifiers.shift();
+            let alt = key_press.modifiers.alt();
+
+            // Window-level shortcuts handled once at window dispatch
+            if cmd
                 && matches!(
                     key_press.key.as_ref(),
                     keyboard::Key::Character("s")
                         | keyboard::Key::Character("S")
+                        | keyboard::Key::Character("p")
+                        | keyboard::Key::Character("P")
+                        | keyboard::Key::Character("k")
+                        | keyboard::Key::Character("K")
+                        | keyboard::Key::Character("g")
+                        | keyboard::Key::Character("G")
+                        | keyboard::Key::Character("n")
+                        | keyboard::Key::Character("N")
                         | keyboard::Key::Character("f")
                         | keyboard::Key::Character("F")
                         | keyboard::Key::Character("h")
@@ -672,7 +788,7 @@ fn render_studio_code_editor<'a>(
             {
                 return None;
             }
-            if key_press.modifiers.alt()
+            if alt
                 && matches!(
                     key_press.key.as_ref(),
                     keyboard::Key::Character("z") | keyboard::Key::Character("Z")
@@ -680,17 +796,98 @@ fn render_studio_code_editor<'a>(
             {
                 return None;
             }
-            // Real code-editor Tab indentation!
+
+            // Per-tab Undo / Redo (`S1`)
+            if cmd && !alt {
+                match key_press.key.as_ref() {
+                    keyboard::Key::Character("z") | keyboard::Key::Character("Z") if !shift => {
+                        return Some(text_editor::Binding::Custom(Message::Detached(
+                            win_id,
+                            DetachedAction::Undo,
+                        )));
+                    }
+                    keyboard::Key::Character("z") | keyboard::Key::Character("Z") if shift => {
+                        return Some(text_editor::Binding::Custom(Message::Detached(
+                            win_id,
+                            DetachedAction::Redo,
+                        )));
+                    }
+                    keyboard::Key::Character("y") | keyboard::Key::Character("Y") if !shift => {
+                        return Some(text_editor::Binding::Custom(Message::Detached(
+                            win_id,
+                            DetachedAction::Redo,
+                        )));
+                    }
+                    keyboard::Key::Character("/") | keyboard::Key::Character("?") if !shift => {
+                        return Some(text_editor::Binding::Custom(Message::Detached(
+                            win_id,
+                            DetachedAction::ToggleComment,
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Alt+Up / Alt+Down move lines vertically (`S4`)
+            if alt && !cmd && !shift {
+                match key_press.key.as_ref() {
+                    keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                        return Some(text_editor::Binding::Custom(Message::Detached(
+                            win_id,
+                            DetachedAction::MoveLine(-1),
+                        )));
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                        return Some(text_editor::Binding::Custom(Message::Detached(
+                            win_id,
+                            DetachedAction::MoveLine(1),
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Tab / Shift+Tab block indent & outdent (`S4`)
             if matches!(key_press.key.as_ref(), keyboard::Key::Named(keyboard::key::Named::Tab))
-                && !key_press.modifiers.command()
-                && !key_press.modifiers.alt()
-                && !key_press.modifiers.shift()
+                && !cmd
+                && !alt
             {
                 return Some(text_editor::Binding::Custom(Message::Detached(
                     win_id,
-                    DetachedAction::InsertIndent,
+                    if shift {
+                        DetachedAction::OutdentSelection
+                    } else {
+                        DetachedAction::InsertIndent
+                    },
                 )));
             }
+
+            // Smart Enter auto-indentation & bracket expansion (`S4`)
+            if matches!(key_press.key.as_ref(), keyboard::Key::Named(keyboard::key::Named::Enter))
+                && !cmd
+                && !alt
+                && !shift
+            {
+                return Some(text_editor::Binding::Custom(Message::Detached(
+                    win_id,
+                    DetachedAction::SmartEnter,
+                )));
+            }
+
+            // Auto-closing pairs & closing delimiter skip-over (`S4`)
+            if !cmd
+                && !alt
+                && let Some(txt) = key_press.text.as_deref()
+                && txt.chars().count() == 1
+                && let Some(ch) = txt.chars().next()
+                && matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | '`')
+            {
+                return Some(text_editor::Binding::Custom(Message::Detached(
+                    win_id,
+                    DetachedAction::TypeAutoPairChar(ch),
+                )));
+            }
+
             text_editor::Binding::from_key_press(key_press)
         });
 
@@ -741,8 +938,8 @@ fn render_welcome_canvas<'a>(
     let actions = row![
         button(
             row![
-                icons::file_code(13.0, Color::WHITE),
-                text("Open File")
+                icons::file_plus(13.0, Color::WHITE),
+                text("New File")
                     .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None),
             ]
@@ -751,11 +948,11 @@ fn render_welcome_canvas<'a>(
         )
         .padding([6, 14])
         .style(theme::primary_btn(p))
-        .on_press(Message::Detached(win_id, DetachedAction::PickSingleFile)),
+        .on_press(Message::Detached(win_id, DetachedAction::NewUntitledTab)),
         button(
             row![
-                icons::search(13.0, p.text_primary),
-                text("Search & Replace")
+                icons::folder_open(13.0, p.text_primary),
+                text("Open File")
                     .size(type_scale::CAPTION)
                     .wrapping(text::Wrapping::None),
             ]
@@ -764,10 +961,20 @@ fn render_welcome_canvas<'a>(
         )
         .padding([6, 14])
         .style(theme::subtle_btn(p))
-        .on_press(Message::Detached(
-            win_id,
-            DetachedAction::OpenAndFocusSearchSidebar,
-        )),
+        .on_press(Message::Detached(win_id, DetachedAction::PickSingleFile)),
+        button(
+            row![
+                icons::search(13.0, p.text_primary),
+                text("Quick Open")
+                    .size(type_scale::CAPTION)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .padding([6, 14])
+        .style(theme::subtle_btn(p))
+        .on_press(Message::Detached(win_id, DetachedAction::ToggleQuickOpen)),
         button(
             row![
                 icons::file_diff(13.0, p.text_primary),
@@ -801,11 +1008,12 @@ fn render_welcome_canvas<'a>(
             actions,
             Space::with_height(Length::Fixed(12.0)),
             column![
-                shortcut_row("Ctrl+O", "Open file into new tab"),
+                shortcut_row("Ctrl+P / Ctrl+G", "Quick Open file or jump to :line"),
+                shortcut_row("Ctrl+N / Ctrl+O", "New scratch tab or open file"),
+                shortcut_row("Ctrl+Z / Ctrl+Y", "Undo & redo per tab"),
+                shortcut_row("Ctrl+/ · Alt+↑/↓", "Toggle comment · Move line up/down"),
                 shortcut_row("Ctrl+Shift+F", "Search & replace across folder"),
-                shortcut_row("Ctrl+F / Ctrl+H", "Find & replace inside open file"),
-                shortcut_row("Ctrl+B", "Toggle Explorer / Search sidebar"),
-                shortcut_row("Ctrl+S", "Save active file"),
+                shortcut_row("Ctrl+S / Ctrl+Shift+S", "Save / Save As"),
             ]
             .spacing(6)
             .align_x(Alignment::Start),
