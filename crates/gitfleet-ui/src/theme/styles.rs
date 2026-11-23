@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::theme::Palette;
 use iced::widget::{button, checkbox, container, rule, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector};
@@ -36,8 +37,8 @@ pub fn sidebar_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
         text_color: Some(p.text_primary),
         border: Border {
             color: p.border_subtle,
-            width: 1.0,
-            radius: 0.0.into(),
+            width: 0.0,
+            radius: crate::theme::radius::NONE.into(),
         },
         ..Default::default()
     }

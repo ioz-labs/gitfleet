@@ -41,6 +41,8 @@ pub(crate) struct GitFleetApp {
     pub(crate) pending_detached_viewers: VecDeque<DetachedViewerState>,
     pub(crate) theme_preset: ThemePreset,
     pub(crate) theme_mode: ThemeMode,
+    pub(crate) host_layout: HostLayoutMode,
+    pub(crate) pre_zen_layout: HostLayoutMode,
 
     // Top-Left: Repositories
     pub(crate) filter_query: String,
@@ -83,6 +85,8 @@ pub(crate) struct GitFleetApp {
     pub(crate) reflog: Vec<ReflogEntry>,
 
     // Right-Top: Commit & Files
+    pub(crate) commit_summary: String,
+    pub(crate) commit_summary_id: text_input::Id,
     pub(crate) commit_editor: text_editor::Content,
     pub(crate) amend_commit: bool,
     pub(crate) amend_target: Option<AmendTarget>,
@@ -378,6 +382,8 @@ impl GitFleetApp {
         let mut app = Self {
             theme_preset: initial_preset,
             theme_mode: initial_preset.mode(),
+            host_layout: HostLayoutMode::Cockpit,
+            pre_zen_layout: HostLayoutMode::Cockpit,
             selected_repo: initial_repo.clone(),
             active_submodule: None,
             repo_submodules: HashMap::new(),
@@ -416,6 +422,8 @@ impl GitFleetApp {
             graph_rows: Vec::new(),
             graph_max_lanes: 1,
             reflog: Vec::new(),
+            commit_summary: String::new(),
+            commit_summary_id: text_input::Id::unique(),
             commit_editor: text_editor::Content::new(),
             amend_commit: false,
             amend_target: None,
@@ -681,6 +689,40 @@ impl GitFleetApp {
 
     pub(crate) fn palette(&self) -> Palette {
         self.theme_preset.palette()
+    }
+
+    pub(crate) fn composed_commit_message(&self) -> String {
+        let sum = self.commit_summary.trim();
+        let body_raw = self.commit_editor.text();
+        let body = body_raw.trim();
+        match (sum.is_empty(), body.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => sum.to_string(),
+            (true, false) => body.to_string(),
+            (false, false) => format!("{sum}\n\n{body}"),
+        }
+    }
+
+    pub(crate) fn set_full_commit_message(&mut self, full: &str) {
+        let normalized = full.replace("\r\n", "\n");
+        let trimmed = normalized.trim();
+        if let Some((first, rest)) = trimmed.split_once('\n') {
+            self.commit_summary = first.trim().to_string();
+            let rest_clean = rest.trim_start_matches('\n').trim();
+            self.commit_editor = if rest_clean.is_empty() {
+                text_editor::Content::new()
+            } else {
+                text_editor::Content::with_text(rest_clean)
+            };
+        } else {
+            self.commit_summary = trimmed.to_string();
+            self.commit_editor = text_editor::Content::new();
+        }
+    }
+
+    pub(crate) fn clear_commit_composer(&mut self) {
+        self.commit_summary.clear();
+        self.commit_editor = text_editor::Content::new();
     }
 
     pub(crate) fn apply_theme_preset(&mut self, preset: ThemePreset) {

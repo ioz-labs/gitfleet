@@ -1,7 +1,7 @@
 use crate::app::{
     BottomViewMode, CherryPickModalState, ConfirmAction, ContextMenuState, ContextMenuSubmenu,
-    DiscardFileEntry, DiscardModalState, DrawerTab, GitFleetApp, Message, ResizeTarget,
-    STATUS_BAR_HEIGHT, TITLEBAR_HEIGHT, TOOLBAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
+    DiscardFileEntry, DiscardModalState, DrawerTab, GitFleetApp, HostLayoutMode, Message,
+    RIBBON_HEIGHT, ResizeTarget, STATUS_BAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
 };
 use crate::theme::{ThemeMode, ThemePreset};
 use chrono::Utc;
@@ -43,6 +43,27 @@ impl GitFleetApp {
             }
             Message::SetThemePreset(preset) => {
                 self.apply_theme_preset(preset);
+                Task::none()
+            }
+            Message::SetHostLayout(mode) => {
+                if mode == HostLayoutMode::ZenDiff {
+                    if self.host_layout != HostLayoutMode::ZenDiff {
+                        self.pre_zen_layout = self.host_layout;
+                    }
+                    self.host_layout = HostLayoutMode::ZenDiff;
+                } else {
+                    self.pre_zen_layout = mode;
+                    self.host_layout = mode;
+                }
+                Task::none()
+            }
+            Message::ToggleZenDiff => {
+                if self.host_layout == HostLayoutMode::ZenDiff {
+                    self.host_layout = self.pre_zen_layout;
+                } else {
+                    self.pre_zen_layout = self.host_layout;
+                    self.host_layout = HostLayoutMode::ZenDiff;
+                }
                 Task::none()
             }
             Message::PickImportCustomTheme => Task::perform(
@@ -450,7 +471,7 @@ impl GitFleetApp {
                         crate::views::detached_viewer::DetachedAction::ToggleWordWrap,
                     )
                 } else {
-                    Task::none()
+                    self.update(Message::ToggleZenDiff)
                 }
             }
             Message::ShortcutEscape(id) => {
@@ -1075,7 +1096,7 @@ impl GitFleetApp {
                     }
                 }
                 if let Some(target) = self.active_resize {
-                    let top_chrome = TITLEBAR_HEIGHT + TOOLBAR_HEIGHT;
+                    let top_chrome = RIBBON_HEIGHT;
                     let bottom_chrome = STATUS_BAR_HEIGHT
                         + if self.drawer_tab.is_some() {
                             self.drawer_height
@@ -1097,29 +1118,34 @@ impl GitFleetApp {
                                 ((pos.y - top_chrome) / main_h).clamp(0.20, 0.80);
                         }
                         ResizeTarget::TopRightSplit => {
-                            let right_left = self.sidebar_width + 6.0;
-                            let right_w = (main_w - right_left - 12.0).max(300.0);
-                            let max_ratio = (1.0 - 185.0 / right_w).clamp(0.45, 0.78);
+                            let right_left = self.sidebar_width + crate::theme::layout::SPLITTER_HIT_SIZE;
+                            let right_w = (main_w - right_left).max(300.0);
+                            let max_ratio = (1.0 - 190.0 / right_w).clamp(0.45, 0.80);
                             self.top_right_split_ratio =
-                                ((pos.x - right_left) / right_w).clamp(0.22, max_ratio);
+                                ((pos.x - right_left) / right_w).clamp(0.20, max_ratio);
                         }
                         ResizeTarget::CommitFilesSplit => {
-                            let top_right_top = top_chrome + 6.0;
-                            let top_right_h = ((main_h - 12.0) * self.right_split_ratio).max(160.0);
-                            let min_ratio = (145.0 / top_right_h).clamp(0.18, 0.50);
+                            let top_right_h = (main_h * self.right_split_ratio).max(160.0);
+                            let min_ratio = (140.0 / top_right_h).clamp(0.18, 0.50);
                             self.commit_files_split_ratio =
-                                ((pos.y - top_right_top) / top_right_h).clamp(min_ratio, 0.76);
+                                ((pos.y - top_chrome) / top_right_h).clamp(min_ratio, 0.78);
                         }
                         ResizeTarget::FilesStagedSplit => {
-                            let top_right_top = top_chrome + 6.0;
-                            let top_right_h = ((main_h - 12.0) * self.right_split_ratio).max(160.0);
-                            let files_panel_top =
-                                top_right_top + top_right_h * self.commit_files_split_ratio + 5.0;
-                            let files_body_top = files_panel_top + 66.0;
-                            let files_body_h = (top_right_h
-                                * (1.0 - self.commit_files_split_ratio)
-                                - 76.0)
-                                .max(100.0);
+                            let top_right_h = if self.host_layout == HostLayoutMode::Changes {
+                                main_h * (1.0 - self.commit_files_split_ratio)
+                            } else {
+                                (main_h * self.right_split_ratio).max(160.0)
+                                    * (1.0 - self.commit_files_split_ratio)
+                            };
+                            let files_panel_top = if self.host_layout == HostLayoutMode::Changes {
+                                top_chrome + main_h * self.commit_files_split_ratio + 7.0
+                            } else {
+                                top_chrome
+                                    + (main_h * self.right_split_ratio) * self.commit_files_split_ratio
+                                    + 7.0
+                            };
+                            let files_body_top = files_panel_top + 62.0;
+                            let files_body_h = (top_right_h - 70.0).max(100.0);
                             self.files_staged_split_ratio =
                                 ((pos.y - files_body_top) / files_body_h).clamp(0.22, 0.78);
                         }

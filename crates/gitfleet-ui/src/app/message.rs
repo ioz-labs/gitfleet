@@ -1,8 +1,8 @@
 use crate::app::types::{
     AddRepoMode, BottomLeftTab, BottomViewMode, CommitModalScope, ContextMenuSubmenu,
     ContextMenuTarget, DiffGapExpandMode, DiffSelectionSide, DrawerTab, EncodingModalMode,
-    FilesViewMode, GraphTab, PendingConfirm, RepoFilter, ScanLevelPreset, SettingsTab,
-    TerminalMenuSubmenu,
+    FilesViewMode, GraphTab, HostLayoutMode, PendingConfirm, RepoFilter, ScanLevelPreset,
+    SettingsTab, TerminalMenuSubmenu,
 };
 use crate::terminal::TerminalCanvasAction;
 use crate::syntax::CodeLanguage;
@@ -538,6 +538,11 @@ pub(crate) enum Message {
     #[allow(dead_code)]
     SetThemeMode(ThemeMode),
     SetThemePreset(ThemePreset),
+    SetHostLayout(HostLayoutMode),
+    ToggleZenDiff,
+    FocusCommitSummary,
+    CommitSummaryChanged(String),
+    ApplyConventionalPrefix(&'static str),
     PickImportCustomTheme,
     CustomThemeFilePicked(Option<PathBuf>),
     PickExportThemePreset,

@@ -44,7 +44,7 @@ impl GitFleetApp {
         self.selected_changed_file = None;
         self.selected_changed_files.clear();
         self.file_selection_anchor = None;
-        self.focus_pane = ActiveFocusPane::Other;
+        self.focus_pane = ActiveFocusPane::Repositories;
         self.active_file_path = None;
         self.diff_title = "Select a file to inspect diff / preview / edit".into();
         self.clear_diff_parsed_and_cache();

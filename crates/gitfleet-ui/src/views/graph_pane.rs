@@ -1,6 +1,10 @@
-use crate::app::{ContextMenuTarget, GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm};
+use crate::app::{
+    ActiveFocusPane, ContextMenuTarget, GitFleetApp, GraphSelection, GraphTab, Message,
+    PendingConfirm,
+};
 use crate::graph;
 use crate::icons;
+use crate::theme::kit::{ButtonSize, ButtonVariant, SegmentItem, UiButton, pane_focus_dot, segmented_control};
 use crate::theme::{self, Palette, type_scale};
 use crate::views::slim_scroll_h;
 use gitfleet_git::{BranchInfo, ResetMode};
@@ -430,52 +434,40 @@ fn commit_has_head_decoration(refs: &str) -> bool {
 
 impl GitFleetApp {
     pub(crate) fn view_graph_pane(&self, p: Palette) -> Element<'_, Message> {
+        let scope_label = if !self.graph_checked_branches.is_empty() {
+            format!("Selected ({})", self.graph_checked_branches.len())
+        } else if self.graph_all_branches {
+            "All Branches".to_string()
+        } else {
+            "Current Branch".to_string()
+        };
+        let order_label = if self.graph_topo_order { "Topo" } else { "Date" };
+        let graph_focused = matches!(
+            self.focus_pane,
+            ActiveFocusPane::Graph | ActiveFocusPane::FilesCommit
+        );
+
         let header = row![
-            button(
-                text("Graph")
-                    .size(type_scale::CAPTION)
-                    .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 9])
-            .style(theme::filter_pill_btn(p, self.graph_tab == GraphTab::Graph))
-            .on_press(Message::SetGraphTab(GraphTab::Graph)),
-            button(
-                text("Reflog")
-                    .size(type_scale::CAPTION)
-                    .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 9])
-            .style(theme::filter_pill_btn(p, self.graph_tab == GraphTab::Reflog))
-            .on_press(Message::SetGraphTab(GraphTab::Reflog)),
-            button(
-                text(if !self.graph_checked_branches.is_empty() {
-                    format!("Selected ({})", self.graph_checked_branches.len())
-                } else if self.graph_all_branches {
-                    "All".to_string()
-                } else {
-                    "Current".to_string()
-                })
-                .size(type_scale::CAPTION)
-                .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 9])
-            .style(theme::filter_pill_btn(
+            pane_focus_dot(p, graph_focused),
+            segmented_control(
                 p,
-                !self.graph_checked_branches.is_empty() || self.graph_all_branches
-            ))
-            .on_press(Message::ToggleGraphAllBranches),
-            button(
-                text(if self.graph_topo_order {
-                    "Topo"
-                } else {
-                    "Date"
-                })
-                .size(type_scale::CAPTION)
-                .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 9])
-            .style(theme::filter_pill_btn(p, !self.graph_topo_order))
-            .on_press(Message::ToggleGraphOrder),
+                [
+                    SegmentItem::new(GraphTab::Graph, "Graph"),
+                    SegmentItem::new(GraphTab::Reflog, "Reflog"),
+                ],
+                self.graph_tab,
+                Message::SetGraphTab,
+            ),
+            UiButton::new(p, scope_label)
+                .variant(ButtonVariant::Subtle)
+                .size(ButtonSize::Xs)
+                .active(!self.graph_checked_branches.is_empty() || self.graph_all_branches)
+                .on_press(Message::ToggleGraphAllBranches),
+            UiButton::new(p, order_label)
+                .variant(ButtonVariant::Subtle)
+                .size(ButtonSize::Xs)
+                .active(!self.graph_topo_order)
+                .on_press(Message::ToggleGraphOrder),
             Space::with_width(Length::Fill),
             container(
                 text_input("Filter commits…", &self.commit_filter)
@@ -486,9 +478,9 @@ impl GitFleetApp {
                     .style(theme::dark_input(p)),
             )
             .width(Length::Fill)
-            .max_width(180.0),
+            .max_width(190.0),
         ]
-        .spacing(4)
+        .spacing(5)
         .align_y(Alignment::Center);
 
         if self.graph_tab == GraphTab::Reflog {

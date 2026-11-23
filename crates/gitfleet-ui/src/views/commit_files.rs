@@ -361,17 +361,18 @@ impl GitFleetApp {
         match &self.graph_selection {
             GraphSelection::WorkingTree => {
                 let staged_n = active_status.map(|s| s.staged_count).unwrap_or(0);
-                let first_line_len = self
-                    .commit_editor
-                    .line(0)
-                    .map(|l| l.chars().count())
-                    .unwrap_or(0);
-                let line_count = self.commit_editor.line_count();
+                let summary_len = self.commit_summary.chars().count();
+                let body_lines = if self.commit_editor.text().trim().is_empty() {
+                    0
+                } else {
+                    self.commit_editor.line_count()
+                };
 
                 let mut wide_hdr_left = row![
                     text("Commit")
-                        .size(type_scale::BODY)
-                        .color(p.text_primary)
+                        .size(type_scale::CAPTION)
+                        .font(theme::UI_FONT_MEDIUM)
+                        .color(p.text_secondary)
                         .wrapping(text::Wrapping::None),
                 ]
                 .spacing(space::XS)
@@ -386,29 +387,35 @@ impl GitFleetApp {
                     ));
                 }
 
-                let mut wide_hdr = row![theme::clipped_line(wide_hdr_left, Length::Fill)]
-                    .spacing(space::XS)
-                    .width(Length::Fill)
-                    .align_y(Alignment::Center);
+                let counter_color = if summary_len > 72 {
+                    p.danger_fg
+                } else if summary_len > 50 {
+                    p.warning_fg
+                } else if summary_len > 0 {
+                    p.success_fg
+                } else {
+                    p.text_muted
+                };
+                let counter_label = if body_lines > 0 {
+                    format!("{summary_len}/50 · +{body_lines}L")
+                } else {
+                    format!("{summary_len}/50")
+                };
 
-                if first_line_len > 0 || line_count > 1 {
-                    let meta_label = if line_count > 1 {
-                        format!("{first_line_len}/72 · {line_count}L")
-                    } else {
-                        format!("{first_line_len}/72")
-                    };
-                    wide_hdr = wide_hdr.push(theme::clipped_line(
-                        text(meta_label)
+                let wide_hdr = row![
+                    theme::clipped_line(wide_hdr_left, Length::Fill),
+                    theme::clipped_line(
+                        text(counter_label)
                             .size(type_scale::BADGE)
-                            .color(if first_line_len > 72 {
-                                p.warning_fg
-                            } else {
-                                p.text_muted
-                            })
+                            .font(theme::CODE_FONT)
+                            .color(counter_color)
                             .wrapping(text::Wrapping::None),
                         Length::Shrink,
-                    ));
-                }
+                    ),
+                ]
+                .spacing(space::XS)
+                .width(Length::Fill)
+                .align_y(Alignment::Center);
 
                 let mut compact_hdr_left = row![
                     text("Commit")
@@ -453,8 +460,44 @@ impl GitFleetApp {
 
                 let hdr = theme::adaptive_width(235.0, Length::Fill, wide_hdr, compact_hdr);
 
+                let summary_input = text_input("Summary (50 chars recommended)…", &self.commit_summary)
+                    .id(self.commit_summary_id.clone())
+                    .on_input(Message::CommitSummaryChanged)
+                    .on_submit(Message::CommitSubmitted)
+                    .padding([5, 8])
+                    .size(type_scale::BODY)
+                    .style(theme::dark_input(p));
+
+                let mut cc_chips = row![].spacing(3).align_y(Alignment::Center);
+                for (chip_lbl, prefix) in [
+                    ("feat", "feat: "),
+                    ("fix", "fix: "),
+                    ("refactor", "refactor: "),
+                    ("perf", "perf: "),
+                    ("docs", "docs: "),
+                    ("chore", "chore: "),
+                ] {
+                    let chip_active = self.commit_summary.trim_start().starts_with(prefix.trim());
+                    cc_chips = cc_chips.push(
+                        button(
+                            text(chip_lbl)
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(if chip_active {
+                                    p.accent_fg
+                                } else {
+                                    p.text_muted
+                                }),
+                        )
+                        .padding([1, 5])
+                        .style(theme::toolbar_btn(p, chip_active))
+                        .on_press(Message::ApplyConventionalPrefix(prefix)),
+                    );
+                }
+                let cc_strip = slim_scroll_h(cc_chips, 230.0, p);
+
                 let commit_box = text_editor(&self.commit_editor)
-                    .placeholder("Commit message… (Ctrl+Enter)")
+                    .placeholder("Description body (optional · Ctrl+Enter to commit)")
                     .on_action(Message::CommitMessageAction)
                     .key_binding(|key_press| {
                         if key_press.status == text_editor::Status::Focused
@@ -475,7 +518,7 @@ impl GitFleetApp {
                         text_editor::Binding::from_key_press(key_press)
                     })
                     .padding(pad::INPUT_COMPACT)
-                    .size(type_scale::BODY)
+                    .size(type_scale::CAPTION)
                     .height(Length::Fill)
                     .style(theme::dark_editor(p));
 
@@ -860,10 +903,11 @@ impl GitFleetApp {
 
                 let mut pane_col = column![
                     hdr,
-                    horizontal_rule(1).style(theme::subtle_rule(p)),
+                    summary_input,
+                    cc_strip,
                     commit_box
                 ]
-                    .spacing(space::XS)
+                    .spacing(space::XXS)
                     .width(Length::Fill)
                     .height(Length::Fill);
                 if has_alerts {

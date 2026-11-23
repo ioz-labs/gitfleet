@@ -1,6 +1,5 @@
 use crate::app::{ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message};
 use iced::Task;
-use iced::widget::text_editor;
 
 impl GitFleetApp {
     pub(crate) fn try_update_git_staging(&mut self, message: Message) -> Result<Task<Message>, Message> {
@@ -218,6 +217,30 @@ impl GitFleetApp {
                         .map(|_| "Applied hunk".into())
                 })
             }
+            Message::CommitSummaryChanged(val) => {
+                self.terminal_focused = false;
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.commit_summary = val;
+                Task::none()
+            }
+            Message::FocusCommitSummary => {
+                self.terminal_focused = false;
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.graph_selection = GraphSelection::WorkingTree;
+                iced::widget::text_input::focus(self.commit_summary_id.clone())
+            }
+            Message::ApplyConventionalPrefix(prefix) => {
+                self.terminal_focused = false;
+                self.focus_pane = ActiveFocusPane::TextInput;
+                let known = ["feat:", "fix:", "refactor:", "perf:", "docs:", "chore:", "test:"];
+                let trimmed = self.commit_summary.trim_start();
+                let stripped = known
+                    .iter()
+                    .find_map(|k| trimmed.strip_prefix(k).map(str::trim_start))
+                    .unwrap_or(trimmed);
+                self.commit_summary = format!("{prefix}{stripped}");
+                iced::widget::text_input::focus(self.commit_summary_id.clone())
+            }
             Message::CommitMessageAction(action) => {
                 self.terminal_focused = false;
                 self.focus_pane = ActiveFocusPane::TextInput;
@@ -244,8 +267,8 @@ impl GitFleetApp {
             }
             Message::AmendTargetLoaded(res) => {
                 if let Ok(target) = res {
-                    if self.commit_editor.text().trim().is_empty() {
-                        self.commit_editor = text_editor::Content::with_text(&target.message);
+                    if self.composed_commit_message().trim().is_empty() {
+                        self.set_full_commit_message(&target.message);
                     }
                     self.amend_target = Some(target);
                 }

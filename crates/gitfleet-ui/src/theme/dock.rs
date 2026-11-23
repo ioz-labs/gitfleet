@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::theme::Palette;
 use iced::widget::{button, container};
 use iced::{Background, Border, Color, Theme};

@@ -265,7 +265,7 @@ impl GitFleetApp {
     }
 
     pub(crate) fn try_commit(&mut self, push_after: bool) -> Task<Message> {
-        let raw = self.commit_editor.text();
+        let raw = self.composed_commit_message();
         let msg = raw.trim();
         if msg.is_empty() {
             self.report_action_error(
@@ -318,7 +318,7 @@ impl GitFleetApp {
     }
 
     pub(crate) fn execute_commit_all(&mut self, push_after: bool) -> Task<Message> {
-        let raw = self.commit_editor.text();
+        let raw = self.composed_commit_message();
         let msg = raw.trim().replace("\r\n", "\n");
         if msg.is_empty() {
             self.report_action_error(
@@ -329,7 +329,7 @@ impl GitFleetApp {
             return Task::none();
         }
         let amend = self.amend_commit;
-        self.commit_editor = text_editor::Content::new();
+        self.clear_commit_composer();
         self.amend_commit = false;
         self.amend_target = None;
         let label = if push_after {
@@ -345,7 +345,7 @@ impl GitFleetApp {
     }
 
     pub(crate) fn execute_commit(&mut self, push_after: bool) -> Task<Message> {
-        let raw = self.commit_editor.text();
+        let raw = self.composed_commit_message();
         let msg = raw.trim().replace("\r\n", "\n");
         if msg.is_empty() {
             self.report_action_error(
@@ -356,7 +356,7 @@ impl GitFleetApp {
             return Task::none();
         }
         let amend = self.amend_commit;
-        self.commit_editor = text_editor::Content::new();
+        self.clear_commit_composer();
         self.amend_commit = false;
         self.amend_target = None;
         if push_after {

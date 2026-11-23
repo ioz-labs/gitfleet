@@ -35,12 +35,34 @@ fn build_split_side_visual<'a>(
     selection: Option<DiffTextSelection>,
     p: Palette,
 ) -> SplitSideVisual<'a> {
-    let (bg, border_c, fg) = match cell.kind {
-        Some(k) => {
-            let (b, a, t) = change_colors(k, p);
-            (b, Some(a), t)
-        }
-        None => (Color::TRANSPARENT, None, p.text_secondary),
+    let (bg, border_c, word_hl_bg, fg) = match cell.kind {
+        Some(DiffChangeKind::Added) => (
+            p.diff_add_line_bg,
+            Some(p.git_added),
+            Some(p.diff_add_word_bg),
+            p.text_primary,
+        ),
+        Some(DiffChangeKind::Removed) => (
+            p.diff_del_line_bg,
+            Some(p.git_deleted),
+            Some(p.diff_del_word_bg),
+            p.text_primary,
+        ),
+        Some(DiffChangeKind::Modified) => match side {
+            DiffSelectionSide::Left => (
+                p.diff_del_line_bg,
+                Some(p.git_deleted),
+                Some(p.diff_del_word_bg),
+                p.text_primary,
+            ),
+            _ => (
+                p.diff_add_line_bg,
+                Some(p.git_added),
+                Some(p.diff_add_word_bg),
+                p.text_primary,
+            ),
+        },
+        None => (Color::TRANSPARENT, None, None, p.text_secondary),
     };
     let top_border = if cell.is_first { border_c } else { None };
     let bottom_border = if cell.is_last { border_c } else { None };
@@ -49,7 +71,7 @@ fn build_split_side_visual<'a>(
         &cell.spans,
         syntax_spans,
         fg,
-        border_c,
+        word_hl_bg,
     ))
     .height(Length::Fixed(DIFF_LINE_H))
     .align_y(alignment::Vertical::Center)
@@ -264,13 +286,32 @@ pub(crate) fn render_unified_diff_with<'a>(
                 spans,
                 kind,
             } => {
-                let (bg, sign_color, fg) = match kind {
-                    Some(DiffChangeKind::Added) => (p.success_bg, p.success_fg, p.text_primary),
-                    Some(DiffChangeKind::Removed) => (p.danger_bg, p.danger_fg, p.text_primary),
-                    Some(DiffChangeKind::Modified) => (p.warning_bg, p.warning_fg, p.text_primary),
-                    None => (Color::TRANSPARENT, p.text_muted, p.text_secondary),
+                let is_del = *sign == '-' || matches!(kind, Some(DiffChangeKind::Removed));
+                let is_add = *sign == '+' || matches!(kind, Some(DiffChangeKind::Added));
+                let (bg, sign_color, word_hl_bg, fg) = if is_add {
+                    (
+                        p.diff_add_line_bg,
+                        p.git_added,
+                        Some(p.diff_add_word_bg),
+                        p.text_primary,
+                    )
+                } else if is_del {
+                    (
+                        p.diff_del_line_bg,
+                        p.git_deleted,
+                        Some(p.diff_del_word_bg),
+                        p.text_primary,
+                    )
+                } else if kind.is_some() {
+                    (
+                        p.diff_hunk_bg,
+                        p.accent_fg,
+                        Some(p.diff_hunk_bg),
+                        p.text_primary,
+                    )
+                } else {
+                    (Color::TRANSPARENT, p.text_muted, None, p.text_secondary)
                 };
-                let hl_accent = kind.map(|k| change_colors(k, p).1);
                 let old_s = old_line.map(|n| n.to_string()).unwrap_or_default();
                 let new_s = new_line.map(|n| n.to_string()).unwrap_or_default();
 
@@ -315,7 +356,7 @@ pub(crate) fn render_unified_diff_with<'a>(
                         spans,
                         syntax_spans,
                         fg,
-                        hl_accent,
+                        word_hl_bg,
                     ))
                     .width(Length::Fill)
                     .height(Length::Fixed(DIFF_LINE_H))

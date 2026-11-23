@@ -1,4 +1,4 @@
-use crate::app::{BottomViewMode, DrawerTab, GitFleetApp, Message};
+use crate::app::{BottomViewMode, DrawerTab, GitFleetApp, HostLayoutMode, Message};
 use crate::views::image_diff::ImageDiffMode;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::{Point, Subscription, event, mouse, time, window};
@@ -205,8 +205,20 @@ fn handle_window_event(
                     _ => {}
                 }
             } else if modifiers.alt() && !modifiers.command() && !modifiers.shift() {
-                if matches!(key.as_ref(), Key::Character("z") | Key::Character("Z")) {
-                    return Some(Message::ShortcutToggleWrap(id));
+                match key.as_ref() {
+                    Key::Character("1") => {
+                        return Some(Message::SetHostLayout(HostLayoutMode::Cockpit));
+                    }
+                    Key::Character("2") => {
+                        return Some(Message::SetHostLayout(HostLayoutMode::Changes));
+                    }
+                    Key::Character("3") => {
+                        return Some(Message::SetHostLayout(HostLayoutMode::History));
+                    }
+                    Key::Character("z") | Key::Character("Z") => {
+                        return Some(Message::ShortcutToggleWrap(id));
+                    }
+                    _ => {}
                 }
             } else if matches!(key.as_ref(), Key::Named(keyboard::key::Named::Escape)) {
                 return Some(Message::ShortcutEscape(id));

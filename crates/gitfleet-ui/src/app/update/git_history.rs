@@ -130,6 +130,7 @@ impl GitFleetApp {
                 })
             }
             Message::SetGraphTab(tab) => {
+                self.focus_pane = ActiveFocusPane::Graph;
                 self.graph_tab = tab;
                 if tab == GraphTab::Reflog
                     && let Some(repo) = self.current_repo()
@@ -793,6 +794,7 @@ impl GitFleetApp {
                 let is_double = self.last_branch_click.as_ref().is_some_and(|(prev, t)| {
                     prev == &branch && now.duration_since(*t) <= DOUBLE_CLICK_WINDOW
                 });
+                self.focus_pane = ActiveFocusPane::Branches;
                 self.selected_branch = Some(branch.clone());
                 if is_double {
                     self.last_branch_click = None;
@@ -828,6 +830,7 @@ impl GitFleetApp {
             }
             Message::CheckoutBranch(branch) => {
                 self.show_branch_popover = false;
+                self.focus_pane = ActiveFocusPane::Branches;
                 self.selected_branch = Some(branch.clone());
                 self.run_git_op("Checkout", move |svc, repo| async move {
                     svc.git.checkout(&repo.path, &branch).await
@@ -992,7 +995,7 @@ impl GitFleetApp {
                     true,
                 );
                 let seed_msg = if was_same_repo {
-                    self.commit_editor.text()
+                    self.composed_commit_message()
                 } else {
                     String::new()
                 };
@@ -1107,7 +1110,7 @@ impl GitFleetApp {
                 };
                 self.commit_modal_editor = text_editor::Content::new();
                 if self.selected_repo.as_ref() == Some(&modal.repo_id) {
-                    self.commit_editor = text_editor::Content::new();
+                    self.clear_commit_composer();
                     self.amend_commit = false;
                 }
 
@@ -1236,17 +1239,21 @@ impl GitFleetApp {
                 }
             },
             Message::UseCommitMessage(oid) => {
-                if let Some(c) = self.commits.iter().find(|c| c.oid == oid) {
-                    let full = if c.body.trim().is_empty() {
-                        c.summary.clone()
-                    } else {
-                        format!("{}\n\n{}", c.summary, c.body)
-                    };
-                    self.commit_editor = text_editor::Content::with_text(&full);
+                if let Some((full, short_oid)) =
+                    self.commits.iter().find(|c| c.oid == oid).map(|c| {
+                        let msg = if c.body.trim().is_empty() {
+                            c.summary.clone()
+                        } else {
+                            format!("{}\n\n{}", c.summary, c.body)
+                        };
+                        (msg, c.short_oid.clone())
+                    })
+                {
+                    self.set_full_commit_message(&full);
                     self.graph_selection = GraphSelection::WorkingTree;
                     self.toast_is_error = false;
                     self.toast_message =
-                        format!("Loaded message from {} into Commit box", c.short_oid);
+                        format!("Loaded message from {short_oid} into Commit box");
                 }
                 Task::none()
             }

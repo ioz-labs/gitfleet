@@ -1,5 +1,6 @@
-use crate::app::{ContextMenuTarget, GitFleetApp, Message, PendingConfirm, RepoFilter};
+use crate::app::{ActiveFocusPane, ContextMenuTarget, GitFleetApp, Message, PendingConfirm, RepoFilter};
 use crate::icons;
+use crate::theme::kit::{SegmentItem, focus_accent_bar, pane_focus_dot, segmented_control};
 use crate::theme::{self, Palette, ThemeMode, tree, type_scale};
 use crate::views::{slim_scroll_h, tip, truncate_chars};
 use gitfleet_git::bulk::BulkOperation;
@@ -591,7 +592,9 @@ impl GitFleetApp {
             label_and_badges = label_and_badges.push(right_badges);
         }
 
+        let repo_pane_focused = self.focus_pane == ActiveFocusPane::Repositories;
         let mut repo_row = row![
+            focus_accent_bar(p, selected, repo_pane_focused, 16.0),
             sub_toggle,
             Space::with_width(Length::Fixed(tree::CHEVRON_GAP)),
             bulk_box,
@@ -1074,11 +1077,13 @@ impl GitFleetApp {
         };
 
         let header = row![
+            pane_focus_dot(p, self.focus_pane == ActiveFocusPane::Repositories),
             theme::clipped_line(
                 tip(
                     text("Repositories")
-                        .size(type_scale::BODY)
-                        .color(p.text_muted),
+                        .size(type_scale::CAPTION)
+                        .font(theme::UI_FONT_MEDIUM)
+                        .color(p.text_secondary),
                     "Right-click any group, repository, or empty space for context menu",
                     tooltip::Position::Bottom,
                     p,
@@ -1161,36 +1166,16 @@ impl GitFleetApp {
             })
             .count();
 
-        let pills = row![
-            button(
-                text(format!("All ({})", repos.len()))
-                    .size(type_scale::CAPTION)
-                    .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 8])
-            .style(theme::filter_pill_btn(p, self.repo_filter == RepoFilter::All))
-            .on_press(Message::SetRepoFilter(RepoFilter::All)),
-            button(
-                text(format!("Dirty ({dirty_cnt})"))
-                    .size(type_scale::CAPTION)
-                    .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 8])
-            .style(theme::filter_pill_btn(
-                p,
-                self.repo_filter == RepoFilter::Dirty
-            ))
-            .on_press(Message::SetRepoFilter(RepoFilter::Dirty)),
-            button(
-                text(format!("Sync ({sync_cnt})"))
-                    .size(type_scale::CAPTION)
-                    .wrapping(text::Wrapping::None)
-            )
-            .padding([3, 8])
-            .style(theme::filter_pill_btn(p, self.repo_filter == RepoFilter::Sync))
-            .on_press(Message::SetRepoFilter(RepoFilter::Sync)),
-        ]
-        .spacing(4);
+        let pills = segmented_control(
+            p,
+            [
+                SegmentItem::new(RepoFilter::All, "All").count(repos.len()),
+                SegmentItem::new(RepoFilter::Dirty, "Dirty").count(dirty_cnt),
+                SegmentItem::new(RepoFilter::Sync, "Sync").count(sync_cnt),
+            ],
+            self.repo_filter,
+            Message::SetRepoFilter,
+        );
 
         let ws = self.service.workspace.current();
         let visible = self.filtered_repos(repos);

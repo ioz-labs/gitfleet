@@ -143,9 +143,11 @@ pub fn variant_button_style(
     }
 }
 
+use std::borrow::Cow;
+
 pub struct UiButton<'a, M> {
     p: Palette,
-    label: Option<&'a str>,
+    label: Option<Cow<'a, str>>,
     icon: Option<Element<'a, M>>,
     shortcut: Option<&'a str>,
     badge: Option<String>,
@@ -157,10 +159,10 @@ pub struct UiButton<'a, M> {
 }
 
 impl<'a, M: Clone + 'a> UiButton<'a, M> {
-    pub fn new(p: Palette, label: &'a str) -> Self {
+    pub fn new(p: Palette, label: impl Into<Cow<'a, str>>) -> Self {
         Self {
             p,
-            label: Some(label),
+            label: Some(label.into()),
             icon: None,
             shortcut: None,
             badge: None,

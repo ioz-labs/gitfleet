@@ -26,11 +26,11 @@ use std::ops::Range;
 use std::rc::Rc;
 
 pub(crate) fn change_colors(kind: DiffChangeKind, p: Palette) -> (Color, Color, Color) {
-    // Returns (soft_bg, accent_border, text_fg)
+    // Returns (soft_bg, accent_border, text_fg) using WCAG-verified diff semantic tokens
     match kind {
-        DiffChangeKind::Added => (p.success_bg, p.success_fg, p.text_primary),
-        DiffChangeKind::Removed => (p.danger_bg, p.danger_fg, p.text_primary),
-        DiffChangeKind::Modified => (p.warning_bg, p.warning_fg, p.text_primary),
+        DiffChangeKind::Added => (p.diff_add_line_bg, p.git_added, p.text_primary),
+        DiffChangeKind::Removed => (p.diff_del_line_bg, p.git_deleted, p.text_primary),
+        DiffChangeKind::Modified => (p.diff_hunk_bg, p.accent_fg, p.text_primary),
     }
 }
 
@@ -1756,15 +1756,14 @@ pub(crate) fn render_highlighted_code<'a>(
             .into();
     }
 
-    let hl_accent = accent.unwrap_or(fg);
-    let hl_bg = Color {
-        a: 0.34,
-        ..hl_accent
-    };
+    let hl_bg = accent.unwrap_or(Color {
+        a: 0.30,
+        ..fg
+    });
     let hl_border = Border {
         color: Color {
-            a: 0.50,
-            ..hl_accent
+            a: (hl_bg.a + 0.18).min(0.65),
+            ..hl_bg
         },
         width: 1.0,
         radius: 2.0.into(),

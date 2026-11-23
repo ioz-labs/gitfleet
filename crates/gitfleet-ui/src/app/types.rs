@@ -10,8 +10,16 @@ use iced::Point;
 use std::collections::HashSet;
 use std::path::PathBuf;
 pub(crate) const STATUS_BAR_HEIGHT: f32 = crate::theme::layout::STATUS_BAR_HEIGHT;
-pub(crate) const TITLEBAR_HEIGHT: f32 = 38.0;
-pub(crate) const TOOLBAR_HEIGHT: f32 = 42.0;
+pub(crate) const RIBBON_HEIGHT: f32 = crate::theme::layout::RIBBON_HEIGHT;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum HostLayoutMode {
+    #[default]
+    Cockpit,
+    Changes,
+    History,
+    ZenDiff,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResizeTarget {
@@ -48,6 +56,9 @@ pub(crate) struct DiffGapExpansion {
 pub(crate) enum ActiveFocusPane {
     Other,
     TextInput,
+    Repositories,
+    Branches,
+    Graph,
     FilesUnstaged,
     FilesStaged,
     FilesCommit,
