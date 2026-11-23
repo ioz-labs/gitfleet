@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 #[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct GitOutput {
     pub stdout: String,
@@ -16,7 +16,7 @@ pub struct GitOutput {
     pub exit_code: i32,
 }
 
-fn format_command_arg(arg: &str) -> String {
+pub(crate) fn format_command_arg(arg: &str) -> String {
     if arg.is_empty() || arg.chars().any(|c| c.is_whitespace() || c == '"') {
         format!("\"{}\"", arg.replace('"', "\\\""))
     } else {

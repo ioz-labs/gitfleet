@@ -1276,6 +1276,160 @@ impl ScanModalState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CloneModalState {
+    pub(crate) url_input: String,
+    pub(crate) parent_dir_input: String,
+    pub(crate) folder_input: String,
+    pub(crate) folder_customized: bool,
+    pub(crate) branch_input: String,
+    pub(crate) recurse_submodules: bool,
+    pub(crate) depth_one: bool,
+    pub(crate) group_input: String,
+    pub(crate) error: Option<String>,
+    pub(crate) cancelled_notice: bool,
+}
+
+impl Default for CloneModalState {
+    fn default() -> Self {
+        Self {
+            url_input: String::new(),
+            parent_dir_input: String::new(),
+            folder_input: String::new(),
+            folder_customized: false,
+            branch_input: String::new(),
+            recurse_submodules: true,
+            depth_one: false,
+            group_input: String::new(),
+            error: None,
+            cancelled_notice: false,
+        }
+    }
+}
+
+impl CloneModalState {
+    pub(crate) fn resolved_dest_path(&self) -> Option<PathBuf> {
+        let parent = self.parent_dir_input.trim();
+        let folder = self.folder_input.trim();
+        if parent.is_empty() || folder.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(parent).join(folder))
+        }
+    }
+
+    pub(crate) fn normalized_group(&self) -> Option<String> {
+        let norm = normalize_group_path(&self.group_input);
+        if norm.is_empty() { None } else { Some(norm) }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveCloneState {
+    pub(crate) url: String,
+    pub(crate) folder_name: String,
+    pub(crate) dest_path: PathBuf,
+    pub(crate) branch: Option<String>,
+    pub(crate) depth_one: bool,
+    pub(crate) recurse_submodules: bool,
+    pub(crate) target_group: Option<String>,
+    pub(crate) tracker: std::sync::Arc<gitfleet_git::CloneProgressTracker>,
+    pub(crate) snapshot: gitfleet_git::CloneProgressSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AddRepoMode {
+    #[default]
+    Existing,
+    InitNew,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AddRepoModalState {
+    pub(crate) mode: AddRepoMode,
+    pub(crate) existing_path_input: String,
+    pub(crate) init_if_needed: bool,
+    pub(crate) create_parent_input: String,
+    pub(crate) new_repo_name: String,
+    pub(crate) group_input: String,
+    pub(crate) submitting: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl AddRepoModalState {
+    pub(crate) fn new(default_parent: Option<&std::path::Path>, target_group: Option<String>) -> Self {
+        Self {
+            mode: AddRepoMode::Existing,
+            existing_path_input: String::new(),
+            init_if_needed: false,
+            create_parent_input: default_parent
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            new_repo_name: String::new(),
+            group_input: target_group
+                .map(|g| normalize_group_path(&g))
+                .unwrap_or_default(),
+            submitting: false,
+            error: None,
+        }
+    }
+
+    pub(crate) fn normalized_group(&self) -> Option<String> {
+        let norm = normalize_group_path(&self.group_input);
+        if norm.is_empty() { None } else { Some(norm) }
+    }
+
+    pub(crate) fn resolved_init_dest(&self) -> Option<PathBuf> {
+        let parent = self.create_parent_input.trim();
+        let name = self.new_repo_name.trim();
+        if parent.is_empty() || name.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(parent).join(name))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LocalRepoPathCheck {
+    Empty,
+    Missing,
+    NotADirectory,
+    ValidGitRepo { name: String },
+    UninitFolder { name: String },
+}
+
+pub(crate) fn is_git_repo_dir(path: &std::path::Path) -> bool {
+    path.join(".git").exists()
+        || (path.join("HEAD").is_file()
+            && path.join("objects").is_dir()
+            && path.join("refs").is_dir())
+}
+
+pub(crate) fn inspect_local_repo_path(raw_input: &str) -> LocalRepoPathCheck {
+    let trimmed = raw_input.trim();
+    if trimmed.is_empty() {
+        return LocalRepoPathCheck::Empty;
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() {
+        return LocalRepoPathCheck::Missing;
+    }
+    if !path.is_dir() {
+        return LocalRepoPathCheck::NotADirectory;
+    }
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .to_string();
+    if is_git_repo_dir(path) {
+        LocalRepoPathCheck::ValidGitRepo { name }
+    } else {
+        LocalRepoPathCheck::UninitFolder { name }
+    }
+}
+
 #[cfg(test)]
 mod scan_modal_tests {
     use super::*;

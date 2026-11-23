@@ -1,6 +1,7 @@
 use crate::app::{
-    ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, RenameGroupModalState,
-    RenameWorkspaceModalState, ScanModalState,
+    ActiveCloneState, ActiveFocusPane, AddRepoModalState, AddRepoMode, GitFleetApp,
+    GraphSelection, GraphTab, LocalRepoPathCheck, Message, RenameGroupModalState,
+    RenameWorkspaceModalState, ScanModalState, inspect_local_repo_path, is_git_repo_dir,
 };
 use crate::preview;
 use gitfleet_core::RepoId;
@@ -80,6 +81,10 @@ impl GitFleetApp {
         self.repo_submodules.clear();
         self.collapsed_repo_submodules.clear();
         self.rename_workspace_modal = None;
+        self.add_repo_modal = None;
+        if self.active_clone.is_none() {
+            self.show_clone_modal = false;
+        }
         self.scan_modal = None;
         self.scan_request_id = self.scan_request_id.wrapping_add(1);
         self.clear_active_repo_view_state();
@@ -99,16 +104,301 @@ impl GitFleetApp {
                 self.repo_filter = f;
                 Task::none()
             }
-            Message::PickAddRepo => Task::perform(
+            Message::OpenAddRepoModal(target_group) => {
+                self.show_palette = false;
+                self.context_menu = None;
+                self.show_branch_popover = false;
+                self.show_workspace_modal = false;
+                self.show_clone_modal = false;
+                self.show_settings_modal = false;
+                let default_parent = self.suggested_repo_parent_dir();
+                self.add_repo_modal = Some(AddRepoModalState::new(
+                    default_parent.as_deref(),
+                    target_group,
+                ));
+                text_input::focus(self.add_repo_path_input_id.clone())
+            }
+            Message::CloseAddRepoModal => {
+                if self.add_repo_modal.as_ref().is_none_or(|m| !m.submitting) {
+                    self.add_repo_modal = None;
+                }
+                Task::none()
+            }
+            Message::AddRepoSetMode(mode) => {
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.mode = mode;
+                    modal.error = None;
+                    return match mode {
+                        AddRepoMode::Existing => {
+                            text_input::focus(self.add_repo_path_input_id.clone())
+                        }
+                        AddRepoMode::InitNew => {
+                            text_input::focus(self.add_repo_name_input_id.clone())
+                        }
+                    };
+                }
+                Task::none()
+            }
+            Message::AddRepoExistingPathChanged(val) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.existing_path_input = val;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::PickAddRepoFolder => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
-                        .set_title("Select a Git repository folder")
+                        .set_title("Select a local Git repository folder")
                         .pick_folder()
                         .await
                         .map(|h| h.path().to_path_buf())
                 },
-                Message::AddRepoPath,
+                Message::AddRepoFolderPicked,
             ),
+            Message::AddRepoFolderPicked(Some(path)) => {
+                if let Some(parent) = path.parent() {
+                    self.last_repo_parent_dir = Some(parent.to_path_buf());
+                }
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.existing_path_input = path.display().to_string();
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::AddRepoFolderPicked(None) => Task::none(),
+            Message::AddRepoToggleInitIfNeeded(enabled) => {
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.init_if_needed = enabled;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::AddRepoCreateParentChanged(val) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.create_parent_input = val;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::PickAddRepoCreateParent => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Choose parent directory for new Git repository")
+                        .pick_folder()
+                        .await
+                        .map(|h| h.path().to_path_buf())
+                },
+                Message::AddRepoCreateParentPicked,
+            ),
+            Message::AddRepoCreateParentPicked(Some(path)) => {
+                self.last_repo_parent_dir = Some(path.clone());
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.create_parent_input = path.display().to_string();
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::AddRepoCreateParentPicked(None) => Task::none(),
+            Message::AddRepoNewNameChanged(val) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.new_repo_name = val;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::AddRepoGroupChanged(val) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                if let Some(modal) = &mut self.add_repo_modal {
+                    modal.group_input = val;
+                }
+                Task::none()
+            }
+            Message::SubmitAddRepo => {
+                let Some(modal_snapshot) = self.add_repo_modal.clone() else {
+                    return Task::none();
+                };
+                if modal_snapshot.submitting {
+                    return Task::none();
+                }
+                let group = modal_snapshot.normalized_group();
+                match modal_snapshot.mode {
+                    AddRepoMode::Existing => {
+                        match inspect_local_repo_path(&modal_snapshot.existing_path_input) {
+                            LocalRepoPathCheck::ValidGitRepo { .. } => {
+                                let path = PathBuf::from(modal_snapshot.existing_path_input.trim());
+                                if let Some(parent) = path.parent() {
+                                    self.last_repo_parent_dir = Some(parent.to_path_buf());
+                                }
+                                match self.service.workspace.add_repo(path, group.clone()) {
+                                    Ok(entry) => {
+                                        if group.is_some() && entry.group != group {
+                                            let _ = self
+                                                .service
+                                                .workspace
+                                                .set_repo_group(&entry.id, group);
+                                        }
+                                        self.add_repo_modal = None;
+                                        self.toast_is_error = false;
+                                        self.toast_message = format!("Added '{}'", entry.name);
+                                        return Task::batch([
+                                            self.load_submodules_task(entry.clone()),
+                                            self.update(Message::SelectRepo(entry.id)),
+                                        ]);
+                                    }
+                                    Err(e) => {
+                                        if let Some(m) = &mut self.add_repo_modal {
+                                            m.error = Some(e.to_string());
+                                        }
+                                    }
+                                }
+                                Task::none()
+                            }
+                            LocalRepoPathCheck::UninitFolder { .. }
+                                if modal_snapshot.init_if_needed =>
+                            {
+                                let dest = PathBuf::from(modal_snapshot.existing_path_input.trim());
+                                if let Some(parent) = dest.parent() {
+                                    self.last_repo_parent_dir = Some(parent.to_path_buf());
+                                }
+                                if let Some(m) = &mut self.add_repo_modal {
+                                    m.submitting = true;
+                                    m.error = None;
+                                }
+                                let svc = self.service.clone();
+                                Task::perform(
+                                    async move {
+                                        let result =
+                                            svc.git.init_repo(&dest).await.map_err(|e| e.to_string());
+                                        (dest, group, result)
+                                    },
+                                    |(dest, group, result)| Message::AddRepoInitFinished {
+                                        dest,
+                                        group,
+                                        result,
+                                    },
+                                )
+                            }
+                            LocalRepoPathCheck::UninitFolder { .. } => {
+                                if let Some(m) = &mut self.add_repo_modal {
+                                    m.error = Some(
+                                        "Folder is not a Git repository yet. Enable 'git init' below or choose an initialized Git folder."
+                                            .into(),
+                                    );
+                                }
+                                Task::none()
+                            }
+                            LocalRepoPathCheck::Missing => {
+                                if let Some(m) = &mut self.add_repo_modal {
+                                    m.error = Some("Selected folder path does not exist on disk.".into());
+                                }
+                                Task::none()
+                            }
+                            LocalRepoPathCheck::NotADirectory => {
+                                if let Some(m) = &mut self.add_repo_modal {
+                                    m.error = Some("Selected path is a file, not a folder.".into());
+                                }
+                                Task::none()
+                            }
+                            LocalRepoPathCheck::Empty => Task::none(),
+                        }
+                    }
+                    AddRepoMode::InitNew => {
+                        let Some(dest) = modal_snapshot.resolved_init_dest() else {
+                            if let Some(m) = &mut self.add_repo_modal {
+                                m.error = Some(
+                                    "Enter both a repository name and a parent directory.".into(),
+                                );
+                            }
+                            return Task::none();
+                        };
+                        if dest.is_file() {
+                            if let Some(m) = &mut self.add_repo_modal {
+                                m.error = Some(format!(
+                                    "Destination '{}' already exists as a file.",
+                                    dest.display()
+                                ));
+                            }
+                            return Task::none();
+                        }
+                        if is_git_repo_dir(&dest) {
+                            if let Some(m) = &mut self.add_repo_modal {
+                                m.error = Some(
+                                    "Destination is already a Git repository — switch to 'Add Existing Folder' to add it."
+                                        .into(),
+                                );
+                            }
+                            return Task::none();
+                        }
+                        self.last_repo_parent_dir =
+                            Some(PathBuf::from(modal_snapshot.create_parent_input.trim()));
+                        if let Some(m) = &mut self.add_repo_modal {
+                            m.submitting = true;
+                            m.error = None;
+                        }
+                        let svc = self.service.clone();
+                        Task::perform(
+                            async move {
+                                let result =
+                                    svc.git.init_repo(&dest).await.map_err(|e| e.to_string());
+                                (dest, group, result)
+                            },
+                            |(dest, group, result)| Message::AddRepoInitFinished {
+                                dest,
+                                group,
+                                result,
+                            },
+                        )
+                    }
+                }
+            }
+            Message::AddRepoInitFinished {
+                dest,
+                group,
+                result,
+            } => {
+                match result {
+                    Ok(_) => {
+                        self.add_repo_modal = None;
+                        match self.service.workspace.add_repo(dest, group.clone()) {
+                            Ok(entry) => {
+                                if group.is_some() && entry.group != group {
+                                    let _ = self
+                                        .service
+                                        .workspace
+                                        .set_repo_group(&entry.id, group);
+                                }
+                                self.toast_is_error = false;
+                                self.toast_message =
+                                    format!("Initialized & added '{}'", entry.name);
+                                return Task::batch([
+                                    self.load_submodules_task(entry.clone()),
+                                    self.update(Message::SelectRepo(entry.id)),
+                                ]);
+                            }
+                            Err(e) => {
+                                self.report_action_error(
+                                    "Add Repository Failed",
+                                    e.to_string(),
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(m) = &mut self.add_repo_modal {
+                            m.submitting = false;
+                            m.error = Some(err);
+                        } else {
+                            self.report_action_error("Initialize Repository Failed", err, true);
+                        }
+                    }
+                }
+                Task::none()
+            }
             Message::PickScanFolder(target_parent_group) => {
                 self.show_palette = false;
                 self.context_menu = None;
@@ -124,20 +414,6 @@ impl GitFleetApp {
                     |(parent, path)| Message::ScanFolderPath(parent, path),
                 )
             }
-            Message::AddRepoPath(Some(path)) => {
-                match self.service.workspace.add_repo(path, None) {
-                    Ok(entry) => {
-                        self.toast_is_error = false;
-                        self.toast_message = format!("Added '{}'", entry.name);
-                        return self.update(Message::SelectRepo(entry.id));
-                    }
-                    Err(e) => {
-                        self.report_action_error("Add Repository Failed", e.to_string(), false);
-                    }
-                }
-                Task::none()
-            }
-            Message::AddRepoPath(None) => Task::none(),
             Message::ScanFolderPath(target_parent_group, Some(root)) => {
                 let max_depth = self
                     .scan_modal
@@ -869,6 +1145,8 @@ impl GitFleetApp {
                 self.show_merge_modal = false;
                 self.show_git_flow_modal = false;
                 self.show_settings_modal = false;
+                self.show_clone_modal = false;
+                self.add_repo_modal = None;
                 self.show_eol_modal = false;
                 self.show_encoding_modal = false;
                 self.show_syntax_modal = false;
@@ -1089,20 +1367,50 @@ impl GitFleetApp {
                 self.toast_message = format!("Claimed workspace ownership (PID {:?})", own.owner_pid);
                 Task::none()
             }
-            Message::CloneUrlChanged(v) => {
-                if self.clone_folder_input.is_empty()
-                    && let Some(tail) = v.trim().rsplit('/').next()
-                {
-                    let clean = tail.trim_end_matches(".git");
-                    if !clean.is_empty() && !clean.contains(':') {
-                        self.clone_folder_input = clean.to_string();
+            Message::OpenCloneModal(target_group) => {
+                self.show_palette = false;
+                self.context_menu = None;
+                self.show_branch_popover = false;
+                self.show_workspace_modal = false;
+                self.add_repo_modal = None;
+                self.show_settings_modal = false;
+                self.show_clone_modal = true;
+                if self.active_clone.is_none() {
+                    self.clone_modal.error = None;
+                    self.clone_modal.cancelled_notice = false;
+                    if self.clone_modal.parent_dir_input.trim().is_empty()
+                        && let Some(def_parent) = self.suggested_repo_parent_dir()
+                    {
+                        self.clone_modal.parent_dir_input = def_parent.display().to_string();
                     }
+                    if let Some(group) = target_group {
+                        self.clone_modal.group_input =
+                            gitfleet_workspace::normalize_group_path(&group);
+                    }
+                    return text_input::focus(self.clone_url_input_id.clone());
                 }
-                self.clone_url_input = v;
                 Task::none()
             }
-            Message::CloneFolderChanged(v) => {
-                self.clone_folder_input = v;
+            Message::CloseCloneModal => {
+                self.show_clone_modal = false;
+                Task::none()
+            }
+            Message::CloneUrlChanged(v) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.clone_modal.error = None;
+                self.clone_modal.cancelled_notice = false;
+                if !self.clone_modal.folder_customized {
+                    self.clone_modal.folder_input =
+                        gitfleet_git::infer_repo_folder_from_url(&v).unwrap_or_default();
+                }
+                self.clone_modal.url_input = v;
+                Task::none()
+            }
+            Message::CloneParentDirChanged(v) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.clone_modal.error = None;
+                self.clone_modal.cancelled_notice = false;
+                self.clone_modal.parent_dir_input = v;
                 Task::none()
             }
             Message::PickCloneParent => Task::perform(
@@ -1115,96 +1423,226 @@ impl GitFleetApp {
                 },
                 Message::CloneParentPicked,
             ),
-            Message::CloneParentPicked(p) => {
-                self.clone_parent_dir = p;
+            Message::CloneParentPicked(Some(p)) => {
+                self.last_repo_parent_dir = Some(p.clone());
+                self.clone_modal.parent_dir_input = p.display().to_string();
+                self.clone_modal.error = None;
+                self.clone_modal.cancelled_notice = false;
+                Task::none()
+            }
+            Message::CloneParentPicked(None) => Task::none(),
+            Message::CloneFolderChanged(v) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.clone_modal.error = None;
+                self.clone_modal.cancelled_notice = false;
+                self.clone_modal.folder_customized = !v.trim().is_empty();
+                self.clone_modal.folder_input = v;
+                Task::none()
+            }
+            Message::CloneBranchChanged(v) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.clone_modal.error = None;
+                self.clone_modal.cancelled_notice = false;
+                self.clone_modal.branch_input = v;
+                Task::none()
+            }
+            Message::CloneToggleSubmodules(v) => {
+                self.clone_modal.recurse_submodules = v;
+                Task::none()
+            }
+            Message::CloneToggleDepthOne(v) => {
+                self.clone_modal.depth_one = v;
+                Task::none()
+            }
+            Message::CloneGroupChanged(v) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                self.clone_modal.group_input = v;
                 Task::none()
             }
             Message::CloneRepoSubmitted => {
-                let url = self.clone_url_input.trim().to_string();
-                let folder = self.clone_folder_input.trim().to_string();
-                let Some(parent) = self.clone_parent_dir.clone() else {
-                    self.report_action_error(
-                        "Clone Repository Failed",
-                        "Pick a parent directory before cloning a repository.",
-                        false,
-                    );
-                    return Task::none();
-                };
-                if url.is_empty() || folder.is_empty() {
+                if self.active_clone.is_some() {
                     return Task::none();
                 }
-                self.show_workspace_modal = false;
-                self.busy_label = Some(format!("Cloning {folder}…"));
+                let url = self.clone_modal.url_input.trim().to_string();
+                let parent_raw = self.clone_modal.parent_dir_input.trim().to_string();
+                let folder = self.clone_modal.folder_input.trim().to_string();
+                if url.is_empty() {
+                    self.clone_modal.error = Some("Enter a Git repository URL to clone.".into());
+                    return Task::none();
+                }
+                if parent_raw.is_empty() {
+                    self.clone_modal.error =
+                        Some("Choose or enter a parent directory for the cloned repository.".into());
+                    return Task::none();
+                }
+                if folder.is_empty() {
+                    self.clone_modal.error = Some("Enter a target folder name.".into());
+                    return Task::none();
+                }
+                let parent = PathBuf::from(&parent_raw);
+                let dest = parent.join(&folder);
+                if dest.is_file() {
+                    self.clone_modal.error = Some(format!(
+                        "Destination '{}' already exists as a file.",
+                        dest.display()
+                    ));
+                    return Task::none();
+                }
+                if dest.is_dir()
+                    && std::fs::read_dir(&dest)
+                        .ok()
+                        .is_some_and(|mut it| it.next().is_some())
+                {
+                    self.clone_modal.error = Some(format!(
+                        "Destination folder '{}' already exists and is not empty.",
+                        dest.display()
+                    ));
+                    return Task::none();
+                }
+
+                self.last_repo_parent_dir = Some(parent.clone());
+                self.clone_modal.error = None;
+                self.clone_modal.cancelled_notice = false;
+
+                let branch = {
+                    let b = self.clone_modal.branch_input.trim().to_string();
+                    if b.is_empty() { None } else { Some(b) }
+                };
+                let depth_one = self.clone_modal.depth_one;
+                let recurse_submodules = self.clone_modal.recurse_submodules;
+                let target_group = self.clone_modal.normalized_group();
+                let tracker = gitfleet_git::CloneProgressTracker::new();
+                let snapshot = tracker.snapshot();
+
+                self.active_clone = Some(ActiveCloneState {
+                    url: url.clone(),
+                    folder_name: folder.clone(),
+                    dest_path: dest,
+                    branch: branch.clone(),
+                    depth_one,
+                    recurse_submodules,
+                    target_group: target_group.clone(),
+                    tracker: tracker.clone(),
+                    snapshot,
+                });
+                self.show_clone_modal = true;
+                self.busy_label = Some(format!("Cloning '{folder}'…"));
+
+                let opts = gitfleet_git::CloneOptions {
+                    url,
+                    parent_dir: parent,
+                    folder_name: folder,
+                    branch,
+                    depth_one,
+                    recurse_submodules,
+                };
                 let svc = self.service.clone();
                 Task::perform(
                     async move {
-                        svc.git
-                            .clone_repo(&url, &parent, &folder, true)
+                        let result = svc
+                            .git
+                            .clone_repo_with_progress(opts, tracker)
                             .await
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| e.to_string());
+                        (target_group, result)
                     },
-                    Message::CloneRepoFinished,
+                    |(target_group, result)| Message::CloneRepoFinished {
+                        target_group,
+                        result,
+                    },
                 )
             }
-            Message::CloneRepoFinished(res) => {
+            Message::CloneProgressTick => {
+                if let Some(active) = &mut self.active_clone {
+                    active.snapshot = active.tracker.snapshot();
+                    self.busy_label = Some(if active.snapshot.is_cancelled {
+                        format!("Cancelling clone '{}'…", active.folder_name)
+                    } else if let Some(pct) = active.snapshot.stage_percent {
+                        format!(
+                            "Cloning '{}' — {} ({pct}%)",
+                            active.folder_name,
+                            active.snapshot.phase.short_label()
+                        )
+                    } else {
+                        format!(
+                            "Cloning '{}' — {}",
+                            active.folder_name,
+                            active.snapshot.phase.label()
+                        )
+                    });
+                }
+                Task::none()
+            }
+            Message::CancelCloneRepo => {
+                if let Some(active) = &mut self.active_clone {
+                    active.tracker.cancel();
+                    active.snapshot = active.tracker.snapshot();
+                    self.busy_label = Some(format!("Cancelling clone '{}'…", active.folder_name));
+                }
+                Task::none()
+            }
+            Message::CloneRepoFinished {
+                target_group,
+                result,
+            } => {
+                let finished_folder = self
+                    .active_clone
+                    .as_ref()
+                    .map(|a| a.folder_name.clone())
+                    .unwrap_or_default();
+                self.active_clone = None;
                 self.busy_label = None;
-                match res {
-                    Ok(dest) => {
-                        self.clone_url_input.clear();
-                        self.clone_folder_input.clear();
-                        if let Ok(entry) = self.service.workspace.add_repo(dest, None) {
-                            self.toast_is_error = false;
-                            self.toast_message = format!("Cloned '{}'", entry.name);
-                            return self.update(Message::SelectRepo(entry.id));
+                match result {
+                    Ok(gitfleet_git::CloneOutcome::Completed(dest)) => {
+                        self.clone_modal.url_input.clear();
+                        self.clone_modal.folder_input.clear();
+                        self.clone_modal.folder_customized = false;
+                        self.clone_modal.branch_input.clear();
+                        self.clone_modal.error = None;
+                        self.clone_modal.cancelled_notice = false;
+                        self.show_clone_modal = false;
+                        match self.service.workspace.add_repo(dest, target_group.clone()) {
+                            Ok(entry) => {
+                                if target_group.is_some() && entry.group != target_group {
+                                    let _ = self
+                                        .service
+                                        .workspace
+                                        .set_repo_group(&entry.id, target_group);
+                                }
+                                self.toast_is_error = false;
+                                self.toast_message = format!("Cloned '{}'", entry.name);
+                                return Task::batch([
+                                    self.load_submodules_task(entry.clone()),
+                                    self.update(Message::SelectRepo(entry.id)),
+                                ]);
+                            }
+                            Err(e) => {
+                                self.report_action_error(
+                                    "Add Cloned Repository Failed",
+                                    e.to_string(),
+                                    false,
+                                );
+                            }
                         }
                     }
+                    Ok(gitfleet_git::CloneOutcome::Cancelled) => {
+                        self.clone_modal.cancelled_notice = true;
+                        self.clone_modal.error = None;
+                        self.toast_is_error = false;
+                        self.toast_message = if finished_folder.is_empty() {
+                            "Clone cancelled".to_string()
+                        } else {
+                            format!("Cancelled cloning '{finished_folder}'")
+                        };
+                    }
                     Err(e) => {
-                        self.report_action_error("Clone / Init Repository Failed", e, true);
+                        self.show_clone_modal = true;
+                        self.clone_modal.cancelled_notice = false;
+                        self.clone_modal.error = Some(e.clone());
+                        self.record_background_error("Clone Repository Failed", e, true);
                     }
                 }
                 Task::none()
-            }
-            Message::CreateRepoNameChanged(v) => {
-                self.create_repo_name = v;
-                Task::none()
-            }
-            Message::PickCreateParent => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .set_title("Choose parent directory for new Git repo")
-                        .pick_folder()
-                        .await
-                        .map(|h| h.path().to_path_buf())
-                },
-                Message::CreateParentPicked,
-            ),
-            Message::CreateParentPicked(p) => {
-                self.create_parent_dir = p;
-                Task::none()
-            }
-            Message::CreateRepoSubmitted => {
-                let name = self.create_repo_name.trim().to_string();
-                let Some(parent) = self.create_parent_dir.clone() else {
-                    self.report_action_error(
-                        "Create Repository Failed",
-                        "Pick a parent directory before creating a new repository.",
-                        false,
-                    );
-                    return Task::none();
-                };
-                if name.is_empty() {
-                    return Task::none();
-                }
-                let dest = parent.join(&name);
-                self.create_repo_name.clear();
-                self.show_workspace_modal = false;
-                let svc = self.service.clone();
-                Task::perform(
-                    async move {
-                        svc.git.init_repo(&dest).await.map(|_| dest).map_err(|e| e.to_string())
-                    },
-                    Message::CloneRepoFinished,
-                )
             }
             Message::LocateRepo(repo_id) => Task::perform(
                 async move {

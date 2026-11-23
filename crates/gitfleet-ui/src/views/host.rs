@@ -41,7 +41,7 @@ impl GitFleetApp {
                         .on_press(Message::ToggleWorkspaceModal),
                     )
                     .on_right_press(Message::OpenContextMenu(ContextMenuTarget::WorkspacePill)),
-                    "Workspace Manager (Switch, Rename, Groups, Clone & Create Repo) · Right-click for quick actions",
+                    "Workspace Manager (Switch, Rename & Groups) · Right-click for quick actions",
                     tooltip::Position::Bottom,
                     p,
                 ),
@@ -660,6 +660,14 @@ impl GitFleetApp {
 
         if let Some(modal) = &self.scan_modal {
             modal_layers.push(self.view_scan_modal(p, modal));
+        }
+
+        if let Some(modal) = &self.add_repo_modal {
+            modal_layers.push(self.view_add_repo_modal(p, modal));
+        }
+
+        if self.show_clone_modal {
+            modal_layers.push(self.view_clone_modal(p));
         }
 
         if self.show_update_modal {

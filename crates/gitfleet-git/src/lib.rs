@@ -1,5 +1,6 @@
 pub mod branches;
 pub mod bulk;
+pub mod clone;
 pub mod conflicts;
 pub mod diff;
 pub mod git_flow;
@@ -18,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 pub use branches::BranchInfo;
+pub use clone::{
+    CloneOptions, CloneOutcome, ClonePhase, CloneProgressSnapshot, CloneProgressTracker,
+    infer_repo_folder_from_url,
+};
 pub use conflicts::{
     ConflictHunk, ConflictSegment, ConflictStrategy, HunkChoice, MergeMode, ParsedConflictFile,
     has_conflict_markers,

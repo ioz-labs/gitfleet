@@ -17,9 +17,10 @@ impl GitFleetApp {
         let q = self.palette_query.to_lowercase();
         let mut items = column![].spacing(3);
         let commands: Vec<(&str, &str, Message)> = vec![
-            ("Workspace: Manage Workspaces, Groups, Clone & Create…", "", Message::ToggleWorkspaceModal),
+            ("Workspace: Manage Workspaces & Groups…", "", Message::ToggleWorkspaceModal),
             ("Workspace: Rename Current Workspace…", "", Message::OpenRenameWorkspaceModal(None)),
-            ("Workspace: Add Repository…", "", Message::PickAddRepo),
+            ("Repository: Clone Repository…", "", Message::OpenCloneModal(None)),
+            ("Repository: Add / Create Local Repository…", "", Message::OpenAddRepoModal(None)),
             ("Workspace: Scan Folder & Auto-Group…", "", Message::PickScanFolder(None)),
             ("Workspace: Open Active Repo in Explorer", "", Message::RevealSelectedInExplorer),
             ("Git: Refresh Selected", "F5", Message::RefreshSelected),

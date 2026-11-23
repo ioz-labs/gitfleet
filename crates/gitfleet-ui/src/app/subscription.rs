@@ -59,6 +59,10 @@ impl GitFleetApp {
             subs.push(time::every(Duration::from_millis(100)).map(|_| Message::UpdateProgressTick));
         }
 
+        if self.active_clone.is_some() {
+            subs.push(time::every(Duration::from_millis(100)).map(|_| Message::CloneProgressTick));
+        }
+
         if terminal_capture_keys {
             subs.push(event::listen_with(handle_window_and_terminal_event));
         } else {

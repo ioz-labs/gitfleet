@@ -160,6 +160,16 @@ impl GitFleetApp {
                     self.commit_modal = None;
                     return Task::none();
                 }
+                if let Some(modal) = &self.add_repo_modal {
+                    if !modal.submitting {
+                        self.add_repo_modal = None;
+                    }
+                    return Task::none();
+                }
+                if self.show_clone_modal {
+                    self.show_clone_modal = false;
+                    return Task::none();
+                }
                 if self.scan_modal.is_some() {
                     self.scan_modal = None;
                     self.scan_request_id = self.scan_request_id.wrapping_add(1);
@@ -571,6 +581,8 @@ impl GitFleetApp {
                 self.show_merge_modal = false;
                 self.show_git_flow_modal = false;
                 self.show_workspace_modal = false;
+                self.show_clone_modal = false;
+                self.add_repo_modal = None;
                 self.show_eol_modal = false;
                 self.show_encoding_modal = false;
                 self.show_syntax_modal = false;

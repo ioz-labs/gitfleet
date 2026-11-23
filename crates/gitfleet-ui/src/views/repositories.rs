@@ -1,7 +1,7 @@
 use crate::app::{ContextMenuTarget, GitFleetApp, Message, PendingConfirm, RepoFilter};
 use crate::icons;
 use crate::theme::{self, Palette, ThemeMode, tree, type_scale};
-use crate::views::{slim_scroll_h, tip};
+use crate::views::{slim_scroll_h, tip, truncate_chars};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_workspace::RepoEntry;
 use iced::widget::canvas::{self, Canvas, Geometry, LineCap, LineJoin, Path as CanvasPath, Stroke};
@@ -9,7 +9,10 @@ use iced::widget::{
     Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, text, text_input,
     tooltip,
 };
-use iced::{Alignment, Color, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::{
+    Alignment, Background, Border, Color, Element, Length, Padding, Point, Rectangle, Renderer,
+    Size, Theme, mouse,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1018,6 +1021,60 @@ impl GitFleetApp {
     }
 
     pub(crate) fn view_repositories_pane(&self, p: Palette, repos: &[RepoEntry]) -> Element<'_, Message> {
+        let show_btn_labels = self.sidebar_width >= 260.0;
+        let cloning_active = self.active_clone.is_some();
+        let clone_btn_label = if let Some(active) = &self.active_clone {
+            if active.snapshot.is_cancelled {
+                "Cancelling".to_string()
+            } else if let Some(pct) = active.snapshot.stage_percent {
+                format!("{pct}%")
+            } else {
+                "Cloning".to_string()
+            }
+        } else {
+            "Clone".to_string()
+        };
+        let clone_fg = if cloning_active || self.show_clone_modal {
+            p.accent_fg
+        } else {
+            p.text_secondary
+        };
+        let add_fg = if self.add_repo_modal.is_some() {
+            p.accent_fg
+        } else {
+            p.text_secondary
+        };
+
+        let clone_btn_inner: Element<'_, Message> = if show_btn_labels {
+            row![
+                icons::cloud_download(13.0, clone_fg),
+                text(clone_btn_label)
+                    .size(type_scale::CAPTION)
+                    .color(clone_fg)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            icons::cloud_download(15.0, clone_fg).into()
+        };
+
+        let add_btn_inner: Element<'_, Message> = if show_btn_labels {
+            row![
+                icons::folder_plus(13.0, add_fg),
+                text("Add")
+                    .size(type_scale::CAPTION)
+                    .color(add_fg)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            icons::folder_plus(15.0, add_fg).into()
+        };
+
         let header = row![
             theme::clipped_line(
                 tip(
@@ -1031,11 +1088,46 @@ impl GitFleetApp {
                 Length::Fill,
             ),
             tip(
-                button(icons::folder_plus(15.0, p.text_secondary))
-                    .padding([4, 6])
-                    .style(theme::vscode_icon_btn(p, false))
-                    .on_press(Message::PickAddRepo),
-                "Add a single local Git repository",
+                button(clone_btn_inner)
+                    .padding(if show_btn_labels { [3, 7] } else { [4, 6] })
+                    .style({
+                        let is_active = cloning_active || self.show_clone_modal;
+                        move |t, s| {
+                            if is_active {
+                                theme::filter_pill_btn(p, true)(t, s)
+                            } else if show_btn_labels {
+                                theme::subtle_btn(p)(t, s)
+                            } else {
+                                theme::vscode_icon_btn(p, false)(t, s)
+                            }
+                        }
+                    })
+                    .on_press(Message::OpenCloneModal(None)),
+                if cloning_active {
+                    "View live Git clone progress or cancel"
+                } else {
+                    "Clone a remote Git repository…"
+                },
+                tooltip::Position::Bottom,
+                p,
+            ),
+            tip(
+                button(add_btn_inner)
+                    .padding(if show_btn_labels { [3, 7] } else { [4, 6] })
+                    .style({
+                        let is_active = self.add_repo_modal.is_some();
+                        move |t, s| {
+                            if is_active {
+                                theme::filter_pill_btn(p, true)(t, s)
+                            } else if show_btn_labels {
+                                theme::subtle_btn(p)(t, s)
+                            } else {
+                                theme::vscode_icon_btn(p, false)(t, s)
+                            }
+                        }
+                    })
+                    .on_press(Message::OpenAddRepoModal(None)),
+                "Add an existing local Git repository or initialize a new one…",
                 tooltip::Position::Bottom,
                 p,
             ),
@@ -1049,7 +1141,7 @@ impl GitFleetApp {
                 p,
             ),
         ]
-        .spacing(2)
+        .spacing(4)
         .align_y(Alignment::Center);
 
         let filter = text_input("Filter repos…", &self.filter_query)
@@ -1122,6 +1214,106 @@ impl GitFleetApp {
         }
 
         let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        if let Some(active) = &self.active_clone {
+            let snap = &active.snapshot;
+            let is_cancelling = snap.is_cancelled;
+            let frac = if is_cancelling {
+                (snap.overall_percent as f32 / 100.0).clamp(0.15, 1.0)
+            } else if let Some(pct) = snap.stage_percent {
+                (pct as f32 / 100.0).clamp(0.04, 1.0)
+            } else {
+                (snap.overall_percent as f32 / 100.0).clamp(0.06, 1.0)
+            };
+            let fill_p = ((frac * 1000.0).round() as u16).max(1);
+            let rem_p = 1000u16.saturating_sub(fill_p);
+            let bar_col = if is_cancelling {
+                p.warning_fg
+            } else {
+                p.accent_primary
+            };
+            let mut mini_bar = row![
+                container(Space::new(Length::Fill, Length::Fixed(4.0)))
+                    .width(Length::FillPortion(fill_p))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(bar_col)),
+                        border: Border {
+                            radius: 999.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            ];
+            if rem_p > 0 {
+                mini_bar = mini_bar.push(Space::with_width(Length::FillPortion(rem_p)));
+            }
+            let status_sub = if is_cancelling {
+                "Cancelling…".to_string()
+            } else if let Some(pct) = snap.stage_percent {
+                format!("{} {pct}%", snap.phase.short_label())
+            } else {
+                snap.phase.short_label().to_string()
+            };
+
+            rows.push(
+                container(
+                    column![
+                        row![
+                            icons::cloud_download(
+                                13.0,
+                                if is_cancelling {
+                                    p.warning_fg
+                                } else {
+                                    p.accent_fg
+                                }
+                            ),
+                            theme::clipped_line(
+                                text(format!(
+                                    "Cloning '{}' · {status_sub}",
+                                    truncate_chars(&active.folder_name, 18)
+                                ))
+                                .size(type_scale::CAPTION)
+                                .color(p.text_primary),
+                                Length::Fill,
+                            ),
+                            button(text("Details").size(type_scale::BADGE))
+                                .padding([2, 6])
+                                .style(theme::subtle_btn(p))
+                                .on_press(Message::OpenCloneModal(None)),
+                            button(
+                                text(if is_cancelling { "…" } else { "Cancel" })
+                                    .size(type_scale::BADGE)
+                                    .color(if is_cancelling {
+                                        p.text_muted
+                                    } else {
+                                        p.danger_fg
+                                    }),
+                            )
+                            .padding([2, 6])
+                            .style(theme::subtle_btn(p))
+                            .on_press_maybe((!is_cancelling).then_some(Message::CancelCloneRepo)),
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                        container(mini_bar)
+                            .width(Length::Fill)
+                            .height(Length::Fixed(4.0))
+                            .style(move |_| container::Style {
+                                background: Some(Background::Color(p.border_subtle)),
+                                border: Border {
+                                    radius: 999.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                    ]
+                    .spacing(5),
+                )
+                .padding([6, 8])
+                .width(Length::Fill)
+                .style(theme::card_box(p))
+                .into(),
+            );
+        }
         if self.show_inline_group_input {
             let placeholder = if let Some(parent) = &self.new_group_parent {
                 format!("Subgroup in {parent}/…")

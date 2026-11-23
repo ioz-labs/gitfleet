@@ -238,7 +238,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) drawer_tab: Option<DrawerTab>,
     pub(crate) bulk_cancel: Option<Arc<AtomicBool>>,
 
-    // Milestone 3: Workspace Manager & Groups Modal
+    // Milestone 3: Workspace Manager, Groups, Clone & Add Repo Modals
     pub(crate) show_workspace_modal: bool,
     pub(crate) show_inline_group_input: bool,
     pub(crate) new_group_parent: Option<String>,
@@ -247,11 +247,14 @@ pub(crate) struct GitFleetApp {
     pub(crate) dragging_repo: Option<(RepoId, String)>,
     pub(crate) drag_hover_group: Option<(String, Option<String>)>,
     pub(crate) new_workspace_name: String,
-    pub(crate) clone_url_input: String,
-    pub(crate) clone_folder_input: String,
-    pub(crate) clone_parent_dir: Option<PathBuf>,
-    pub(crate) create_repo_name: String,
-    pub(crate) create_parent_dir: Option<PathBuf>,
+    pub(crate) last_repo_parent_dir: Option<PathBuf>,
+    pub(crate) show_clone_modal: bool,
+    pub(crate) clone_modal: CloneModalState,
+    pub(crate) clone_url_input_id: text_input::Id,
+    pub(crate) active_clone: Option<ActiveCloneState>,
+    pub(crate) add_repo_modal: Option<AddRepoModalState>,
+    pub(crate) add_repo_path_input_id: text_input::Id,
+    pub(crate) add_repo_name_input_id: text_input::Id,
     pub(crate) pending_relocation: Option<PrefixRelocation>,
 
     // Milestone 4: Pre-Commit Hygiene, Secrets Vault, 3-Layer Ignore
@@ -538,11 +541,14 @@ impl GitFleetApp {
             dragging_repo: None,
             drag_hover_group: None,
             new_workspace_name: String::new(),
-            clone_url_input: String::new(),
-            clone_folder_input: String::new(),
-            clone_parent_dir: None,
-            create_repo_name: String::new(),
-            create_parent_dir: None,
+            last_repo_parent_dir: None,
+            show_clone_modal: false,
+            clone_modal: CloneModalState::default(),
+            clone_url_input_id: text_input::Id::unique(),
+            active_clone: None,
+            add_repo_modal: None,
+            add_repo_path_input_id: text_input::Id::unique(),
+            add_repo_name_input_id: text_input::Id::unique(),
             pending_relocation: None,
             staged_secrets: Vec::new(),
             oversized_files: Vec::new(),
@@ -609,7 +615,7 @@ impl GitFleetApp {
             inline_group_input_id: text_input::Id::unique(),
             busy_label: None,
             toast_message: if ws.repos.is_empty() {
-                "Ready — click + Add or Scan in Repositories to open your repos".into()
+                "Ready — click Clone, Add, or Scan in Repositories to open your repos".into()
             } else {
                 format!("Loaded {} repositories", ws.repos.len())
             },
@@ -785,12 +791,34 @@ impl GitFleetApp {
     }
 
 
+    pub(crate) fn suggested_repo_parent_dir(&self) -> Option<PathBuf> {
+        if let Some(last) = &self.last_repo_parent_dir
+            && last.is_dir()
+        {
+            return Some(last.clone());
+        }
+        if let Some(cur) = self.current_repo()
+            && !Self::is_submodule_repo_id(&cur.id)
+            && let Some(parent) = cur.path.parent()
+            && parent.is_dir()
+        {
+            return Some(parent.to_path_buf());
+        }
+        self.service
+            .workspace
+            .current()
+            .repos
+            .iter()
+            .find_map(|r| r.path.parent().filter(|p| p.is_dir()).map(PathBuf::from))
+    }
+
     pub(crate) fn has_modal_or_menu_open(&self) -> bool {
         self.show_palette
             || self.show_branch_popover
             || self.show_merge_modal
             || self.show_git_flow_modal
             || self.show_workspace_modal
+            || self.show_clone_modal
             || self.show_settings_modal
             || self.show_update_modal
             || self.show_eol_modal
@@ -808,6 +836,7 @@ impl GitFleetApp {
             || self.rename_entry_modal.is_some()
             || self.add_gitignore_modal.is_some()
             || self.commit_modal.is_some()
+            || self.add_repo_modal.is_some()
             || self.scan_modal.is_some()
     }
 

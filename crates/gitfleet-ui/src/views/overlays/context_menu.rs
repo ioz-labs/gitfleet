@@ -131,21 +131,21 @@ impl GitFleetApp {
                 ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
+                    icons::cloud_download(12.0, p.accent_fg).into(),
+                    "Clone Repository…".into(),
+                    Message::OpenCloneModal(None),
+                    false,
+                ));
+                items = items.push(ctx_btn(
                     icons::folder_plus(12.0, p.text_secondary).into(),
-                    "Add Local Repository…".into(),
-                    Message::PickAddRepo,
+                    "Add / Create Local Repository…".into(),
+                    Message::OpenAddRepoModal(None),
                     false,
                 ));
                 items = items.push(ctx_btn(
                     icons::folder_search(12.0, p.text_secondary).into(),
                     "Scan Folder & Auto-Group…".into(),
                     Message::PickScanFolder(None),
-                    false,
-                ));
-                items = items.push(ctx_btn(
-                    icons::pull(12.0, p.accent_fg).into(),
-                    "Clone / Create Repository…".into(),
-                    Message::ToggleWorkspaceModal,
                     false,
                 ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
@@ -215,9 +215,15 @@ impl GitFleetApp {
                 }
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(close_sub(ctx_btn(
+                    icons::cloud_download(12.0, p.accent_fg).into(),
+                    "Clone Repository into Group…".into(),
+                    Message::OpenCloneModal(Some(name.clone())),
+                    false,
+                )));
+                items = items.push(close_sub(ctx_btn(
                     icons::folder_plus(12.0, p.text_secondary).into(),
-                    "Add Local Repository…".into(),
-                    Message::PickAddRepo,
+                    "Add Local Repository to Group…".into(),
+                    Message::OpenAddRepoModal(Some(name.clone())),
                     false,
                 )));
                 items = items.push(close_sub(ctx_btn(
@@ -230,7 +236,7 @@ impl GitFleetApp {
 
                 let key_sub_open = menu.submenu == ContextMenuSubmenu::GroupSecretKey;
                 if key_sub_open {
-                    submenu_trigger_idx = Some(8 + usize::from(has_move_active));
+                    submenu_trigger_idx = Some(9 + usize::from(has_move_active));
                 }
                 let mut key_row = row![
                     icons::key(12.0, p.success_fg),

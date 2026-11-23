@@ -1,5 +1,7 @@
+mod add_repo_modal;
 mod branch_popover;
 mod cherry_pick_modal;
+mod clone_modal;
 mod command_palette;
 mod commit_modal;
 mod confirm_modal;
