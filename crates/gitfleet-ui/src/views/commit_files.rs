@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::icons;
 use crate::theme::{self, Palette, icon_size, pad, space, type_scale};
-use crate::views::{parent_dir, slim_scroll_h, tip};
+use crate::views::{parent_dir, slim_scroll_h, slim_strip_h, tip};
 use gitfleet_git::{ConflictStrategy, FileChange, FileChangeKind, ResetMode};
 use iced::widget::{
     Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, text,
@@ -526,7 +526,15 @@ impl GitFleetApp {
                         .on_press(Message::ApplyConventionalPrefix(prefix)),
                     );
                 }
-                let cc_strip = slim_scroll_h(cc_chips, 230.0, p);
+                let cc_strip = slim_strip_h(
+                    container(cc_chips).padding(iced::Padding {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 3.0,
+                        left: 0.0,
+                    }),
+                    p,
+                );
 
                 let commit_box = text_editor(&self.commit_editor)
                     .placeholder("Description body (optional · Ctrl+Enter to commit)")

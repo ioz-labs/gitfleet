@@ -864,13 +864,14 @@ pub fn slim_overlay_vertical_direction() -> scrollable::Direction {
     )
 }
 
+/// Horizontal overlay scrollbar (`0px` reserved vertical gutter when content fits) so single-row
+/// ribbons, tab strips, and chip bars stay vertically centered and never spawn vertical scrollbars.
 pub fn slim_horizontal_direction() -> scrollable::Direction {
     scrollable::Direction::Horizontal(
         scrollable::Scrollbar::new()
-            .width(4)
-            .scroller_width(4)
-            .margin(1)
-            .spacing(2),
+            .width(3)
+            .scroller_width(3)
+            .margin(1),
     )
 }
 

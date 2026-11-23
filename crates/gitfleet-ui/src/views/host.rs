@@ -8,9 +8,10 @@ use crate::theme::kit::{
     kbd_pill, segmented_control,
 };
 use crate::theme::{self, Palette, ThemeMode, icon_size, type_scale};
-use crate::views::{slim_scroll_h, tip, truncate_chars};
+use crate::views::{tip, truncate_chars};
 use iced::widget::{
-    Space, Stack, button, column, container, horizontal_rule, mouse_area, row, text, tooltip,
+    Space, Stack, button, column, container, horizontal_rule, mouse_area, row, scrollable, text,
+    tooltip,
 };
 use iced::{Alignment, Color, Element, Length};
 
@@ -340,8 +341,9 @@ impl GitFleetApp {
             "Undo".to_string()
         };
 
-        let git_actions_strip = slim_scroll_h(
-            row![
+        let git_actions_strip = scrollable(
+            container(
+                row![
                 tb_btn(
                     icons::fetch(icon_size::XS, ic).into(),
                     "Fetch".into(),
@@ -519,12 +521,17 @@ impl GitFleetApp {
                     has_repo.then_some(Message::RefreshSelected),
                     "Refresh active repository (F5)",
                 ),
-            ]
-            .spacing(2)
+                ]
+                .spacing(2)
+                .align_y(Alignment::Center),
+            )
+            .height(Length::Fill)
             .align_y(Alignment::Center),
-            520.0,
-            p,
-        );
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .direction(theme::slim_horizontal_direction())
+        .style(theme::slim_scrollable(p));
 
         let layout_switcher = tip(
             segmented_control(
@@ -550,7 +557,7 @@ impl GitFleetApp {
                 branch_pill,
                 smart_cta,
                 tb_sep(),
-                container(git_actions_strip).width(Length::Fill),
+                git_actions_strip,
                 if self.bulk_cancel.is_some() {
                     Element::from(
                         button(

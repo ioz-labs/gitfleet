@@ -79,6 +79,19 @@ pub(crate) fn slim_scroll_h<'a>(
     theme::responsive_hscroll(content, min_width, p)
 }
 
+/// Single-row horizontal scrollable strip (`Direction::Horizontal`, `width: Fill`, `height: Shrink`)
+/// for ribbons, tab bars, and chip strips — never shows a vertical scrollbar and preserves centering.
+pub(crate) fn slim_strip_h<'a>(
+    content: impl Into<Element<'a, Message>>,
+    p: Palette,
+) -> scrollable::Scrollable<'a, Message> {
+    scrollable(content)
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .direction(theme::slim_horizontal_direction())
+        .style(theme::slim_scrollable(p))
+}
+
 pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> String {
     let count = s.chars().count();
     if count <= max_chars {

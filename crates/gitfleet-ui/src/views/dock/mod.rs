@@ -9,7 +9,7 @@ use crate::app::{DockPosition, DrawerTab, GitFleetApp, Message, ResizeTarget};
 use crate::icons;
 use crate::theme::kit::{hairline_h_splitter, hairline_v_splitter, status_pill};
 use crate::theme::{self, Palette, icon_size, layout, pad, space, type_scale};
-use crate::views::{slim_scroll_h, tip};
+use crate::views::{slim_strip_h, tip};
 use iced::widget::{button, column, container, horizontal_rule, row, text, tooltip};
 use iced::{Alignment, Color, Element, Length};
 
@@ -96,7 +96,7 @@ impl GitFleetApp {
         let log_count = self.service.command_log.list().len();
         let output_badge = (log_count > 0).then(|| (log_count.to_string(), None));
 
-        let tabs_strip = slim_scroll_h(
+        let tabs_strip = slim_strip_h(
             row![
                 dock_tab("Terminal", term_badge, DrawerTab::Terminal),
                 dock_tab("Problems", problems_badge, DrawerTab::Problems),
@@ -107,7 +107,6 @@ impl GitFleetApp {
             ]
             .spacing(2)
             .align_y(Alignment::Center),
-            340.0,
             p,
         );
 
@@ -241,7 +240,7 @@ impl GitFleetApp {
 
         let header = container(
             row![
-                container(tabs_strip).width(Length::Fill),
+                tabs_strip,
                 right_actions,
             ]
             .spacing(space::XS)
