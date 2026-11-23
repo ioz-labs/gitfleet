@@ -70,31 +70,55 @@ impl GitFleetApp {
                     )
                     .padding([0, 6]),
                 )
-                // Read-only ahead/behind telemetry (Fetch lives uniquely in the top toolbar)
                 .push(
-                    container(
-                        row![
-                            text(behind.to_string())
-                                .size(type_scale::CAPTION)
-                                .color(if behind > 0 { p.accent_fg } else { p.text_muted })
-                                .wrapping(text::Wrapping::None),
-                            icons::pull(
-                                11.0,
-                                if behind > 0 { p.accent_fg } else { p.text_muted }
-                            ),
-                            text(ahead.to_string())
-                                .size(type_scale::CAPTION)
-                                .color(if ahead > 0 { p.success_fg } else { p.text_muted })
-                                .wrapping(text::Wrapping::None),
-                            icons::push(
-                                11.0,
-                                if ahead > 0 { p.success_fg } else { p.text_muted }
-                            ),
-                        ]
-                        .spacing(3)
-                        .align_y(Alignment::Center),
-                    )
-                    .padding([0, 6]),
+                    if active_status.is_some_and(|st| !st.detached && st.upstream.is_none()) {
+                        tip(
+                            button(
+                                row![
+                                    icons::push(11.0, p.accent_fg),
+                                    text("Publish")
+                                        .size(type_scale::CAPTION)
+                                        .color(p.accent_fg)
+                                        .wrapping(text::Wrapping::None),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding([2, 7])
+                            .style(theme::vscode_icon_btn(p, false))
+                            .on_press(Message::RequestConfirm(
+                                crate::app::PendingConfirm::publish_branch(&branch_label),
+                            )),
+                            "Local-only branch (no remote upstream yet) — click to publish to origin",
+                            tooltip::Position::Top,
+                            p,
+                        )
+                    } else {
+                        container(
+                            row![
+                                text(behind.to_string())
+                                    .size(type_scale::CAPTION)
+                                    .color(if behind > 0 { p.accent_fg } else { p.text_muted })
+                                    .wrapping(text::Wrapping::None),
+                                icons::pull(
+                                    11.0,
+                                    if behind > 0 { p.accent_fg } else { p.text_muted },
+                                ),
+                                text(ahead.to_string())
+                                    .size(type_scale::CAPTION)
+                                    .color(if ahead > 0 { p.success_fg } else { p.text_muted })
+                                    .wrapping(text::Wrapping::None),
+                                icons::push(
+                                    11.0,
+                                    if ahead > 0 { p.success_fg } else { p.text_muted },
+                                ),
+                            ]
+                            .spacing(3)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([0, 6])
+                        .into()
+                    },
                 );
 
             if conflicts > 0 {

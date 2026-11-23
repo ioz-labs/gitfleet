@@ -41,6 +41,13 @@ pub(crate) enum DockPosition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SyncDirection {
+    #[default]
+    PullThenPush,
+    PushThenPull,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum CommandLogFilter {
     #[default]
     All,
@@ -272,6 +279,7 @@ pub(crate) enum ConfirmAction {
     ExecuteRebase { target: String },
     CheckoutCommit { oid: String },
     PushSelected,
+    ForcePushWithLease,
     PushBranch { branch: String },
     PushTag { name: String },
     UnsetUpstream { branch: String },
@@ -713,6 +721,32 @@ impl PendingConfirm {
         }
     }
 
+    pub(crate) fn publish_branch(branch: &str) -> Self {
+        Self {
+            title: "Publish Branch to Origin?".into(),
+            message: format!(
+                "Branch '{branch}' has no remote tracking branch yet. This will run `git push -u origin {branch}` to publish it and link upstream tracking."
+            ),
+            detail: Some(format!("New upstream: origin/{branch}")),
+            confirm_label: "Publish Branch".into(),
+            is_danger: false,
+            action: ConfirmAction::PushSelected,
+        }
+    }
+
+    pub(crate) fn force_push_with_lease(branch: &str) -> Self {
+        Self {
+            title: "Force Push (--force-with-lease)?".into(),
+            message: format!(
+                "Updates 'origin/{branch}' with your rewritten local history (e.g. after Rebase or Amend), aborting safely if someone else pushed unseen commits to remote."
+            ),
+            detail: Some(format!("Branch: {branch}  ·  --force-with-lease")),
+            confirm_label: "Force Push Safely".into(),
+            is_danger: true,
+            action: ConfirmAction::ForcePushWithLease,
+        }
+    }
+
     pub(crate) fn push_branch(branch: String) -> Self {
         Self {
             title: "Push Branch to Remote?".into(),
@@ -1084,8 +1118,25 @@ pub(crate) enum ContextMenuTarget {
         path: String,
     },
     RibbonPull,
-    RibbonStash,
+    RibbonSync,
+    RibbonPush,
+    RibbonSaveStash,
+    RibbonApplyStash,
     RibbonRebase,
+}
+
+impl ContextMenuTarget {
+    pub(crate) fn is_same_ribbon_dropdown(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::RibbonPull, Self::RibbonPull)
+                | (Self::RibbonSync, Self::RibbonSync)
+                | (Self::RibbonPush, Self::RibbonPush)
+                | (Self::RibbonSaveStash, Self::RibbonSaveStash)
+                | (Self::RibbonApplyStash, Self::RibbonApplyStash)
+                | (Self::RibbonRebase, Self::RibbonRebase)
+        )
+    }
 }
 
 

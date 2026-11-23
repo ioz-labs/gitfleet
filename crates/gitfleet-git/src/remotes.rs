@@ -141,6 +141,13 @@ impl GitService {
     }
 
     pub async fn push(&self, repo_path: &Path) -> AppResult<String> {
+        let st = self.get_status(repo_path).await.unwrap_or_default();
+        if !st.detached
+            && st.upstream.is_none()
+            && let Some(branch) = st.branch.as_deref()
+        {
+            return self.push_set_upstream(repo_path, "origin", branch).await;
+        }
         runner::run_git_ok(
             repo_path,
             &["push"],
@@ -149,6 +156,72 @@ impl GitService {
             true,
         )
         .await
+    }
+
+    pub async fn push_set_upstream(
+        &self,
+        repo_path: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> AppResult<String> {
+        runner::run_git_ok(
+            repo_path,
+            &["push", "-u", remote, branch],
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await
+    }
+
+    pub async fn push_force_with_lease(&self, repo_path: &Path) -> AppResult<String> {
+        let st = self.get_status(repo_path).await.unwrap_or_default();
+        if !st.detached
+            && st.upstream.is_none()
+            && let Some(branch) = st.branch.as_deref()
+        {
+            return runner::run_git_ok(
+                repo_path,
+                &["push", "--force-with-lease", "-u", "origin", branch],
+                Some(&self.command_log),
+                Some(&self.events),
+                true,
+            )
+            .await;
+        }
+        runner::run_git_ok(
+            repo_path,
+            &["push", "--force-with-lease"],
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await
+    }
+
+    pub async fn push_all_tags(&self, repo_path: &Path) -> AppResult<String> {
+        runner::run_git_ok(
+            repo_path,
+            &["push", "origin", "--tags"],
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await
+    }
+
+    /// Executes SmartGit's "Push, then Pull" sync order: pushes local commits first (publishing
+    /// `-u origin <branch>` if needed), then pulls incoming upstream commits (with optional Auto-Stash).
+    pub async fn sync_push_then_pull(
+        &self,
+        repo_path: &Path,
+        strategy: PullStrategy,
+        auto_stash: bool,
+    ) -> AppResult<PullOutcome> {
+        self.push(repo_path).await?;
+        let mut out = self.pull_smart(repo_path, strategy, auto_stash, false).await?;
+        out.pushed = true;
+        Ok(out)
     }
 
     pub async fn get_remotes(&self, repo_path: &Path) -> AppResult<Vec<RemoteInfo>> {

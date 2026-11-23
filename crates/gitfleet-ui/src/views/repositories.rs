@@ -1136,10 +1136,19 @@ impl GitFleetApp {
             ),
             tip(
                 button(icons::folder_search(15.0, p.text_secondary))
-                    .padding([4, 6])
+                    .padding([4, 5])
                     .style(theme::vscode_icon_btn(p, false))
                     .on_press(Message::PickScanFolder(None)),
                 "Scan a folder for Git repositories and auto-create groups",
+                tooltip::Position::Bottom,
+                p,
+            ),
+            tip(
+                button(icons::refresh(14.0, p.text_secondary))
+                    .padding([4, 5])
+                    .style(theme::vscode_icon_btn(p, false))
+                    .on_press_maybe(self.selected_repo.is_some().then_some(Message::RefreshSelected)),
+                "Refresh active repository status & history (F5)",
                 tooltip::Position::Bottom,
                 p,
             ),

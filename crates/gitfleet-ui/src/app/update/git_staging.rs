@@ -1,4 +1,6 @@
-use crate::app::{ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm};
+use crate::app::{
+    ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm, SyncDirection,
+};
 use crate::views::diff_viewer::build_selected_lines_patch;
 use crate::views::overlays::stash_pull_modal::{
     ApplyStashModalState, PullSyncModalState, SaveStashModalState,
@@ -415,6 +417,17 @@ impl GitFleetApp {
                 if self.selected_repo.is_none() {
                     return Task::none();
                 }
+                if let Some(st) = self.active_status()
+                    && !st.detached
+                    && st.upstream.is_none()
+                {
+                    let br = st.branch.as_deref().unwrap_or("HEAD").to_string();
+                    self.toast_is_error = false;
+                    self.toast_message = format!(
+                        "Branch '{br}' has no remote upstream yet — click Push to publish to origin, or Pull ▾ → Fetch"
+                    );
+                    return Task::none();
+                }
                 let (dirty, diverged) = self
                     .active_status()
                     .map(|s| {
@@ -429,6 +442,118 @@ impl GitFleetApp {
                 } else {
                     self.update(Message::PullSelected)
                 }
+            }
+            Message::SmartSyncClicked => {
+                if self.selected_repo.is_none() {
+                    return Task::none();
+                }
+                let dir = self.sync_direction;
+                self.update(Message::SetSyncDirectionAndRun(dir))
+            }
+            Message::SetSyncDirectionAndRun(dir) => {
+                self.sync_direction = dir;
+                self.context_menu = None;
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                if let Some(st) = self.active_status()
+                    && !st.detached
+                    && st.upstream.is_none()
+                {
+                    let br = st.branch.as_deref().unwrap_or("HEAD").to_string();
+                    self.pending_confirm = Some(PendingConfirm::publish_branch(&br));
+                    return Task::none();
+                }
+                let (dirty, ahead) = self
+                    .active_status()
+                    .map(|s| {
+                        (
+                            (s.staged_count + s.unstaged_count + s.untracked_count) > 0,
+                            s.ahead,
+                        )
+                    })
+                    .unwrap_or((false, 0));
+                let strategy = if ahead > 0 {
+                    PullStrategy::Rebase
+                } else {
+                    PullStrategy::FastForwardOnly
+                };
+                self.busy_label = Some("Syncing…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        if let Ok(prev) = svc.git.head_oid(&repo.path).await {
+                            svc.undo.record(UndoEntry {
+                                id: format!("{}", Utc::now().timestamp_millis()),
+                                repo_id: repo.id.clone(),
+                                label: "Sync".into(),
+                                previous_head: prev,
+                                created_at: Utc::now(),
+                            });
+                        }
+                        match dir {
+                            SyncDirection::PullThenPush => svc
+                                .git
+                                .pull_smart(&repo.path, strategy, dirty, true)
+                                .await
+                                .map_err(|e| e.to_string()),
+                            SyncDirection::PushThenPull => svc
+                                .git
+                                .sync_push_then_pull(&repo.path, strategy, dirty)
+                                .await
+                                .map_err(|e| e.to_string()),
+                        }
+                    },
+                    |result| Message::PullSmartDone {
+                        push_after: true,
+                        result,
+                    },
+                )
+            }
+            Message::QuickPullRebaseAutoStash => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.busy_label = Some("Pull (Rebase + Auto-Stash)…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        if let Ok(prev) = svc.git.head_oid(&repo.path).await {
+                            svc.undo.record(UndoEntry {
+                                id: format!("{}", Utc::now().timestamp_millis()),
+                                repo_id: repo.id.clone(),
+                                label: "Pull (Rebase)".into(),
+                                previous_head: prev,
+                                created_at: Utc::now(),
+                            });
+                        }
+                        svc.git
+                            .pull_smart(&repo.path, PullStrategy::Rebase, true, false)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::PullSmartDone {
+                        push_after: false,
+                        result,
+                    },
+                )
+            }
+            Message::QuickStashKeepIndex => {
+                self.run_git_op("Save Stash (--keep-index)", move |svc, repo| async move {
+                    svc.git
+                        .stash_push_with_options(&repo.path, None, true, true)
+                        .await
+                })
+            }
+            Message::ForcePushWithLeaseSelected => {
+                self.run_git_op("Force Push (--force-with-lease)", move |svc, repo| async move {
+                    svc.git.push_force_with_lease(&repo.path).await
+                })
+            }
+            Message::PushAllTagsSelected => {
+                self.run_git_op("Push Tags", move |svc, repo| async move {
+                    svc.git.push_all_tags(&repo.path).await
+                })
             }
             Message::OpenPullSyncModal { push_after } => {
                 if self.selected_repo.is_none() {

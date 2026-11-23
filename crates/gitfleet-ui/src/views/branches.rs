@@ -566,7 +566,11 @@ fn render_branch_subtree<'a>(
 
 impl GitFleetApp {
     pub(crate) fn view_branches_pane(&self, p: Palette) -> Element<'_, Message> {
-        // VS Code-style underline tabs in a horizontally scrollable header strip
+        let compact_tabs = self.sidebar_width < 340.0;
+        let submod_label = if compact_tabs { "Submods" } else { "Submodules" };
+        let worktree_label = if compact_tabs { "Trees" } else { "Worktrees" };
+        let tab_pad_h: u16 = if compact_tabs { 5 } else { 6 };
+
         let pane_tab = |label: &'static str, count: usize, tab: BottomLeftTab| -> Element<'_, Message> {
             let active = self.bottom_left_tab == tab;
             let text_str = if count > 0 {
@@ -585,7 +589,7 @@ impl GitFleetApp {
                     .wrapping(text::Wrapping::None)
                     .color(if active { p.text_primary } else { p.text_muted }),
             )
-            .padding([4, 6]);
+            .padding([4, tab_pad_h]);
             button(theme::bottom_underline(label_box, underline_color, 2.0))
                 .padding(0)
                 .style(theme::vscode_dock_tab(p, active))
@@ -598,10 +602,10 @@ impl GitFleetApp {
                 pane_tab("Branches", 0, BottomLeftTab::Branches),
                 pane_tab("Stash", self.stashes.len(), BottomLeftTab::Stashes),
                 pane_tab("Tags", self.tags.len(), BottomLeftTab::Tags),
-                pane_tab("Submodules", self.submodules.len(), BottomLeftTab::Submodules),
-                pane_tab("Worktrees", self.worktrees.len(), BottomLeftTab::Worktrees),
+                pane_tab(submod_label, self.submodules.len(), BottomLeftTab::Submodules),
+                pane_tab(worktree_label, self.worktrees.len(), BottomLeftTab::Worktrees),
             ]
-            .spacing(2)
+            .spacing(1)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)

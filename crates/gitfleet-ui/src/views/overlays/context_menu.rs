@@ -1,6 +1,6 @@
 use crate::app::{
     BottomViewMode, ContextMenuState, ContextMenuSubmenu, ContextMenuTarget, GitFleetApp, Message,
-    PendingConfirm,
+    PendingConfirm, SyncDirection,
 };
 use crate::icons;
 use crate::theme::{self, Palette, type_scale};
@@ -1383,54 +1383,124 @@ impl GitFleetApp {
                 ));
             }
             ContextMenuTarget::RibbonPull => {
-                items = items.push(
-                    container(
-                        text("Remote Sync & Pull")
-                            .size(type_scale::CAPTION)
-                            .color(p.text_muted),
-                    )
-                    .padding([5, 10]),
-                );
-                items = items.push(ctx_btn(
-                    icons::pull(12.0, p.accent_fg).into(),
-                    "Pull with Options (Auto-Stash / Rebase)…".into(),
-                    Message::OpenPullSyncModal { push_after: false },
+                items = items.push(ctx_btn_sc(
+                    icons::fetch(12.0, p.accent_fg).into(),
+                    "Fetch".into(),
+                    "",
+                    Message::FetchSelected,
                     false,
                 ));
-                items = items.push(ctx_btn(
-                    icons::sync_arrows(12.0, p.accent_fg).into(),
-                    "Sync (Pull & Push)…".into(),
-                    Message::OpenPullSyncModal { push_after: true },
+                items = items.push(ctx_btn_sc(
+                    icons::cloud_download(12.0, p.text_secondary).into(),
+                    "Fetch All Repositories".into(),
+                    "",
+                    Message::FetchAllWorkspaceRepos,
                     false,
                 ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
-                    icons::fetch(12.0, p.text_secondary).into(),
-                    "Fetch All & Prune".into(),
-                    Message::FetchSelected,
-                    false,
-                ));
-                items = items.push(ctx_btn(
                     icons::pull(12.0, p.text_secondary).into(),
-                    "Quick Pull (--ff-only)".into(),
+                    "Pull (Fast-Forward Only)".into(),
                     Message::PullSelected,
                     false,
                 ));
+                items = items.push(ctx_btn(
+                    icons::git_rebase(12.0, p.violet_fg).into(),
+                    "Pull with Rebase + Auto-Stash".into(),
+                    Message::QuickPullRebaseAutoStash,
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::sliders(12.0, p.accent_fg).into(),
+                    "Pull More…".into(),
+                    Message::OpenPullSyncModal { push_after: false },
+                    false,
+                ));
             }
-            ContextMenuTarget::RibbonStash => {
+            ContextMenuTarget::RibbonSync => {
+                let pull_first = self.sync_direction == SyncDirection::PullThenPush;
+                items = items.push(ctx_btn(
+                    if pull_first {
+                        icons::check(12.0, p.accent_fg).into()
+                    } else {
+                        Space::new(12, 12).into()
+                    },
+                    "Pull, then Push".into(),
+                    Message::SetSyncDirectionAndRun(SyncDirection::PullThenPush),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    if !pull_first {
+                        icons::check(12.0, p.accent_fg).into()
+                    } else {
+                        Space::new(12, 12).into()
+                    },
+                    "Push, then Pull".into(),
+                    Message::SetSyncDirectionAndRun(SyncDirection::PushThenPull),
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::sliders(12.0, p.text_secondary).into(),
+                    "Sync More…".into(),
+                    Message::OpenPullSyncModal { push_after: true },
+                    false,
+                ));
+            }
+            ContextMenuTarget::RibbonPush => {
+                let st = self.active_status();
+                let branch = st
+                    .and_then(|s| s.branch.as_deref())
+                    .unwrap_or("HEAD")
+                    .to_string();
+                let ahead = st.map(|s| s.ahead).unwrap_or(0);
+                let has_upstream = st.is_some_and(|s| s.upstream.is_some());
+
+                if has_upstream {
+                    items = items.push(ctx_btn(
+                        icons::push(12.0, p.success_fg).into(),
+                        if ahead > 0 {
+                            format!("Push ({ahead} commit(s))")
+                        } else {
+                            "Push Current Branch".into()
+                        },
+                        Message::RequestConfirm(PendingConfirm::push_selected(&branch, ahead)),
+                        false,
+                    ));
+                } else {
+                    items = items.push(ctx_btn(
+                        icons::push(12.0, p.accent_fg).into(),
+                        format!("Publish Branch (origin/{branch})…"),
+                        Message::RequestConfirm(PendingConfirm::publish_branch(&branch)),
+                        false,
+                    ));
+                }
+                items = items.push(ctx_btn(
+                    icons::tag(12.0, p.text_secondary).into(),
+                    "Push All Tags".into(),
+                    Message::PushAllTagsSelected,
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::shield(12.0, p.text_secondary).into(),
+                    "Push Preflight (Submodules)".into(),
+                    Message::RunPushPreflight,
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::alert_triangle(12.0, p.danger_fg).into(),
+                    "Force Push (--force-with-lease)…".into(),
+                    Message::RequestConfirm(PendingConfirm::force_push_with_lease(&branch)),
+                    true,
+                ));
+            }
+            ContextMenuTarget::RibbonSaveStash => {
                 let changed = self
                     .active_status()
                     .map(|s| s.total_changes())
                     .unwrap_or(0);
                 let sel_paths = self.selected_discard_paths();
-                items = items.push(
-                    container(
-                        text(format!("Stash ({} saved)", self.stashes.len()))
-                            .size(type_scale::CAPTION)
-                            .color(p.text_muted),
-                    )
-                    .padding([5, 10]),
-                );
                 items = items.push(ctx_btn(
                     icons::stash_save(12.0, p.accent_fg).into(),
                     "Save Stash with Message & Options…".into(),
@@ -1444,17 +1514,25 @@ impl GitFleetApp {
                         Message::StashSelected,
                         false,
                     ));
+                    items = items.push(ctx_btn(
+                        icons::layers(12.0, p.text_secondary).into(),
+                        "Quick Stash Keeping Staged (--keep-index)".into(),
+                        Message::QuickStashKeepIndex,
+                        false,
+                    ));
                 }
                 if !sel_paths.is_empty() {
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     items = items.push(ctx_btn(
-                        icons::stash_save(12.0, p.text_secondary).into(),
-                        format!("Stash Selected Files ({})", sel_paths.len()),
+                        icons::stash_save(12.0, p.success_fg).into(),
+                        format!("Stash Selected Files Only ({})", sel_paths.len()),
                         Message::StashPaths(sel_paths),
                         false,
                     ));
                 }
+            }
+            ContextMenuTarget::RibbonApplyStash => {
                 if !self.stashes.is_empty() {
-                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                     items = items.push(ctx_btn(
                         icons::stash_apply(12.0, p.success_fg).into(),
                         "Pop Latest Stash (stash@{0})".into(),
@@ -1467,23 +1545,31 @@ impl GitFleetApp {
                         Message::ApplyStash(0),
                         false,
                     ));
-                    items = items.push(ctx_btn(
-                        icons::layers(12.0, p.accent_fg).into(),
-                        "Manage & Inspect Stashes…".into(),
-                        Message::OpenApplyStashModal,
-                        false,
-                    ));
+                    if self.stashes.len() > 1 {
+                        items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                        for s in self.stashes.iter().take(4) {
+                            items = items.push(ctx_btn(
+                                icons::stash(12.0, p.text_muted).into(),
+                                format!(
+                                    "Pop {}: {}",
+                                    s.ref_name,
+                                    truncate_chars(&s.message, 22)
+                                ),
+                                Message::PopStash(s.index),
+                                false,
+                            ));
+                        }
+                    }
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 }
+                items = items.push(ctx_btn(
+                    icons::layers(12.0, p.accent_fg).into(),
+                    "Manage & Inspect All Stashes…".into(),
+                    Message::OpenApplyStashModal,
+                    false,
+                ));
             }
             ContextMenuTarget::RibbonRebase => {
-                items = items.push(
-                    container(
-                        text("Rebase Operations")
-                            .size(type_scale::CAPTION)
-                            .color(p.text_muted),
-                    )
-                    .padding([5, 10]),
-                );
                 items = items.push(ctx_btn(
                     icons::git_rebase(12.0, p.violet_fg).into(),
                     "Interactive Rebase (Squash / Reword / Reorder)…".into(),

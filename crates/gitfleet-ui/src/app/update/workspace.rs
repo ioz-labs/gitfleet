@@ -799,6 +799,61 @@ impl GitFleetApp {
                 self.bulk_selected.clear();
                 Task::none()
             }
+            Message::FetchAllWorkspaceRepos => {
+                let ws = self.service.workspace.current();
+                let name_map: std::collections::HashMap<RepoId, String> = ws
+                    .repos
+                    .iter()
+                    .map(|r| (r.id.clone(), r.name.clone()))
+                    .collect();
+                let targets: Vec<(RepoId, PathBuf)> = ws
+                    .repos
+                    .into_iter()
+                    .filter(|r| r.available)
+                    .map(|r| (r.id, r.path))
+                    .collect();
+                if targets.is_empty() {
+                    return Task::none();
+                }
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                self.bulk_cancel = Some(cancel_flag.clone());
+                self.busy_label = Some(format!("Fetch All ({})…", targets.len()));
+                let svc = self.service.clone();
+                let max_p = svc.settings().max_parallel_bulk_ops;
+                Task::perform(
+                    async move {
+                        let results = svc
+                            .git
+                            .bulk_execute_cancellable(
+                                gitfleet_git::bulk::BulkOperation::Fetch,
+                                targets,
+                                max_p,
+                                cancel_flag,
+                            )
+                            .await;
+                        let ok = results.iter().filter(|r| r.ok).count();
+                        let failures: Vec<(String, String)> = results
+                            .iter()
+                            .filter(|r| !r.ok)
+                            .map(|r| {
+                                let name = name_map
+                                    .get(&r.repo_id)
+                                    .cloned()
+                                    .unwrap_or_else(|| r.repo_id.0.clone());
+                                (name, r.message.clone())
+                            })
+                            .collect();
+                        (ok, failures.len(), failures)
+                    },
+                    |(ok, fail, failures)| Message::BulkOpDone {
+                        label: "Fetch All".into(),
+                        ok,
+                        fail,
+                        failures,
+                        is_scheduled: false,
+                    },
+                )
+            }
             Message::RunBulkOp(op) => {
                 let ws = self.service.workspace.current();
                 let name_map: std::collections::HashMap<RepoId, String> = ws

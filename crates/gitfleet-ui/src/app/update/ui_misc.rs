@@ -1445,6 +1445,33 @@ impl GitFleetApp {
                 self.terminal_focused = false;
                 Task::none()
             }
+            Message::ToggleRibbonDropdown(target) => {
+                if self
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|m| m.target.is_same_ribbon_dropdown(&target))
+                {
+                    self.context_menu = None;
+                    return Task::none();
+                }
+                if self.pending_confirm.is_some()
+                    || self.action_error.is_some()
+                    || self.cherry_pick_modal.is_some()
+                    || self.discard_modal.is_some()
+                {
+                    return Task::none();
+                }
+                self.repo_drag_candidate = None;
+                self.dragging_repo = None;
+                self.drag_hover_group = None;
+                let cur_x = self.current_host_cursor_pos().x;
+                self.context_menu = Some(ContextMenuState {
+                    position: iced::Point::new((cur_x - 38.0).max(8.0), RIBBON_HEIGHT + 2.0),
+                    target,
+                    submenu: ContextMenuSubmenu::None,
+                });
+                Task::none()
+            }
             Message::OpenContextMenu(target) => {
                 if self.pending_confirm.is_some()
                     || self.action_error.is_some()
@@ -1546,6 +1573,9 @@ impl GitFleetApp {
                         self.update(Message::CheckoutCommit(oid))
                     }
                     ConfirmAction::PushSelected => self.update(Message::PushSelected),
+                    ConfirmAction::ForcePushWithLease => {
+                        self.update(Message::ForcePushWithLeaseSelected)
+                    }
                     ConfirmAction::PushBranch { branch } => {
                         self.update(Message::PushBranch(branch))
                     }

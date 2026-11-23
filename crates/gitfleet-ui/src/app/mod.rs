@@ -201,6 +201,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) save_stash_input_id: text_input::Id,
     pub(crate) apply_stash_modal: Option<ApplyStashModalState>,
     pub(crate) pull_sync_modal: Option<PullSyncModalState>,
+    pub(crate) sync_direction: SyncDirection,
     pub(crate) auto_open_first_conflict: bool,
     pub(crate) blame_request_id: u64,
     pub(crate) blame_file_path: Option<String>,
@@ -568,6 +569,7 @@ impl GitFleetApp {
             save_stash_input_id: text_input::Id::unique(),
             apply_stash_modal: None,
             pull_sync_modal: None,
+            sync_direction: SyncDirection::PullThenPush,
             auto_open_first_conflict: false,
             blame_request_id: 0,
             blame_file_path: None,
@@ -1855,5 +1857,22 @@ mod tests {
             push_after: true,
         });
         let _ = app.view_host(p);
+        app.pull_sync_modal = None;
+
+        for rtarget in [
+            ContextMenuTarget::RibbonPull,
+            ContextMenuTarget::RibbonSync,
+            ContextMenuTarget::RibbonPush,
+            ContextMenuTarget::RibbonSaveStash,
+            ContextMenuTarget::RibbonApplyStash,
+            ContextMenuTarget::RibbonRebase,
+        ] {
+            app.context_menu = Some(ContextMenuState {
+                position: Point::new(120.0, RIBBON_HEIGHT + 2.0),
+                target: rtarget,
+                submenu: ContextMenuSubmenu::None,
+            });
+            let _ = app.view_host(p);
+        }
     }
 }

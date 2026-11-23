@@ -562,6 +562,7 @@ pub fn git_rebase(size: f32, color: Color) -> svg::Svg<'static> {
     )
 }
 
+#[allow(dead_code)]
 pub fn git_blame(size: f32, color: Color) -> svg::Svg<'static> {
     icon(
         br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="3"/><path d="M3 19a6 6 0 0 1 12 0"/><line x1="16" x2="22" y1="7" y2="7"/><line x1="16" x2="22" y1="12" y2="12"/><line x1="18" x2="22" y1="17" y2="17"/></svg>"#,

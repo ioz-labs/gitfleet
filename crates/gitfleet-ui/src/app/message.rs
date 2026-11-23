@@ -2,7 +2,7 @@ use crate::app::types::{
     AddRepoMode, BottomLeftTab, BottomViewMode, CommandLogFilter, CommitModalScope,
     ContextMenuSubmenu, ContextMenuTarget, DiffGapExpandMode, DiffSelectionSide, DrawerTab,
     EncodingModalMode, FilesViewMode, GraphTab, HostLayoutMode, PendingConfirm, RepoFilter,
-    ScanLevelPreset, SettingsTab, TerminalMenuSubmenu, WorkspaceModalTab,
+    ScanLevelPreset, SettingsTab, SyncDirection, TerminalMenuSubmenu, WorkspaceModalTab,
 };
 use crate::views::overlays::blueprint_modal::BlueprintExportRepoItem;
 use crate::views::overlays::rebase_modal::RebaseActionChoice;
@@ -98,6 +98,7 @@ pub(crate) enum Message {
     ToggleBulkSelect(RepoId, bool),
     ClearBulkSelection,
     RunBulkOp(BulkOperation),
+    FetchAllWorkspaceRepos,
     BulkOpDone {
         label: String,
         ok: usize,
@@ -342,6 +343,13 @@ pub(crate) enum Message {
         result: Result<gitfleet_git::StashApplyOutcome, String>,
     },
     SmartPullClicked,
+    SmartSyncClicked,
+    SetSyncDirectionAndRun(SyncDirection),
+    QuickPullRebaseAutoStash,
+    QuickStashKeepIndex,
+    ForcePushWithLeaseSelected,
+    PushAllTagsSelected,
+    ToggleRibbonDropdown(ContextMenuTarget),
     OpenPullSyncModal {
         push_after: bool,
     },
