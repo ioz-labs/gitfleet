@@ -10,6 +10,7 @@ pub(crate) mod sidebar_search;
 pub(crate) mod smart_edit;
 pub(crate) mod state;
 pub(crate) mod status_bar;
+pub(crate) mod symbols;
 pub(crate) mod tasks;
 pub(crate) mod update;
 pub(crate) mod update_local;
@@ -82,9 +83,11 @@ impl GitFleetApp {
                 StudioSidebarPanel::Search => render_search_sidebar(win_id, v, self.theme_mode, p),
                 StudioSidebarPanel::Compare => render_compare_sidebar(win_id, v, p),
             };
-            body_row = body_row
-                .push(sidebar)
-                .push(vertical_rule(1).style(theme::subtle_rule(p)));
+            body_row = body_row.push(sidebar).push(theme::kit::hairline_v_splitter(
+                p,
+                v.resizing_sidebar,
+                Message::Detached(win_id, DetachedAction::StartResizeSidebar),
+            ));
         }
 
         body_row = body_row.push(editor_area);
@@ -108,6 +111,8 @@ impl GitFleetApp {
 
         let has_overlay = v.status_menu.is_some()
             || v.explorer_menu.is_some()
+            || v.tab_menu.is_some()
+            || v.breadcrumb_menu.is_some()
             || v.pending_delete.is_some()
             || v.create_modal.is_some()
             || v.rename_modal.is_some()
@@ -159,10 +164,213 @@ impl GitFleetApp {
                         }),
                     )
                 }
+                StudioStatusMenu::Indent => {
+                    let indent_opt = |label: &'static str, spaces: usize, use_tabs: bool| -> Element<'_, Message> {
+                        let selected = if use_tabs {
+                            tab.indent_use_tabs
+                        } else {
+                            !tab.indent_use_tabs && tab.indent_spaces == spaces
+                        };
+                        button(
+                            row![
+                                text(label)
+                                    .size(type_scale::BODY)
+                                    .color(if selected { p.accent_fg } else { p.text_primary }),
+                                Space::with_width(Length::Fill),
+                                if selected {
+                                    Element::from(icons::check(12.0, p.accent_fg))
+                                } else {
+                                    Space::with_width(Length::Shrink).into()
+                                },
+                            ]
+                            .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .padding([5, 10])
+                        .style(theme::repo_row_btn(p, selected))
+                        .on_press(Message::Detached(
+                            win_id,
+                            DetachedAction::SetTabIndent { spaces, use_tabs },
+                        ))
+                        .into()
+                    };
+                    opaque(
+                        container(
+                            column![
+                                container(
+                                    text("Tab Indentation")
+                                        .size(type_scale::CAPTION)
+                                        .color(p.text_muted),
+                                )
+                                .padding([4, 10]),
+                                indent_opt("Spaces: 2", 2, false),
+                                indent_opt("Spaces: 4", 4, false),
+                                indent_opt("Spaces: 8", 8, false),
+                                horizontal_rule(1).style(theme::subtle_rule(p)),
+                                indent_opt("Tab Characters", tab.indent_spaces, true),
+                            ]
+                            .spacing(2),
+                        )
+                        .padding(6)
+                        .width(Length::Fixed(188.0))
+                        .style(theme::context_menu_box(p)),
+                    )
+                    .into()
+                }
             };
             layers.push(theme::overlay_backdrop(
                 theme::popup_at(anchor, card),
                 Message::Detached(win_id, DetachedAction::CloseStatusMenu),
+            ));
+        }
+
+        if let Some(tmenu) = &v.tab_menu
+            && let Some(tab) = v.tabs.get(tmenu.tab_idx)
+        {
+            let tidx = tmenu.tab_idx;
+            let has_path = tab.file_path.is_some() || tab.rel_path.is_some();
+            let menu_btn = |lbl: &'static str, kbd: &'static str, act: DetachedAction| -> Element<'_, Message> {
+                let mut r = row![
+                    text(lbl).size(type_scale::BODY).color(p.text_primary),
+                    Space::with_width(Length::Fill),
+                ]
+                .align_y(Alignment::Center);
+                if !kbd.is_empty() {
+                    r = r.push(theme::kit::kbd_pill(p, kbd));
+                }
+                button(r)
+                    .width(Length::Fill)
+                    .padding([5, 10])
+                    .style(theme::context_menu_item(p, false))
+                    .on_press(Message::Detached(win_id, act))
+                    .into()
+            };
+
+            let mut col = column![
+                container(
+                    text(truncate_chars(&tab.title, 28))
+                        .size(type_scale::CAPTION)
+                        .color(p.text_muted),
+                )
+                .padding([4, 10]),
+                menu_btn("Close", "Ctrl+W", DetachedAction::CloseTab(tidx)),
+                menu_btn("Close Others", "", DetachedAction::CloseOtherTabs(tidx)),
+                menu_btn("Close Saved", "", DetachedAction::CloseSavedTabs),
+                menu_btn("Close All", "", DetachedAction::CloseAllTabs),
+            ]
+            .spacing(2);
+
+            if !v.closed_tabs.is_empty() {
+                col = col.push(menu_btn(
+                    "Reopen Closed Tab",
+                    "Ctrl+Shift+T",
+                    DetachedAction::ReopenClosedTab,
+                ));
+            }
+            if has_path {
+                col = col
+                    .push(horizontal_rule(1).style(theme::subtle_rule(p)))
+                    .push(menu_btn(
+                        "Copy Path",
+                        "",
+                        DetachedAction::CopyTabPath {
+                            tab_idx: tidx,
+                            relative: false,
+                        },
+                    ))
+                    .push(menu_btn(
+                        "Copy Relative Path",
+                        "",
+                        DetachedAction::CopyTabPath {
+                            tab_idx: tidx,
+                            relative: true,
+                        },
+                    ));
+            }
+
+            let card = opaque(
+                container(col)
+                    .padding(6)
+                    .width(Length::Fixed(228.0))
+                    .style(theme::context_menu_box(p)),
+            );
+            layers.push(theme::overlay_backdrop(
+                theme::popup_at(tmenu.position, card),
+                Message::Detached(win_id, DetachedAction::CloseTabMenu),
+            ));
+        }
+
+        if let Some(bmenu) = &v.breadcrumb_menu {
+            let prefix = if bmenu.parent_dir.is_empty() {
+                String::new()
+            } else {
+                format!("{}/", bmenu.parent_dir)
+            };
+            let mut sib_files: Vec<&str> = v
+                .explorer_files
+                .iter()
+                .map(String::as_str)
+                .filter(|rel| {
+                    if let Some(rest) = rel.strip_prefix(&prefix) {
+                        !rest.is_empty() && !rest.contains('/')
+                    } else {
+                        false
+                    }
+                })
+                .take(40)
+                .collect();
+            sib_files.sort_unstable();
+
+            let mut list_col = column![].spacing(2);
+            if sib_files.is_empty() {
+                list_col = list_col.push(
+                    container(
+                        text("No sibling files in folder")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([6, 10]),
+                );
+            } else {
+                let active_rel = v.active_tab().and_then(|t| t.rel_path.as_deref());
+                for rel in sib_files {
+                    let fname = rel.rsplit('/').next().unwrap_or(rel);
+                    let is_cur = active_rel == Some(rel);
+                    let lang = CodeLanguage::from_path(Path::new(rel));
+                    let rel_owned = rel.to_string();
+                    list_col = list_col.push(
+                        button(
+                            row![
+                                lang_tag(lang, self.theme_mode),
+                                text(fname)
+                                    .size(type_scale::CAPTION)
+                                    .color(if is_cur { p.accent_fg } else { p.text_primary })
+                                    .wrapping(text::Wrapping::None),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .padding([4, 8])
+                        .style(theme::repo_row_btn(p, is_cur))
+                        .on_press(Message::Detached(
+                            win_id,
+                            DetachedAction::QuickOpenSelectRelPath(rel_owned),
+                        )),
+                    );
+                }
+            }
+
+            let card = opaque(
+                container(slim_scroll(list_col, p).height(Length::Shrink))
+                    .max_height(260.0)
+                    .padding(6)
+                    .width(Length::Fixed(240.0))
+                    .style(theme::context_menu_box(p)),
+            );
+            layers.push(theme::overlay_backdrop(
+                theme::popup_at(bmenu.position, card),
+                Message::Detached(win_id, DetachedAction::CloseBreadcrumbMenu),
             ));
         }
 
@@ -501,9 +709,15 @@ impl GitFleetApp {
             let candidates = v.quick_open_candidates(60);
             let q_trimmed = v.quick_open_query.trim();
             let is_line_mode = q_trimmed.starts_with(':');
+            let is_symbol_mode = q_trimmed.starts_with('@');
+            let symbol_items = if is_symbol_mode {
+                v.quick_open_symbols(80)
+            } else {
+                Vec::new()
+            };
 
             let input = text_input(
-                "Type file name to open, or :line[:col] to jump…",
+                "Type file name, @symbol to jump to symbol, or :line[:col]…",
                 &v.quick_open_query,
             )
             .id(v.quick_open_input_id.clone())
@@ -516,7 +730,60 @@ impl GitFleetApp {
             .size(type_scale::BODY)
             .style(theme::dark_input(p));
 
-            let list_body: Element<'_, Message> = if is_line_mode {
+            let list_body: Element<'_, Message> = if is_symbol_mode {
+                if symbol_items.is_empty() {
+                    container(
+                        text("No matching symbols in active document.")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([12, 14])
+                    .into()
+                } else {
+                    let mut rows_col = column![].spacing(2);
+                    let sel_idx = v.quick_open_selected.min(symbol_items.len() - 1);
+                    for (idx, (sym, positions)) in symbol_items.into_iter().enumerate() {
+                        let is_sel = idx == sel_idx;
+                        let line_idx = sym.line_idx;
+                        let sym_row = row![
+                            theme::kit::focus_accent_bar(p, is_sel, true, 16.0),
+                            Space::with_width(Length::Fixed((sym.indent_level as f32) * 10.0)),
+                            theme::kit::status_pill(
+                                sym.kind_badge,
+                                p.accent_fg,
+                                p.fill_selected,
+                            ),
+                            theme::clipped_line(
+                                render_fuzzy_text(
+                                    &sym.name,
+                                    &positions,
+                                    if is_sel { p.text_primary } else { p.text_secondary },
+                                    p.accent_fg,
+                                ),
+                                Length::Fill,
+                            ),
+                            text(format!("Ln {}", line_idx + 1))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_muted),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center);
+
+                        rows_col = rows_col.push(
+                            button(sym_row)
+                                .width(Length::Fill)
+                                .padding([6, 10])
+                                .style(theme::repo_row_btn(p, is_sel))
+                                .on_press(Message::Detached(
+                                    win_id,
+                                    DetachedAction::QuickOpenSelectSymbol(line_idx),
+                                )),
+                        );
+                    }
+                    slim_scroll(rows_col, p).height(Length::Shrink).into()
+                }
+            } else if is_line_mode {
                 let total = v
                     .active_tab()
                     .map(|t| t.editor_content.line_count())
@@ -621,6 +888,8 @@ impl GitFleetApp {
                             text("navigate").size(type_scale::BADGE).color(p.text_muted),
                             theme::kit::kbd_pill(p, "Enter"),
                             text("open").size(type_scale::BADGE).color(p.text_muted),
+                            theme::kit::kbd_pill(p, "@"),
+                            text("symbols").size(type_scale::BADGE).color(p.text_muted),
                             theme::kit::kbd_pill(p, ":42"),
                             text("go to line").size(type_scale::BADGE).color(p.text_muted),
                             Space::with_width(Length::Fill),

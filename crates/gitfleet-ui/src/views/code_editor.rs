@@ -3,6 +3,7 @@
 //! measurement, and synchronized scroll/keyboard navigation.
 
 use crate::theme::{self, Palette};
+use crate::views::detached_viewer::symbols::{LineGitMark, find_matching_bracket_in_lines};
 use iced::advanced::layout as adv_layout;
 use iced::advanced::text::{self as adv_text, Paragraph as _};
 use iced::advanced::widget::tree::{self, Tree};
@@ -13,8 +14,10 @@ use iced::{
     Size, Task, Theme, Vector, alignment, event, mouse,
 };
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Line-height multiplier used by GitFleet Studio's code editor.
 pub(crate) const STUDIO_LINE_HEIGHT: f32 = 1.48;
@@ -56,6 +59,9 @@ pub(crate) struct NumberedEditorConfig {
     pub(crate) word_wrap: bool,
     pub(crate) boxed: bool,
     pub(crate) highlight_active_line: bool,
+    pub(crate) show_indent_guides: bool,
+    pub(crate) indent_step: usize,
+    pub(crate) match_brackets: bool,
 }
 
 impl NumberedEditorConfig {
@@ -67,7 +73,15 @@ impl NumberedEditorConfig {
             word_wrap,
             boxed: false,
             highlight_active_line: true,
+            show_indent_guides: true,
+            indent_step: 4,
+            match_brackets: true,
         }
+    }
+
+    pub(crate) fn with_indent_step(mut self, step: usize) -> Self {
+        self.indent_step = step.clamp(1, 8);
+        self
     }
 
     pub(crate) fn host_edit() -> Self {
@@ -78,6 +92,9 @@ impl NumberedEditorConfig {
             word_wrap: false,
             boxed: true,
             highlight_active_line: true,
+            show_indent_guides: true,
+            indent_step: 4,
+            match_brackets: true,
         }
     }
 
@@ -89,6 +106,9 @@ impl NumberedEditorConfig {
             word_wrap,
             boxed: true,
             highlight_active_line: false,
+            show_indent_guides: false,
+            indent_step: 4,
+            match_brackets: false,
         }
     }
 
@@ -454,6 +474,22 @@ where
     H: adv_text::Highlighter + 'a,
     M: 'a,
 {
+    numbered_code_editor_with_marks(content, editor, scroll, config, None, p, on_scroll)
+}
+
+pub(crate) fn numbered_code_editor_with_marks<'a, H, M>(
+    content: &'a text_editor::Content,
+    editor: text_editor::TextEditor<'a, H, M>,
+    scroll: &CodeScrollState,
+    config: NumberedEditorConfig,
+    git_marks: Option<Arc<HashMap<usize, LineGitMark>>>,
+    p: Palette,
+    on_scroll: impl Fn(scrollable::Viewport) -> M + 'a,
+) -> Element<'a, M>
+where
+    H: adv_text::Highlighter + 'a,
+    M: 'a,
+{
     let wrapping = if config.word_wrap {
         text::Wrapping::WordOrGlyph
     } else {
@@ -480,6 +516,7 @@ where
         editor: configured_editor,
         viewport_cell: Rc::clone(&viewport_cell),
         config,
+        git_marks,
         p,
     });
 
@@ -789,11 +826,43 @@ fn max_line_visual_cols(content: &text_editor::Content) -> usize {
     best_cols
 }
 
+fn mono_char_width(font_size: f32, line_height: f32) -> f32 {
+    let para = <Renderer as adv_text::Renderer>::Paragraph::with_text(adv_text::Text {
+        content: "0000000000",
+        bounds: Size::new(f32::INFINITY, f32::INFINITY),
+        size: Pixels(font_size),
+        line_height: text::LineHeight::Relative(line_height),
+        font: theme::CODE_FONT,
+        horizontal_alignment: alignment::Horizontal::Left,
+        vertical_alignment: alignment::Vertical::Top,
+        shaping: text::Shaping::Basic,
+        wrapping: text::Wrapping::None,
+    });
+    let w = para.min_bounds().width / 10.0;
+    if w > 1.0 { w } else { font_size * 0.60 }
+}
+
+fn visual_col_at_char(line: &str, target_char_idx: usize) -> usize {
+    let mut vcol = 0usize;
+    for (idx, ch) in line.chars().enumerate() {
+        if idx >= target_char_idx {
+            break;
+        }
+        if ch == '\t' {
+            vcol += TAB_WIDTH - (vcol % TAB_WIDTH);
+        } else {
+            vcol += 1;
+        }
+    }
+    vcol
+}
+
 struct NumberedEditorCanvas<'a, M> {
     content: &'a text_editor::Content,
     editor: Element<'a, M>,
     viewport_cell: Rc<Cell<Size>>,
     config: NumberedEditorConfig,
+    git_marks: Option<Arc<HashMap<usize, LineGitMark>>>,
     p: Palette,
 }
 
@@ -895,7 +964,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
         let line_count = self.content.line_count().max(1);
         let g_w = gutter_width(line_count, self.config.font_size);
         let line_h = self.config.line_height_px();
-        let (cursor_line, _) = self.content.cursor_position();
+        let (cursor_line, cursor_col) = self.content.cursor_position();
 
         let vis_top = viewport.y.max(bounds.y);
         let vis_bottom = (viewport.y + viewport.height).min(bounds.y + bounds.height);
@@ -916,6 +985,25 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
         let vis_right = (viewport.x + viewport.width).min(bounds.x + bounds.width);
         let code_clip_w = (vis_right - gutter_right_x).max(0.0);
 
+        let local_scroll_top = (viewport.y - bounds.y).max(0.0);
+        let vis_lines = if self.config.word_wrap && state.prefix_rows.len() == line_count + 1 {
+            visible_wrapped_line_range(
+                &state.prefix_rows,
+                local_scroll_top,
+                viewport.height,
+                self.config.padding.top,
+                line_h,
+            )
+        } else {
+            visible_unwrapped_line_range(
+                line_count,
+                local_scroll_top,
+                viewport.height,
+                self.config.padding.top,
+                line_h,
+            )
+        };
+
         let active_visual_span =
             if self.config.word_wrap && state.prefix_rows.len() > cursor_line + 1 {
                 let start = state.prefix_rows[cursor_line] as usize;
@@ -925,9 +1013,9 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                 (cursor_line, 1)
             };
 
-        // 1–3. Paint editor background, active-line band, and syntax-highlighted TextEditor
-        // inside a hardware-scissored layer strictly to the right of the sticky gutter so
-        // horizontally-scrolled code glyphs never bleed across the line numbers.
+        // 1–3. Paint editor background, active-line band, indentation guides, matching brackets,
+        // and syntax-highlighted TextEditor inside a hardware-scissored layer strictly to the
+        // right of the sticky gutter.
         if code_clip_w > 0.0 {
             let code_clip = Rectangle {
                 x: gutter_right_x,
@@ -961,6 +1049,113 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                     }
                 }
 
+                // S9: Subtle 1px indentation guides + matching-bracket highlight (unwrapped mode)
+                if !self.config.word_wrap
+                    && (self.config.show_indent_guides || self.config.match_brackets)
+                {
+                    let char_w = mono_char_width(self.config.font_size, self.config.line_height);
+                    let code_origin_x = child_bounds.x + self.config.padding.left;
+
+                    if self.config.show_indent_guides {
+                        let step = self.config.indent_step.max(2);
+                        let guide_col = Color {
+                            a: 0.35,
+                            ..self.p.border_subtle
+                        };
+                        for (idx, line_cow) in self
+                            .content
+                            .lines()
+                            .enumerate()
+                            .skip(vis_lines.start)
+                            .take(vis_lines.len())
+                        {
+                            let mut leading_vcols = 0usize;
+                            for ch in line_cow.chars() {
+                                if ch == ' ' {
+                                    leading_vcols += 1;
+                                } else if ch == '\t' {
+                                    leading_vcols += TAB_WIDTH - (leading_vcols % TAB_WIDTH);
+                                } else {
+                                    break;
+                                }
+                            }
+                            if leading_vcols >= step {
+                                let levels = (leading_vcols / step).min(16);
+                                let y = bounds.y + self.config.padding.top + idx as f32 * line_h;
+                                for lvl in 1..levels {
+                                    let gx = code_origin_x + (lvl * step) as f32 * char_w;
+                                    let grect = Rectangle {
+                                        x: gx,
+                                        y,
+                                        width: 1.0,
+                                        height: line_h,
+                                    };
+                                    if let Some(clipped) = grect.intersection(&code_clip) {
+                                        renderer.fill_quad(
+                                            flat_quad(clipped),
+                                            Background::Color(guide_col),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if self.config.match_brackets && line_count <= 8_000 {
+                        let win_lo = cursor_line.saturating_sub(250);
+                        let win_hi = (cursor_line + 250).min(line_count.saturating_sub(1));
+                        let window_lines: Vec<String> = self
+                            .content
+                            .lines()
+                            .skip(win_lo)
+                            .take(win_hi.saturating_sub(win_lo) + 1)
+                            .map(|l| l.to_string())
+                            .collect();
+                        let rel_cursor = cursor_line.saturating_sub(win_lo);
+                        if let Some(((rel_a, col_a), (rel_b, col_b))) =
+                            find_matching_bracket_in_lines(&window_lines, rel_cursor, cursor_col, 250)
+                        {
+                            let pair_fill = Color {
+                                a: 0.20,
+                                ..self.p.accent_primary
+                            };
+                            let pair_border = Color {
+                                a: 0.72,
+                                ..self.p.accent_fg
+                            };
+                            for (rel_ln, char_c) in [(rel_a, col_a), (rel_b, col_b)] {
+                                let abs_ln = win_lo + rel_ln;
+                                if let Some(ln_str) = window_lines.get(rel_ln) {
+                                    let vcol = visual_col_at_char(ln_str, char_c);
+                                    let bx = code_origin_x + vcol as f32 * char_w;
+                                    let by =
+                                        bounds.y + self.config.padding.top + abs_ln as f32 * line_h;
+                                    let brect = Rectangle {
+                                        x: bx - 1.0,
+                                        y: by + 1.0,
+                                        width: char_w + 2.0,
+                                        height: (line_h - 2.0).max(4.0),
+                                    };
+                                    if brect.intersection(&code_clip).is_some() {
+                                        renderer.fill_quad(
+                                            renderer::Quad {
+                                                bounds: brect,
+                                                border: Border {
+                                                    color: pair_border,
+                                                    width: 1.0,
+                                                    radius: 2.0.into(),
+                                                },
+                                                shadow: Shadow::default(),
+                                            },
+                                            Background::Color(pair_fill),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 self.editor.as_widget().draw(
                     &tree.children[0],
                     renderer,
@@ -979,24 +1174,6 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
             y: vis_top,
             width: g_w,
             height: vis_h,
-        };
-        let local_scroll_top = (viewport.y - bounds.y).max(0.0);
-        let vis_lines = if self.config.word_wrap && state.prefix_rows.len() == line_count + 1 {
-            visible_wrapped_line_range(
-                &state.prefix_rows,
-                local_scroll_top,
-                viewport.height,
-                self.config.padding.top,
-                line_h,
-            )
-        } else {
-            visible_unwrapped_line_range(
-                line_count,
-                local_scroll_top,
-                viewport.height,
-                self.config.padding.top,
-                line_h,
-            )
         };
 
         let text_right_x = gutter_right_x - GUTTER_PAD_RIGHT;
@@ -1091,6 +1268,44 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                     color,
                     gutter_rect,
                 );
+
+                // S5: 3px Git Diff Gutter Bars right next to the gutter border
+                if let Some(marks) = &self.git_marks
+                    && let Some(&mark) = marks.get(&line_idx)
+                {
+                    let (bar_rect, bar_col) = match mark {
+                        LineGitMark::Added => (
+                            Rectangle {
+                                x: gutter_right_x - 4.0,
+                                y: line_y + 1.0,
+                                width: 3.0,
+                                height: (line_h - 2.0).max(2.0),
+                            },
+                            self.p.git_added,
+                        ),
+                        LineGitMark::Modified => (
+                            Rectangle {
+                                x: gutter_right_x - 4.0,
+                                y: line_y + 1.0,
+                                width: 3.0,
+                                height: (line_h - 2.0).max(2.0),
+                            },
+                            self.p.git_modified,
+                        ),
+                        LineGitMark::DeletedAbove => (
+                            Rectangle {
+                                x: gutter_right_x - 6.0,
+                                y: line_y,
+                                width: 5.0,
+                                height: 3.0,
+                            },
+                            self.p.git_deleted,
+                        ),
+                    };
+                    if let Some(clipped) = bar_rect.intersection(&gutter_rect) {
+                        renderer.fill_quad(flat_quad(clipped), Background::Color(bar_col));
+                    }
+                }
             }
         });
     }

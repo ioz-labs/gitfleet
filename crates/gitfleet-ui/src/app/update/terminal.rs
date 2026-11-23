@@ -230,6 +230,8 @@ impl GitFleetApp {
                     sel.dragging = false;
                 }
                 for viewer in self.detached_viewers.values_mut() {
+                    viewer.resizing_sidebar = false;
+                    viewer.resizing_split = false;
                     for tab in &mut viewer.tabs {
                         if let Some(sel) = &mut tab.diff_selection {
                             sel.dragging = false;

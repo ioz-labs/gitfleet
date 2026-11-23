@@ -130,7 +130,7 @@ pub(crate) fn render_compare_sidebar<'a>(
         .height(Length::Fill),
     )
     .padding(10)
-    .width(Length::Fixed(264.0))
+    .width(Length::Fixed(v.sidebar_width))
     .height(Length::Fill)
     .style(theme::sidebar_box(p))
     .into()

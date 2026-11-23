@@ -20,6 +20,10 @@ use super::io::{
 };
 use super::sidebar_explorer::ExplorerDirNode;
 use super::smart_edit::{EditorSnapshot, MAX_UNDO_HISTORY};
+use super::symbols::{
+    DocumentSymbol, LineGitMark, compute_line_git_marks_from_parsed,
+    compute_line_git_marks_vs_base, extract_document_symbols,
+};
 use gitfleet_core::DocumentId;
 use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
 use gitfleet_git::{FileChange, IgnoredDirListing, IgnoredEntries, ParsedDiff};
@@ -56,6 +60,19 @@ pub(crate) enum StudioStatusMenu {
     Eol,
     Encoding,
     Syntax,
+    Indent,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StudioTabMenu {
+    pub(crate) tab_idx: usize,
+    pub(crate) position: Point,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StudioBreadcrumbMenu {
+    pub(crate) parent_dir: String,
+    pub(crate) position: Point,
 }
 
 #[derive(Debug, Clone)]
@@ -135,23 +152,42 @@ pub(crate) enum DetachedAction {
     CloseTab(usize),
     CloseActiveTab,
     NewUntitledTab,
+    ReopenClosedTab,
+    OpenTabMenu(usize),
+    CloseTabMenu,
+    CloseOtherTabs(usize),
+    CloseSavedTabs,
+    CloseAllTabs,
+    CopyTabPath {
+        tab_idx: usize,
+        relative: bool,
+    },
     ConfirmCloseTab {
         tab_id: u64,
         save_first: bool,
     },
     CancelCloseTab,
+    DismissDiskConflict(u64),
     SetSidebarPanel(StudioSidebarPanel),
     ToggleSidebar,
+    ToggleSplitPreview,
+    StartResizeSidebar,
+    StartResizeSplit,
+    OpenBreadcrumbMenu(String),
+    CloseBreadcrumbMenu,
+    DiffActiveWithHead,
     OpenAndFocusExplorer,
     OpenAndFocusSearchSidebar,
 
-    // Quick Open (Ctrl+P) & Go to Line (Ctrl+G)
+    // Quick Open (Ctrl+P), Symbol Outline (Ctrl+Shift+O) & Go to Line (Ctrl+G)
     ToggleQuickOpen,
+    OpenSymbolOutline,
     CloseQuickOpen,
     QuickOpenQueryChanged(String),
     QuickOpenMoveSelection(isize),
     QuickOpenConfirmSelected,
     QuickOpenSelectRelPath(String),
+    QuickOpenSelectSymbol(usize),
     OpenGoToLine,
     CloseGoToLine,
     GoToLineInputChanged(String),
@@ -162,7 +198,7 @@ pub(crate) enum DetachedAction {
     ToggleExplorerShowIgnored,
     ToggleExplorerDir(String),
     RefreshExplorer,
-    ExplorerFilesLoaded(u64, Vec<String>, IgnoredEntries),
+    ExplorerFilesLoaded(u64, Vec<String>, IgnoredEntries, HashMap<String, char>),
     ExplorerIgnoredDirLoaded(u64, String, IgnoredDirListing),
     OpenExplorerFile(String),
     OpenExplorerMenu {
@@ -293,6 +329,10 @@ pub(crate) enum DetachedAction {
     ReopenEditorWithEncoding(FileEncoding),
     SyntaxFilterChanged(String),
     SetTabLanguage(CodeLanguage),
+    SetTabIndent {
+        spaces: usize,
+        use_tabs: bool,
+    },
     ToggleWordWrap,
     AdjustFontSize(f32),
 
@@ -364,6 +404,8 @@ pub(crate) struct StudioTab {
     pub(crate) doc_id: Option<DocumentId>,
     pub(crate) doc_version: Option<String>,
     pub(crate) language: CodeLanguage,
+    pub(crate) indent_spaces: usize,
+    pub(crate) indent_use_tabs: bool,
     pub(crate) encoding: FileEncoding,
     pub(crate) line_ending: LineEnding,
     pub(crate) trailing_newline: bool,
@@ -371,6 +413,8 @@ pub(crate) struct StudioTab {
     pub(crate) editor_hydrated: bool,
     pub(crate) editor_content: text_editor::Content,
     pub(crate) editor_scroll: crate::views::code_editor::CodeScrollState,
+    pub(crate) git_line_marks: Arc<HashMap<usize, LineGitMark>>,
+    pub(crate) disk_conflict: bool,
     pub(crate) undo_stack: VecDeque<EditorSnapshot>,
     pub(crate) redo_stack: Vec<EditorSnapshot>,
     pub(crate) last_typing_snapshot_at: Option<Instant>,
@@ -424,6 +468,8 @@ impl StudioTab {
             doc_id: None,
             doc_version: None,
             language: CodeLanguage::PlainText,
+            indent_spaces: 4,
+            indent_use_tabs: false,
             encoding: FileEncoding::Utf8,
             line_ending: LineEnding::Lf,
             trailing_newline: true,
@@ -431,6 +477,8 @@ impl StudioTab {
             editor_hydrated: false,
             editor_content: text_editor::Content::new(),
             editor_scroll: crate::views::code_editor::CodeScrollState::new(),
+            git_line_marks: Arc::new(HashMap::new()),
+            disk_conflict: false,
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             last_typing_snapshot_at: None,
@@ -527,10 +575,58 @@ impl StudioTab {
             let formatted = format_editor_text_for_save(&self.editor_content, self.trailing_newline);
             self.dirty = formatted != *disk_text;
         }
+        self.refresh_git_line_marks();
+    }
+
+    pub(crate) fn indent_unit_str(&self) -> String {
+        if self.indent_use_tabs {
+            "\t".to_string()
+        } else {
+            " ".repeat(self.indent_spaces.max(1))
+        }
+    }
+
+    pub(crate) fn refresh_git_line_marks(&mut self) {
+        let marks = if self.dirty {
+            if let Some(base) = &self.raw_text
+                && self.editor_hydrated
+            {
+                compute_line_git_marks_vs_base(base, &editor_buffer_text(&self.editor_content))
+            } else {
+                HashMap::new()
+            }
+        } else if !self.diff_parsed.blocks.is_empty() {
+            compute_line_git_marks_from_parsed(&self.diff_parsed)
+        } else {
+            HashMap::new()
+        };
+        self.git_line_marks = Arc::new(marks);
+    }
+
+    pub(crate) fn refresh_live_split_preview(&mut self) {
+        let live_text = if self.editor_hydrated {
+            Some(editor_buffer_text(&self.editor_content))
+        } else {
+            self.raw_text.clone()
+        };
+        let virtual_path = match self.file_path.clone() {
+            Some(p) => p,
+            None => PathBuf::from(match self.language {
+                CodeLanguage::Markdown => "untitled.md",
+                CodeLanguage::Json => "untitled.json",
+                CodeLanguage::Html => "untitled.html",
+                _ => "untitled.txt",
+            }),
+        };
+        self.preview_state = PreviewState::from_file(&virtual_path, live_text.as_deref());
+        self.sync_preview_editor();
+        self.preview_hydrated = true;
     }
 
     pub(crate) fn has_preview_available(&self) -> bool {
-        self.file_path.is_some() || !matches!(self.preview_state, PreviewState::Empty)
+        self.file_path.is_some()
+            || self.is_untitled
+            || !matches!(self.preview_state, PreviewState::Empty)
     }
 
     pub(crate) fn rebuild_diff_cache(&mut self, theme_mode: ThemeMode) {
@@ -576,6 +672,9 @@ impl StudioTab {
             };
             self.preview_state = PreviewState::from_file(path, live_text.as_deref());
             self.sync_preview_editor();
+        } else if self.is_untitled {
+            self.refresh_live_split_preview();
+            return;
         }
         self.preview_hydrated = true;
     }
@@ -613,10 +712,13 @@ impl StudioTab {
             .and_then(|r| path.strip_prefix(r).ok())
             .map(|p| p.to_string_lossy().replace('\\', "/"));
         self.language = CodeLanguage::from_path(path);
+        self.indent_spaces = self.language.default_indent_spaces();
+        self.indent_use_tabs = false;
         self.file_path = Some(path.to_path_buf());
         self.is_untitled = false;
         self.loading_file = false;
         self.dirty = false;
+        self.disk_conflict = false;
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_typing_snapshot_at = None;
@@ -633,6 +735,7 @@ impl StudioTab {
                 self.raw_text = Some(cap.content);
                 self.preview_state = PreviewState::Empty;
                 self.preview_editor = text_editor::Content::new();
+                self.refresh_git_line_marks();
                 true
             }
             None => {
@@ -726,14 +829,25 @@ pub(crate) struct DetachedViewerState {
     pub(crate) editor_word_wrap: bool,
     pub(crate) editor_font_size: f32,
 
-    // Left Activity Bar + Sidebar
+    // Left Activity Bar + Resizable Sidebar + Split Live Preview
     pub(crate) sidebar_open: bool,
+    pub(crate) sidebar_width: f32,
+    pub(crate) resizing_sidebar: bool,
+    pub(crate) split_right_preview: bool,
+    pub(crate) split_ratio: f32,
+    pub(crate) resizing_split: bool,
+    pub(crate) window_width: f32,
+    pub(crate) closed_tabs: VecDeque<PathBuf>,
+    pub(crate) tab_menu: Option<StudioTabMenu>,
+    pub(crate) breadcrumb_menu: Option<StudioBreadcrumbMenu>,
     pub(crate) sidebar_panel: StudioSidebarPanel,
     pub(crate) search_root: Option<PathBuf>,
     pub(crate) search_root_name: Option<String>,
 
     // Explorer Panel
     pub(crate) explorer_files: Vec<String>,
+    pub(crate) explorer_git_statuses: HashMap<String, char>,
+    pub(crate) explorer_dirty_dirs: HashSet<String>,
     pub(crate) explorer_ignored_files: Vec<String>,
     pub(crate) explorer_ignored_dirs: Vec<String>,
     pub(crate) explorer_ignored_dir_children: HashMap<String, IgnoredDirListing>,
@@ -820,10 +934,21 @@ impl DetachedViewerState {
             editor_word_wrap: false,
             editor_font_size: 13.5,
             sidebar_open: true,
+            sidebar_width: 264.0,
+            resizing_sidebar: false,
+            split_right_preview: false,
+            split_ratio: 0.50,
+            resizing_split: false,
+            window_width: 1180.0,
+            closed_tabs: VecDeque::new(),
+            tab_menu: None,
+            breadcrumb_menu: None,
             sidebar_panel: StudioSidebarPanel::Explorer,
             search_root: None,
             search_root_name: None,
             explorer_files: Vec::new(),
+            explorer_git_statuses: HashMap::new(),
+            explorer_dirty_dirs: HashSet::new(),
             explorer_ignored_files: Vec::new(),
             explorer_ignored_dirs: Vec::new(),
             explorer_ignored_dir_children: HashMap::new(),
@@ -1442,11 +1567,18 @@ impl DetachedViewerState {
         if idx >= self.tabs.len() {
             return;
         }
-        let removed_id = self.tabs[idx].id;
-        self.tabs.remove(idx);
-        if self.pending_close_tab == Some(removed_id) {
+        let removed = self.tabs.remove(idx);
+        if let Some(p) = removed.file_path {
+            self.closed_tabs.retain(|x| x != &p);
+            if self.closed_tabs.len() >= 20 {
+                self.closed_tabs.pop_front();
+            }
+            self.closed_tabs.push_back(p);
+        }
+        if self.pending_close_tab == Some(removed.id) {
             self.pending_close_tab = None;
         }
+        self.tab_menu = None;
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
@@ -1460,9 +1592,58 @@ impl DetachedViewerState {
         self.recompute_in_file_matches(false);
     }
 
+    pub(crate) fn set_explorer_git_statuses(&mut self, map: HashMap<String, char>) {
+        let mut dirty_dirs = HashSet::new();
+        for rel in map.keys() {
+            let mut cur = rel.as_str();
+            while let Some((parent, _)) = cur.rsplit_once('/') {
+                if !parent.is_empty() {
+                    dirty_dirs.insert(parent.to_string());
+                }
+                cur = parent;
+            }
+        }
+        self.explorer_git_statuses = map;
+        self.explorer_dirty_dirs = dirty_dirs;
+    }
+
+    pub(crate) fn quick_open_symbols(&self, limit: usize) -> Vec<(DocumentSymbol, Vec<usize>)> {
+        let q_raw = self.quick_open_query.trim();
+        let Some(sym_q) = q_raw.strip_prefix('@') else {
+            return Vec::new();
+        };
+        let Some(tab) = self.active_tab() else {
+            return Vec::new();
+        };
+        let Some(text) = tab.current_searchable_text() else {
+            return Vec::new();
+        };
+        let symbols = extract_document_symbols(&text, tab.language);
+        let q = sym_q.trim();
+        if q.is_empty() {
+            return symbols
+                .into_iter()
+                .take(limit)
+                .map(|s| (s, Vec::new()))
+                .collect();
+        }
+        let mut scored: Vec<(i32, DocumentSymbol, Vec<usize>)> = symbols
+            .into_iter()
+            .filter_map(|sym| {
+                fuzzy_match(q, &sym.name).map(|(score, pos)| (score, sym, pos))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.line_idx.cmp(&b.1.line_idx)));
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, sym, pos)| (sym, pos))
+            .collect()
+    }
+
     pub(crate) fn quick_open_candidates(&self, limit: usize) -> Vec<QuickOpenCandidate> {
         let q = self.quick_open_query.trim();
-        if q.starts_with(':') {
+        if q.starts_with(':') || q.starts_with('@') {
             return Vec::new();
         }
         let open_rels: HashSet<&str> = self

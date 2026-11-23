@@ -125,7 +125,32 @@ impl GitFleetApp {
                         } else {
                             gitfleet_git::IgnoredEntries::default()
                         };
-                        (rid, files, ignored)
+                        let mut git_map = std::collections::HashMap::new();
+                        if let Ok(st) = svc.git.get_status(&root).await {
+                            for f in &st.staged_files {
+                                let code = match f.kind {
+                                    FileChangeKind::Added => 'A',
+                                    FileChangeKind::Deleted => 'D',
+                                    FileChangeKind::Renamed | FileChangeKind::Copied => 'R',
+                                    FileChangeKind::Conflicted => 'U',
+                                    _ => 'M',
+                                };
+                                git_map.insert(f.path.clone(), code);
+                            }
+                            for f in &st.unstaged_files {
+                                let code = match f.kind {
+                                    FileChangeKind::Untracked => '?',
+                                    FileChangeKind::Deleted => 'D',
+                                    FileChangeKind::Conflicted => 'U',
+                                    _ => 'M',
+                                };
+                                git_map.insert(f.path.clone(), code);
+                            }
+                            for f in &st.conflict_files {
+                                git_map.insert(f.path.clone(), 'U');
+                            }
+                        }
+                        (rid, files, ignored, git_map)
                     }
                     Err(_) => {
                         // Plain non-Git folder: list all files on disk (skipping `.git`).
@@ -134,14 +159,19 @@ impl GitFleetApp {
                         })
                         .await
                         .unwrap_or_default();
-                        (rid, files, gitfleet_git::IgnoredEntries::default())
+                        (
+                            rid,
+                            files,
+                            gitfleet_git::IgnoredEntries::default(),
+                            std::collections::HashMap::new(),
+                        )
                     }
                 }
             },
-            move |(id, files, ignored)| {
+            move |(id, files, ignored, git_map)| {
                 Message::Detached(
                     win_id,
-                    DetachedAction::ExplorerFilesLoaded(id, files, ignored),
+                    DetachedAction::ExplorerFilesLoaded(id, files, ignored, git_map),
                 )
             },
         )
@@ -644,8 +674,10 @@ impl GitFleetApp {
                     tab.encoding = res.encoding;
                     tab.raw_text = Some(res.content.clone());
                     tab.dirty = false;
+                    tab.disk_conflict = false;
                     tab.preview_hydrated = false;
-                    if tab.mode == DetachedViewMode::Preview {
+                    tab.refresh_git_line_marks();
+                    if tab.mode == DetachedViewMode::Preview || v.split_right_preview {
                         tab.ensure_preview_hydrated();
                     }
                     let tid = tab.id;
@@ -688,6 +720,15 @@ impl GitFleetApp {
         let mut tasks = Vec::new();
         if let Some((tid, rid, target)) = diff_refresh {
             tasks.push(self.spawn_detached_git_diff_task(win_id, tid, rid, target));
+        }
+        if let Some(path) = saved_path.as_ref()
+            && self
+                .detached_viewers
+                .get(&win_id)
+                .and_then(|v| v.search_root.as_deref())
+                .is_some_and(|r| path.starts_with(r))
+        {
+            tasks.push(self.spawn_explorer_scan_task(win_id));
         }
 
         if let (Some(path), Some(content)) = (saved_path.as_ref(), saved_content.as_ref()) {

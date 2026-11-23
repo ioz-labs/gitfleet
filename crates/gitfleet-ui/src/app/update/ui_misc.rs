@@ -767,6 +767,25 @@ impl GitFleetApp {
                 if self.drawer_tab == Some(DrawerTab::Terminal) {
                     self.sync_terminal_snapshots();
                 }
+                // Throttled (every 2s) zero-leak external disk-change check for dirty Studio tabs (`S8`)
+                static DISK_SYNC_TICK: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                if DISK_SYNC_TICK
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .is_multiple_of(8)
+                {
+                    for v in self.detached_viewers.values_mut() {
+                        if let Some(tab) = v.active_tab_mut()
+                            && tab.dirty
+                            && !tab.disk_conflict
+                            && let (Some(path), Some(expected_ver)) =
+                                (tab.file_path.as_deref(), tab.doc_version.as_deref())
+                            && gitfleet_docs::has_disk_version_changed(path, expected_ver)
+                        {
+                            tab.disk_conflict = true;
+                        }
+                    }
+                }
                 if self.service.settings().watch_filesystem {
                     let refs_dirty = self.service.scheduler.take_git_refs_dirty();
                     let fs_dirty = self.service.scheduler.take_fs_dirty();
@@ -1285,6 +1304,19 @@ impl GitFleetApp {
                 if self.windows.get(&win_id) != Some(&WindowKind::Host) {
                     if let Some(v) = self.detached_viewers.get_mut(&win_id) {
                         v.cursor_pos = pos;
+                        if v.resizing_sidebar {
+                            let max_sb = (v.window_width * 0.48).max(240.0);
+                            v.sidebar_width = (pos.x - 42.0).clamp(180.0, max_sb);
+                        } else if v.resizing_split {
+                            let left_chrome = 42.0
+                                + if v.sidebar_open {
+                                    v.sidebar_width + crate::theme::layout::SPLITTER_HIT_SIZE
+                                } else {
+                                    0.0
+                                };
+                            let avail_w = (v.window_width - left_chrome).max(240.0);
+                            v.split_ratio = ((pos.x - left_chrome) / avail_w).clamp(0.22, 0.78);
+                        }
                     }
                     return Task::none();
                 }
@@ -1383,6 +1415,8 @@ impl GitFleetApp {
             Message::WindowResized(win_id, size) => {
                 if self.windows.get(&win_id) == Some(&WindowKind::Host) {
                     self.window_size = size;
+                } else if let Some(v) = self.detached_viewers.get_mut(&win_id) {
+                    v.window_width = size.width.max(480.0);
                 }
                 Task::none()
             }

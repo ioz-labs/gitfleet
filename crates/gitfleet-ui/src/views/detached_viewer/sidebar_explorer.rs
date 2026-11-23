@@ -252,6 +252,18 @@ impl ExplorerDirNode {
     }
 }
 
+fn git_status_color(code: char, p: Palette) -> Color {
+    match code {
+        'A' => p.git_added,
+        'M' => p.git_modified,
+        'D' => p.git_deleted,
+        'R' => p.git_renamed,
+        'U' => p.git_conflict,
+        '?' => p.git_untracked,
+        _ => p.text_muted,
+    }
+}
+
 pub(crate) fn render_explorer_sidebar<'a>(
     win_id: window::Id,
     v: &'a DetachedViewerState,
@@ -422,8 +434,11 @@ pub(crate) fn render_explorer_sidebar<'a>(
                 let is_active = active_rel == Some(rel);
                 let lang = CodeLanguage::from_path(Path::new(rel));
 
+                let git_code = v.explorer_git_statuses.get(rel).copied();
                 let name_color = if is_active {
                     p.accent_fg
+                } else if let Some(c) = git_code {
+                    git_status_color(c, p)
                 } else if is_ignored {
                     Color { a: 0.68, ..p.text_muted }
                 } else {
@@ -454,7 +469,20 @@ pub(crate) fn render_explorer_sidebar<'a>(
                     );
                 }
 
-                let btn = button(theme::clipped_line(inner, Length::Fill))
+                let mut full_row = row![theme::clipped_line(inner, Length::Fill)]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill);
+                if let Some(c) = git_code {
+                    full_row = full_row.push(
+                        text(c.to_string())
+                            .size(type_scale::BADGE)
+                            .font(theme::CODE_FONT)
+                            .color(git_status_color(c, p)),
+                    );
+                }
+
+                let btn = button(full_row)
                     .padding([3, 6])
                     .width(Length::Fill)
                     .style(theme::repo_row_btn(p, is_active))
@@ -493,6 +521,8 @@ pub(crate) fn render_explorer_sidebar<'a>(
                 "",
                 0,
                 &v.explorer_expanded_dirs,
+                &v.explorer_git_statuses,
+                &v.explorer_dirty_dirs,
                 active_rel,
                 theme_mode,
                 p,
@@ -514,7 +544,7 @@ pub(crate) fn render_explorer_sidebar<'a>(
         .height(Length::Fill),
     )
     .padding(8)
-    .width(Length::Fixed(264.0))
+    .width(Length::Fixed(v.sidebar_width))
     .height(Length::Fill)
     .style(theme::sidebar_box(p))
     .into()
@@ -527,6 +557,8 @@ fn render_explorer_node<'a>(
     parent_path: &str,
     depth: usize,
     expanded: &HashSet<String>,
+    git_statuses: &HashMap<String, char>,
+    dirty_dirs: &HashSet<String>,
     active_rel: Option<&str>,
     theme_mode: ThemeMode,
     p: Palette,
@@ -565,6 +597,7 @@ fn render_explorer_node<'a>(
             icons::folder(12.0, folder_color).into()
         };
 
+        let is_dirty_dir = dirty_dirs.contains(&full);
         let label = row![
             Space::with_width(Length::Fixed(indent)),
             chev,
@@ -573,6 +606,8 @@ fn render_explorer_node<'a>(
                 .size(type_scale::CAPTION)
                 .color(if dimmed {
                     Color { a: 0.70, ..p.text_muted }
+                } else if is_dirty_dir {
+                    p.git_modified
                 } else {
                     p.text_primary
                 })
@@ -581,7 +616,18 @@ fn render_explorer_node<'a>(
         .spacing(4)
         .align_y(Alignment::Center);
 
-        let dir_btn = button(theme::clipped_line(label, Length::Fill))
+        let mut dir_row = row![theme::clipped_line(label, Length::Fill)]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+        if is_dirty_dir && !dimmed {
+            dir_row = dir_row.push(
+                container(Space::new(Length::Fixed(5.0), Length::Fixed(5.0)))
+                    .style(theme::dot_box(p.git_modified)),
+            );
+        }
+
+        let dir_btn = button(dir_row)
             .padding([3, 5])
             .width(Length::Fill)
             .style(theme::repo_row_btn(p, false))
@@ -634,6 +680,8 @@ fn render_explorer_node<'a>(
                     &full,
                     depth + 1,
                     expanded,
+                    git_statuses,
+                    dirty_dirs,
                     active_rel,
                     theme_mode,
                     p,
@@ -658,6 +706,7 @@ fn render_explorer_node<'a>(
 
     for (fname, full_rel, is_ignored) in &node.files {
         let is_active = active_rel == Some(full_rel.as_str());
+        let git_code = git_statuses.get(full_rel).copied();
         let lang = CodeLanguage::from_path(Path::new(full_rel));
         let label = row![
             Space::with_width(Length::Fixed(indent + 12.0)),
@@ -666,6 +715,8 @@ fn render_explorer_node<'a>(
                 .size(type_scale::CAPTION)
                 .color(if is_active {
                     p.accent_fg
+                } else if let Some(c) = git_code {
+                    git_status_color(c, p)
                 } else if *is_ignored {
                     Color { a: 0.68, ..p.text_muted }
                 } else {
@@ -676,7 +727,20 @@ fn render_explorer_node<'a>(
         .spacing(3)
         .align_y(Alignment::Center);
 
-        let file_btn = button(theme::clipped_line(label, Length::Fill))
+        let mut file_row = row![theme::clipped_line(label, Length::Fill)]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+        if let Some(c) = git_code {
+            file_row = file_row.push(
+                text(c.to_string())
+                    .size(type_scale::BADGE)
+                    .font(theme::CODE_FONT)
+                    .color(git_status_color(c, p)),
+            );
+        }
+
+        let file_btn = button(file_row)
             .padding([3, 5])
             .width(Length::Fill)
             .style(theme::repo_row_btn(p, is_active))

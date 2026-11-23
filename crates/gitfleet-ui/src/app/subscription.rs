@@ -64,7 +64,11 @@ impl GitFleetApp {
     pub(crate) fn subscription(&self) -> Subscription<Message> {
         let needs_cursor_stream = self.active_resize.is_some()
             || self.repo_drag_candidate.is_some()
-            || self.dragging_repo.is_some();
+            || self.dragging_repo.is_some()
+            || self
+                .detached_viewers
+                .values()
+                .any(|v| v.resizing_sidebar || v.resizing_split);
         set_stream_cursor_events(needs_cursor_stream);
         PALETTE_NAV_ACTIVE.store(self.show_palette, Ordering::Relaxed);
         BRANCH_POPOVER_NAV_ACTIVE.store(self.show_branch_popover, Ordering::Relaxed);
@@ -169,6 +173,12 @@ fn handle_studio_key_pressed(
             Key::Character("p") | Key::Character("P") => {
                 Some(Message::Detached(id, DetachedAction::ToggleQuickOpen))
             }
+            Key::Character("o") | Key::Character("O") => {
+                Some(Message::Detached(id, DetachedAction::OpenSymbolOutline))
+            }
+            Key::Character("t") | Key::Character("T") => {
+                Some(Message::Detached(id, DetachedAction::ReopenClosedTab))
+            }
             Key::Character("z") | Key::Character("Z") if status == event::Status::Ignored => {
                 Some(Message::Detached(id, DetachedAction::Redo))
             }
@@ -204,6 +214,9 @@ fn handle_studio_key_pressed(
             Key::Character("b") | Key::Character("B") => Some(Message::ShortcutToggleSidebar(id)),
             Key::Character("w") | Key::Character("W") => Some(Message::ShortcutCloseTab(id)),
             Key::Character("o") | Key::Character("O") => Some(Message::ShortcutOpenFile(id)),
+            Key::Character("\\") => {
+                Some(Message::Detached(id, DetachedAction::ToggleSplitPreview))
+            }
             Key::Character("=") | Key::Character("+") => Some(Message::ShortcutZoomFont(id, 1.0)),
             Key::Character("-") => Some(Message::ShortcutZoomFont(id, -1.0)),
             Key::Character("z") | Key::Character("Z") if status == event::Status::Ignored => {

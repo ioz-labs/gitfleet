@@ -619,7 +619,7 @@ pub(crate) fn render_search_sidebar<'a>(
         .height(Length::Fill),
     )
     .padding(8)
-    .width(Length::Fixed(316.0))
+    .width(Length::Fixed(v.sidebar_width.max(260.0)))
     .height(Length::Fill)
     .style(theme::sidebar_box(p))
     .into()

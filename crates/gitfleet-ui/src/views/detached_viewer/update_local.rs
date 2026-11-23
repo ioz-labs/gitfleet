@@ -10,8 +10,9 @@ use super::smart_edit::{
     select_line_block, smart_enter_plan, toggle_line_comments,
 };
 use super::state::{
-    DetachedAction, DetachedViewMode, StudioCreateEntryKind, StudioCreateEntryModal,
-    StudioExplorerMenu, StudioPendingDelete, StudioSidebarPanel, StudioStatusMenu, StudioTab,
+    DetachedAction, DetachedViewMode, StudioBreadcrumbMenu, StudioCreateEntryKind,
+    StudioCreateEntryModal, StudioExplorerMenu, StudioPendingDelete, StudioSidebarPanel,
+    StudioStatusMenu, StudioTab, StudioTabMenu,
 };
 use crate::app::{
     DiffGapExpandMode, DiffSelectionSide, DiffTextPos, DiffTextSelection, EncodingModalMode,
@@ -102,6 +103,8 @@ impl GitFleetApp {
             DetachedAction::ToggleQuickOpen => {
                 v.status_menu = None;
                 v.explorer_menu = None;
+                v.tab_menu = None;
+                v.breadcrumb_menu = None;
                 v.goto_line_visible = false;
                 v.quick_open_visible = !v.quick_open_visible;
                 v.quick_open_query.clear();
@@ -110,6 +113,20 @@ impl GitFleetApp {
                     return text_input::focus(v.quick_open_input_id.clone());
                 }
                 Task::none()
+            }
+            DetachedAction::OpenSymbolOutline => {
+                v.status_menu = None;
+                v.explorer_menu = None;
+                v.tab_menu = None;
+                v.breadcrumb_menu = None;
+                v.goto_line_visible = false;
+                v.quick_open_visible = true;
+                v.quick_open_query = "@".into();
+                v.quick_open_selected = 0;
+                Task::batch([
+                    text_input::focus(v.quick_open_input_id.clone()),
+                    text_input::move_cursor_to_end(v.quick_open_input_id.clone()),
+                ])
             }
             DetachedAction::CloseQuickOpen => {
                 v.quick_open_visible = false;
@@ -121,11 +138,165 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::QuickOpenMoveSelection(delta) => {
-                let len = v.quick_open_candidates(60).len();
+                let len = if v.quick_open_query.trim_start().starts_with('@') {
+                    v.quick_open_symbols(80).len()
+                } else {
+                    v.quick_open_candidates(60).len()
+                };
                 if len > 0 {
                     let cur = v.quick_open_selected.min(len - 1) as isize;
                     v.quick_open_selected = (cur + delta).rem_euclid(len as isize) as usize;
                 }
+                Task::none()
+            }
+            DetachedAction::QuickOpenSelectSymbol(line_idx) => {
+                v.quick_open_visible = false;
+                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                    v.editor_font_size,
+                    v.editor_word_wrap,
+                );
+                if let Some(tab) = v.active_tab_mut()
+                    && tab.is_editable()
+                {
+                    tab.mode = DetachedViewMode::Edit;
+                    tab.ensure_editor_hydrated();
+                    jump_editor_to_span(&mut tab.editor_content, line_idx, 0, 0);
+                    let scroll_t = crate::views::code_editor::scroll_numbered_editor_to_line(
+                        &tab.editor_content,
+                        &mut tab.editor_scroll,
+                        line_idx,
+                        cfg,
+                    );
+                    v.status_is_error = false;
+                    v.status_note = format!("Ln {}", line_idx + 1);
+                    return scroll_t;
+                }
+                Task::none()
+            }
+            DetachedAction::ToggleSplitPreview => {
+                v.split_right_preview = !v.split_right_preview;
+                if v.split_right_preview
+                    && let Some(tab) = v.active_tab_mut()
+                {
+                    tab.refresh_live_split_preview();
+                }
+                v.status_is_error = false;
+                v.status_note = if v.split_right_preview {
+                    "Split Live Preview: On (Ctrl+\\)".into()
+                } else {
+                    "Split Live Preview: Off".into()
+                };
+                Task::none()
+            }
+            DetachedAction::StartResizeSidebar => {
+                v.resizing_sidebar = true;
+                crate::app::subscription::set_stream_cursor_events(true);
+                Task::none()
+            }
+            DetachedAction::StartResizeSplit => {
+                v.resizing_split = true;
+                crate::app::subscription::set_stream_cursor_events(true);
+                Task::none()
+            }
+            DetachedAction::OpenTabMenu(tab_idx) => {
+                if tab_idx < v.tabs.len() {
+                    v.status_menu = None;
+                    v.explorer_menu = None;
+                    v.breadcrumb_menu = None;
+                    let pos = crate::app::subscription::latest_cursor_pos(win_id)
+                        .unwrap_or(v.cursor_pos);
+                    v.tab_menu = Some(StudioTabMenu {
+                        tab_idx,
+                        position: pos,
+                    });
+                }
+                Task::none()
+            }
+            DetachedAction::CloseTabMenu => {
+                v.tab_menu = None;
+                Task::none()
+            }
+            DetachedAction::CloseOtherTabs(keep_idx) => {
+                v.tab_menu = None;
+                let keep_id = v.tabs.get(keep_idx).map(|t| t.id);
+                let mut i = 0;
+                while i < v.tabs.len() {
+                    if Some(v.tabs[i].id) != keep_id && !v.tabs[i].dirty {
+                        v.remove_tab_at(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if let Some(kid) = keep_id
+                    && let Some(pos) = v.tabs.iter().position(|t| t.id == kid)
+                {
+                    v.active_tab = Some(pos);
+                }
+                Task::none()
+            }
+            DetachedAction::CloseSavedTabs => {
+                v.tab_menu = None;
+                let mut i = 0;
+                while i < v.tabs.len() {
+                    if !v.tabs[i].dirty {
+                        v.remove_tab_at(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+                Task::none()
+            }
+            DetachedAction::CloseAllTabs => {
+                v.tab_menu = None;
+                let mut i = 0;
+                while i < v.tabs.len() {
+                    if !v.tabs[i].dirty {
+                        v.remove_tab_at(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if let Some(first_dirty) = v.tabs.first().map(|t| t.id) {
+                    v.active_tab = Some(0);
+                    v.pending_close_tab = Some(first_dirty);
+                }
+                Task::none()
+            }
+            DetachedAction::CopyTabPath { tab_idx, relative } => {
+                v.tab_menu = None;
+                let val = v.tabs.get(tab_idx).and_then(|t| {
+                    if relative {
+                        t.rel_path
+                            .clone()
+                            .or_else(|| t.file_path.as_ref().map(|p| p.display().to_string()))
+                    } else {
+                        t.file_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .or_else(|| t.rel_path.clone())
+                    }
+                });
+                if let Some(s) = val {
+                    v.status_is_error = false;
+                    v.status_note = format!("Copied '{s}'");
+                    return clipboard::write(s);
+                }
+                Task::none()
+            }
+            DetachedAction::OpenBreadcrumbMenu(parent_dir) => {
+                v.status_menu = None;
+                v.explorer_menu = None;
+                v.tab_menu = None;
+                let pos = crate::app::subscription::latest_cursor_pos(win_id)
+                    .unwrap_or(v.cursor_pos);
+                v.breadcrumb_menu = Some(StudioBreadcrumbMenu {
+                    parent_dir,
+                    position: pos,
+                });
+                Task::none()
+            }
+            DetachedAction::CloseBreadcrumbMenu => {
+                v.breadcrumb_menu = None;
                 Task::none()
             }
             DetachedAction::OpenGoToLine => {
@@ -937,6 +1108,7 @@ impl GitFleetApp {
                 {
                     tab.diff_parsed = parsed;
                     tab.reset_scroll_state();
+                    tab.refresh_git_line_marks();
                     if cache.matches_config(tab.diff_compact, tab.language, theme_mode) {
                         tab.diff_cache = cache;
                     } else {
@@ -972,6 +1144,7 @@ impl GitFleetApp {
             // ── Direct Code Editor ───────────────────────────────────────────
             DetachedAction::EditorAction(action) => {
                 let is_edit = action.is_edit();
+                let split_open = v.split_right_preview;
                 let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
                     v.editor_font_size,
                     v.editor_word_wrap,
@@ -994,6 +1167,9 @@ impl GitFleetApp {
                     if is_edit {
                         tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
+                        if split_open {
+                            tab.refresh_live_split_preview();
+                        }
                     }
                     task
                 } else {
@@ -1011,6 +1187,7 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::Undo => {
+                let split_open = v.split_right_preview;
                 let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
                     v.editor_font_size,
                     v.editor_word_wrap,
@@ -1029,6 +1206,9 @@ impl GitFleetApp {
                         jump_editor_to_span(&mut tab.editor_content, prev.line, prev.col, prev.col);
                         tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
+                        if split_open {
+                            tab.refresh_live_split_preview();
+                        }
                         did_undo = true;
                         let vrow = crate::views::code_editor::estimate_visual_row_for_line(
                             &tab.editor_content,
@@ -1053,6 +1233,7 @@ impl GitFleetApp {
                 scroll_task
             }
             DetachedAction::Redo => {
+                let split_open = v.split_right_preview;
                 let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
                     v.editor_font_size,
                     v.editor_word_wrap,
@@ -1074,6 +1255,9 @@ impl GitFleetApp {
                         jump_editor_to_span(&mut tab.editor_content, next.line, next.col, next.col);
                         tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
+                        if split_open {
+                            tab.refresh_live_split_preview();
+                        }
                         did_redo = true;
                         let vrow = crate::views::code_editor::estimate_visual_row_for_line(
                             &tab.editor_content,
@@ -1098,6 +1282,7 @@ impl GitFleetApp {
                 scroll_task
             }
             DetachedAction::InsertIndent => {
+                let split_open = v.split_right_preview;
                 let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
                     v.editor_font_size,
                     v.editor_word_wrap,
@@ -1108,7 +1293,8 @@ impl GitFleetApp {
                 {
                     tab.ensure_editor_hydrated();
                     tab.record_undo_snapshot(false);
-                    let spaces_count = tab.language.default_indent_spaces();
+                    let spaces_count = tab.indent_spaces.max(1);
+                    let indent_unit = tab.indent_unit_str();
                     let has_sel = tab
                         .editor_content
                         .selection()
@@ -1128,16 +1314,20 @@ impl GitFleetApp {
                         );
                         tab.editor_scroll.ensure_visual_row_visible(vrow, cfg)
                     } else {
-                        let spaces = " ".repeat(spaces_count);
                         crate::views::code_editor::perform_numbered_editor_action(
                             &mut tab.editor_content,
-                            text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(spaces))),
+                            text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(
+                                indent_unit,
+                            ))),
                             &mut tab.editor_scroll,
                             cfg,
                         )
                     };
                     tab.recompute_dirty_flag();
                     tab.preview_hydrated = false;
+                    if split_open {
+                        tab.refresh_live_split_preview();
+                    }
                     task
                 } else {
                     Task::none()
@@ -1159,7 +1349,7 @@ impl GitFleetApp {
                     tab.ensure_editor_hydrated();
                     tab.record_undo_snapshot(false);
                     let full = editor_buffer_text(&tab.editor_content);
-                    let spaces_count = tab.language.default_indent_spaces();
+                    let spaces_count = tab.indent_spaces.max(1);
                     let (lo, hi, had_sel, orig_col) =
                         resolve_selection_line_range(&mut tab.editor_content);
                     let (updated, first_delta, last_len) =
@@ -1217,7 +1407,7 @@ impl GitFleetApp {
                     let plan = smart_enter_plan(
                         &line_str,
                         cur_col,
-                        tab.language.default_indent_spaces(),
+                        tab.indent_spaces.max(1),
                     );
                     let task = match plan {
                         SmartEnterPlan::Paste(s) => {
@@ -1490,12 +1680,31 @@ impl GitFleetApp {
             }
             DetachedAction::SetTabLanguage(lang) => {
                 v.status_menu = None;
+                let split_open = v.split_right_preview;
                 if let Some(tab) = v.active_tab_mut() {
                     tab.language = lang;
+                    tab.indent_spaces = lang.default_indent_spaces();
                     tab.rebuild_diff_cache(theme_mode);
+                    if split_open {
+                        tab.refresh_live_split_preview();
+                    }
                 }
                 v.status_is_error = false;
                 v.status_note = format!("Syntax: {}", lang.label());
+                Task::none()
+            }
+            DetachedAction::SetTabIndent { spaces, use_tabs } => {
+                v.status_menu = None;
+                if let Some(tab) = v.active_tab_mut() {
+                    tab.indent_spaces = spaces.clamp(1, 8);
+                    tab.indent_use_tabs = use_tabs;
+                }
+                v.status_is_error = false;
+                v.status_note = if use_tabs {
+                    "Indent: Tab Characters".into()
+                } else {
+                    format!("Indent: Spaces ({spaces})")
+                };
                 Task::none()
             }
             DetachedAction::ToggleWordWrap => {
@@ -1833,6 +2042,10 @@ impl GitFleetApp {
                     v.gitignore_modal = None;
                 } else if v.pending_delete.is_some() {
                     v.pending_delete = None;
+                } else if v.tab_menu.is_some() {
+                    v.tab_menu = None;
+                } else if v.breadcrumb_menu.is_some() {
+                    v.breadcrumb_menu = None;
                 } else if v.explorer_menu.is_some() {
                     v.explorer_menu = None;
                 } else if v.status_menu.is_some() {
@@ -1856,6 +2069,9 @@ impl GitFleetApp {
             | DetachedAction::ExplorerEntryCreated { .. }
             | DetachedAction::QuickOpenConfirmSelected
             | DetachedAction::QuickOpenSelectRelPath(_)
+            | DetachedAction::ReopenClosedTab
+            | DetachedAction::DismissDiskConflict(_)
+            | DetachedAction::DiffActiveWithHead
             | DetachedAction::ConfirmCloseTab { .. }
             | DetachedAction::RevertEditor
             | DetachedAction::SetEditorEol(_)
@@ -1864,7 +2080,7 @@ impl GitFleetApp {
             | DetachedAction::RefreshExplorer
             | DetachedAction::ToggleExplorerShowIgnored
             | DetachedAction::ToggleExplorerDir(_)
-            | DetachedAction::ExplorerFilesLoaded(_, _, _)
+            | DetachedAction::ExplorerFilesLoaded(_, _, _, _)
             | DetachedAction::OpenExplorerFile(_)
             | DetachedAction::RevealExplorerEntry(_)
             | DetachedAction::ConfirmDeleteExplorerEntry

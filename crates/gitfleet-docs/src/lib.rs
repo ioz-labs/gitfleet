@@ -356,6 +356,15 @@ fn compute_doc_version_bytes(raw: &[u8]) -> String {
     format!("len:{}:h:{hash:016x}", raw.len())
 }
 
+/// Checks whether `path` on disk currently differs from `expected_version` without registering
+/// a new `DocumentId` handle.
+pub fn has_disk_version_changed(path: &Path, expected_version: &str) -> bool {
+    let Ok(raw) = std::fs::read(path) else {
+        return false;
+    };
+    compute_doc_version_bytes(&raw) != expected_version
+}
+
 impl DocsService {
     pub fn new() -> Self {
         Self::default()

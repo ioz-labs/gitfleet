@@ -215,12 +215,36 @@ pub(crate) fn render_studio_status_bar<'a>(
                     tooltip::Position::Top,
                     p,
                 ))
-                .push(
-                    text(format!("Spaces: {}", tab.language.default_indent_spaces()))
-                        .size(type_scale::BADGE)
-                        .color(p.text_muted)
-                        .wrapping(text::Wrapping::None),
-                )
+                .push(tip(
+                    button(
+                        row![
+                            text(if tab.indent_use_tabs {
+                                "Tabs".to_string()
+                            } else {
+                                format!("Spaces: {}", tab.indent_spaces)
+                            })
+                            .size(type_scale::BADGE)
+                            .color(if active_menu == Some(StudioStatusMenu::Indent) {
+                                p.accent_fg
+                            } else {
+                                p.text_muted
+                            })
+                            .wrapping(text::Wrapping::None),
+                            icons::chevron_down(10.0, p.text_muted),
+                        ]
+                        .spacing(3)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([1, 5])
+                    .style(theme::vscode_status_item(p))
+                    .on_press(Message::Detached(
+                        win_id,
+                        DetachedAction::OpenStatusMenu(StudioStatusMenu::Indent),
+                    )),
+                    "Select Indentation (Spaces / Tabs)",
+                    tooltip::Position::Top,
+                    p,
+                ))
                 .push(tip(
                     button(
                         row![

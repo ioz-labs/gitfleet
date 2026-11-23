@@ -2,12 +2,15 @@
 
 use super::io::{file_display_name, format_editor_text_for_save, jump_editor_to_span};
 use super::smart_edit::parse_goto_line_spec;
-use super::state::{DetachedAction, DetachedViewMode, StudioCreateEntryKind, StudioTab};
+use super::state::{
+    DetachedAction, DetachedGitDiffTarget, DetachedViewMode, StudioCreateEntryKind, StudioTab,
+};
 use crate::app::{GitFleetApp, Message};
 use crate::preview::PreviewState;
 use crate::syntax::CodeLanguage;
 use crate::views::image_diff::ImageDiffZoom;
 use crate::views::overlays::file_ops_modal::{remap_rel_path, validate_rename_input};
+use gitfleet_git::{FileChange, FileChangeKind};
 use gitfleet_search::{ReplaceReport, replace_in_file, replace_in_files};
 use iced::widget::text_editor;
 use iced::{Task, window};
@@ -282,9 +285,122 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            DetachedAction::ReopenClosedTab => {
+                let reopened_path = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    while let Some(p) = v.closed_tabs.pop_back() {
+                        if p.is_file() {
+                            return Some(p);
+                        }
+                    }
+                    v.status_is_error = false;
+                    v.status_note = "No recently closed tab to reopen".into();
+                    None
+                });
+                if let Some(p) = reopened_path {
+                    return self.open_or_focus_file_tab(win_id, p, None, false);
+                }
+                Task::none()
+            }
+            DetachedAction::DismissDiskConflict(tab_id) => {
+                let docs = &self.service.docs;
+                if let Some(v) = self.detached_viewers.get_mut(&win_id)
+                    && let Some(tab) = v.tabs.iter_mut().find(|t| t.id == tab_id)
+                {
+                    tab.disk_conflict = false;
+                    tab.dirty = true;
+                    if let Some(path) = tab.file_path.as_deref()
+                        && let Ok(cap) = docs.open_document(path)
+                    {
+                        tab.doc_id = Some(cap.document_id);
+                        tab.doc_version = Some(cap.version);
+                    }
+                    v.status_is_error = false;
+                    v.status_note = "Kept in-editor changes (Ctrl+S to overwrite disk)".into();
+                }
+                Task::none()
+            }
+            DetachedAction::DiffActiveWithHead => {
+                let diff_req = self.detached_viewers.get_mut(&win_id).and_then(|v| {
+                    let root = v.search_root.clone()?;
+                    if !root.join(".git").exists() {
+                        v.status_is_error = true;
+                        v.status_note = "Current folder is not a Git repository".into();
+                        return None;
+                    }
+                    let git_map = v.explorer_git_statuses.clone();
+                    let tab = v.active_tab_mut()?;
+                    let rel = tab.rel_path.clone()?;
+                    let target = tab.git_diff_target.clone().unwrap_or_else(|| {
+                        let code = git_map.get(&rel).copied().unwrap_or('M');
+                        let kind = match code {
+                            '?' => FileChangeKind::Untracked,
+                            'A' => FileChangeKind::Added,
+                            'D' => FileChangeKind::Deleted,
+                            'U' => FileChangeKind::Conflicted,
+                            _ => FileChangeKind::Modified,
+                        };
+                        DetachedGitDiffTarget::WorkingFile {
+                            repo_path: root,
+                            file: FileChange {
+                                path: rel.clone(),
+                                kind,
+                                staged: false,
+                            },
+                        }
+                    });
+                    tab.git_diff_target = Some(target.clone());
+                    tab.mode = tab.last_text_diff_mode;
+                    let tid = tab.id;
+                    v.request_id = v.request_id.wrapping_add(1);
+                    v.status_is_error = false;
+                    v.status_note = format!("Loading Git diff for {rel}…");
+                    Some((tid, v.request_id, target))
+                });
+                if let Some((tid, rid, target)) = diff_req {
+                    return self.spawn_detached_git_diff_task(win_id, tid, rid, target);
+                }
+                Task::none()
+            }
             DetachedAction::QuickOpenConfirmSelected => {
                 let action_plan = self.detached_viewers.get_mut(&win_id).and_then(|v| {
                     let q = v.quick_open_query.trim().to_string();
+                    if q.starts_with('@') {
+                        let syms = v.quick_open_symbols(80);
+                        let (sym, _) = syms.get(v.quick_open_selected)?.clone();
+                        let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
+                            v.editor_font_size,
+                            v.editor_word_wrap,
+                        );
+                        if let Some(tab) = v.active_tab_mut()
+                            && tab.is_editable()
+                        {
+                            tab.mode = DetachedViewMode::Edit;
+                            tab.ensure_editor_hydrated();
+                            jump_editor_to_span(
+                                &mut tab.editor_content,
+                                sym.line_idx,
+                                0,
+                                0,
+                            );
+                            let scroll_t =
+                                crate::views::code_editor::scroll_numbered_editor_to_line(
+                                    &tab.editor_content,
+                                    &mut tab.editor_scroll,
+                                    sym.line_idx,
+                                    cfg,
+                                );
+                            v.quick_open_visible = false;
+                            v.status_is_error = false;
+                            v.status_note = format!(
+                                "{} {} (Ln {})",
+                                sym.kind_badge,
+                                sym.name,
+                                sym.line_idx + 1
+                            );
+                            return Some((None, Some(scroll_t)));
+                        }
+                        return None;
+                    }
                     if q.starts_with(':') {
                         let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
                             v.editor_font_size,
@@ -596,7 +712,7 @@ impl GitFleetApp {
                     Task::none()
                 }
             }
-            DetachedAction::ExplorerFilesLoaded(rid, files, ignored) => {
+            DetachedAction::ExplorerFilesLoaded(rid, files, ignored, git_map) => {
                 let reload_params = if let Some(v) = self.detached_viewers.get_mut(&win_id)
                     && rid == v.explorer_request_id
                 {
@@ -605,6 +721,7 @@ impl GitFleetApp {
                     v.explorer_ignored_files = ignored.files;
                     v.explorer_ignored_dirs = ignored.dirs;
                     v.explorer_ignored_dir_children.clear();
+                    v.set_explorer_git_statuses(git_map);
                     v.rebuild_explorer_tree();
                     if v.explorer_show_ignored
                         && let Some(root) = v.search_root.clone()

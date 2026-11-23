@@ -20,10 +20,11 @@ use crate::views::diff_viewer::{
 use crate::views::image_diff::render_image_diff;
 use crate::views::{tip, truncate_chars};
 use iced::widget::{
-    Space, button, column, container, horizontal_rule, row, scrollable, text, text_editor,
-    tooltip,
+    Space, button, column, container, horizontal_rule, mouse_area, row, scrollable, text,
+    text_editor, tooltip,
 };
 use iced::{Alignment, Color, Element, Length, keyboard, window};
+use std::sync::Arc;
 
 // ── Right Editor Workbench (Tab Bar + Breadcrumb + Find + Canvas) ────────────
 
@@ -121,6 +122,53 @@ pub(crate) fn render_editor_workbench<'a>(
             .push(horizontal_rule(1).style(theme::subtle_rule(p)));
     }
 
+    // External disk modification conflict banner (`S8`)
+    if tab.disk_conflict {
+        let disk_banner = container(
+            row![
+                icons::alert_triangle(13.0, p.warning_fg),
+                theme::clipped_line(
+                    text(format!(
+                        "'{}' was modified externally on disk while you have unsaved edits.",
+                        tab.title
+                    ))
+                    .size(type_scale::CAPTION)
+                    .color(p.warning_fg)
+                    .wrapping(text::Wrapping::None),
+                    Length::Fill,
+                ),
+                button(
+                    text("Reload from Disk")
+                        .size(type_scale::BADGE)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 10])
+                .style(theme::primary_btn(p))
+                .on_press(Message::Detached(win_id, DetachedAction::ReloadFiles)),
+                button(
+                    text("Keep Mine")
+                        .size(type_scale::BADGE)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([3, 10])
+                .style(theme::subtle_btn(p))
+                .on_press(Message::Detached(
+                    win_id,
+                    DetachedAction::DismissDiskConflict(tab.id),
+                )),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .padding([6, 12])
+        .width(Length::Fill)
+        .style(theme::pill_box(p.warning_bg, p.warning_fg, p.border_subtle));
+
+        col = col
+            .push(container(disk_banner).padding([6, 10]).width(Length::Fill))
+            .push(horizontal_rule(1).style(theme::subtle_rule(p)));
+    }
+
     // Diff / Preview contextual sub-bar when applicable
     if let Some(sub) = render_mode_subbar(win_id, tab, p) {
         col = col
@@ -142,6 +190,45 @@ pub(crate) fn render_editor_workbench<'a>(
     }
 
     let canvas: Element<'a, Message> = match tab.mode {
+        DetachedViewMode::Edit if v.split_right_preview && tab.has_preview_available() => {
+            let left_p = ((v.split_ratio.clamp(0.22, 0.78) * 1000.0).round() as u16).max(200);
+            let right_p = 1000u16.saturating_sub(left_p).max(200);
+            let left_editor = container(render_studio_code_editor(win_id, v, tab, theme_mode, p))
+                .width(Length::FillPortion(left_p))
+                .height(Length::Fill);
+            let right_preview = container(
+                render_file_preview(
+                    &tab.preview_state,
+                    &tab.preview_editor,
+                    &tab.preview_scroll,
+                    crate::views::code_editor::NumberedEditorConfig::preview(
+                        v.editor_font_size,
+                        v.editor_word_wrap,
+                    ),
+                    tab.preview_raw_mode,
+                    theme_mode,
+                    p,
+                )
+                .map(move |m| map_text_diff_msg(win_id, m)),
+            )
+            .padding(8)
+            .width(Length::FillPortion(right_p))
+            .height(Length::Fill);
+
+            row![
+                left_editor,
+                theme::kit::hairline_v_splitter(
+                    p,
+                    v.resizing_split,
+                    Message::Detached(win_id, DetachedAction::StartResizeSplit),
+                ),
+                right_preview,
+            ]
+            .spacing(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        }
         DetachedViewMode::Edit => render_studio_code_editor(win_id, v, tab, theme_mode, p),
         DetachedViewMode::Preview => container(
             render_file_preview(
@@ -282,15 +369,18 @@ fn render_tab_bar<'a>(
             .style(theme::vscode_icon_btn(p, false))
             .on_press(Message::Detached(win_id, DetachedAction::CloseTab(idx)));
 
-        let tab_pill = row![
-            button(inner)
-                .padding([6, 8])
-                .style(theme::studio_tab_btn(p, is_active))
-                .on_press(Message::Detached(win_id, DetachedAction::SelectTab(idx))),
-            close_btn,
-        ]
-        .spacing(1)
-        .align_y(Alignment::Center);
+        let tab_pill = mouse_area(
+            row![
+                button(inner)
+                    .padding([6, 8])
+                    .style(theme::studio_tab_btn(p, is_active))
+                    .on_press(Message::Detached(win_id, DetachedAction::SelectTab(idx))),
+                close_btn,
+            ]
+            .spacing(1)
+            .align_y(Alignment::Center),
+        )
+        .on_right_press(Message::Detached(win_id, DetachedAction::OpenTabMenu(idx)));
 
         tabs_row = tabs_row.push(tab_pill);
     }
@@ -399,6 +489,28 @@ fn render_tab_bar<'a>(
             ));
         }
 
+        if tab.is_editable() && tab.has_preview_available() {
+            right_actions = right_actions.push(tip(
+                button(icons::split_horizontal(
+                    13.0,
+                    if v.split_right_preview {
+                        p.accent_fg
+                    } else {
+                        p.text_muted
+                    },
+                ))
+                .padding([4, 6])
+                .style(theme::vscode_icon_btn(p, v.split_right_preview))
+                .on_press(Message::Detached(
+                    win_id,
+                    DetachedAction::ToggleSplitPreview,
+                )),
+                "Split Live Preview (Ctrl+\\)",
+                tooltip::Position::Bottom,
+                p,
+            ));
+        }
+
         if tab.is_editable() || tab.has_preview_available() {
             right_actions = right_actions.push(tip(
                 button(icons::search(
@@ -457,7 +569,8 @@ fn render_breadcrumb_bar<'a>(
         .unwrap_or(tab.title.as_str());
     let segments: Vec<&str> = crumb_source.split('/').filter(|s| !s.is_empty()).collect();
 
-    let mut crumb_row = row![].spacing(4).align_y(Alignment::Center);
+    let mut crumb_row = row![].spacing(3).align_y(Alignment::Center);
+    let can_pick_siblings = v.search_root.is_some() && tab.rel_path.is_some();
     for (idx, seg) in segments.iter().enumerate() {
         let is_last = idx + 1 == segments.len();
         if idx > 0 {
@@ -468,21 +581,94 @@ fn render_breadcrumb_bar<'a>(
                     .wrapping(text::Wrapping::None),
             );
         }
-        crumb_row = crumb_row.push(
-            text(*seg)
-                .size(type_scale::CAPTION)
-                .color(if is_last {
-                    p.text_primary
-                } else {
-                    p.text_muted
-                })
-                .wrapping(text::Wrapping::None),
-        );
+        if can_pick_siblings {
+            let parent_dir = if idx == 0 {
+                String::new()
+            } else {
+                segments[..idx].join("/")
+            };
+            crumb_row = crumb_row.push(
+                button(
+                    text(*seg)
+                        .size(type_scale::CAPTION)
+                        .color(if is_last {
+                            p.text_primary
+                        } else {
+                            p.text_secondary
+                        })
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([1, 4])
+                .style(theme::vscode_status_item(p))
+                .on_press(Message::Detached(
+                    win_id,
+                    DetachedAction::OpenBreadcrumbMenu(parent_dir),
+                )),
+            );
+        } else {
+            crumb_row = crumb_row.push(
+                text(*seg)
+                    .size(type_scale::CAPTION)
+                    .color(if is_last {
+                        p.text_primary
+                    } else {
+                        p.text_muted
+                    })
+                    .wrapping(text::Wrapping::None),
+            );
+        }
+    }
+
+    if tab.is_editable() {
+        crumb_row = crumb_row.push(tip(
+            button(
+                text("@ Symbols")
+                    .size(type_scale::BADGE)
+                    .font(theme::CODE_FONT)
+                    .color(p.accent_fg)
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding([1, 6])
+            .style(theme::vscode_status_item(p))
+            .on_press(Message::Detached(win_id, DetachedAction::OpenSymbolOutline)),
+            "Jump to Symbol in File (Ctrl+Shift+O)",
+            tooltip::Position::Bottom,
+            p,
+        ));
     }
 
     // Minimal mode pills on the right of breadcrumb strip
     let is_raster_only = tab.diff_image.as_ref().is_some_and(|d| !d.is_svg);
     let mut modes = row![].spacing(3).align_y(Alignment::Center);
+
+    let in_git_repo = v
+        .search_root
+        .as_deref()
+        .is_some_and(|r| r.join(".git").exists());
+    if in_git_repo && tab.rel_path.is_some() && tab.diff_parsed.raw.is_empty() && !is_raster_only {
+        modes = modes.push(tip(
+            button(
+                row![
+                    icons::file_diff(11.0, p.text_secondary),
+                    text("Diff HEAD")
+                        .size(type_scale::BADGE)
+                        .color(p.text_secondary)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            )
+            .padding([2, 8])
+            .style(theme::filter_pill_btn(p, false))
+            .on_press(Message::Detached(
+                win_id,
+                DetachedAction::DiffActiveWithHead,
+            )),
+            "Compare working file with Git HEAD",
+            tooltip::Position::Bottom,
+            p,
+        ));
+    }
 
     if tab.is_editable() {
         let active = tab.mode == DetachedViewMode::Edit;
@@ -781,6 +967,9 @@ fn render_studio_code_editor<'a>(
                         | keyboard::Key::Character("B")
                         | keyboard::Key::Character("e")
                         | keyboard::Key::Character("E")
+                        | keyboard::Key::Character("t")
+                        | keyboard::Key::Character("T")
+                        | keyboard::Key::Character("\\")
                         | keyboard::Key::Character("=")
                         | keyboard::Key::Character("+")
                         | keyboard::Key::Character("-")
@@ -891,14 +1080,16 @@ fn render_studio_code_editor<'a>(
             text_editor::Binding::from_key_press(key_press)
         });
 
-    crate::views::code_editor::numbered_code_editor(
+    crate::views::code_editor::numbered_code_editor_with_marks(
         &tab.editor_content,
         ed,
         &tab.editor_scroll,
         crate::views::code_editor::NumberedEditorConfig::studio(
             v.editor_font_size,
             v.editor_word_wrap,
-        ),
+        )
+        .with_indent_step(tab.indent_spaces),
+        Some(Arc::clone(&tab.git_line_marks)),
         p,
         move |vp| Message::Detached(win_id, DetachedAction::EditorScrolled(vp)),
     )
