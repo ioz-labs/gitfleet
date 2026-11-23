@@ -14,12 +14,11 @@ use super::{
 };
 use crate::app::{DiffSelectionSide, DiffTextSelection, Message, PendingConfirm};
 use crate::icons;
-use crate::preview::{PreviewHighlightSettings, PreviewHighlighter, PreviewState};
+use crate::preview::PreviewState;
 use crate::syntax::TokenFormat;
 use crate::theme::{self, Palette, ThemeMode, type_scale};
 use crate::views::slim_scroll_h;
 use gitfleet_git::DiffChangeKind;
-use iced::advanced::text as adv_text;
 use iced::widget::canvas::Canvas;
 use iced::widget::{Space, button, column, container, row, text, text_editor};
 use iced::{Alignment, Color, Element, Length, alignment};
@@ -597,7 +596,7 @@ pub(crate) fn render_side_by_side_diff_with<'a>(
 
 pub(crate) fn render_file_preview<'a>(
     state: &'a PreviewState,
-    editor: &'a text_editor::Content,
+    _editor: &'a text_editor::Content,
     scroll: &crate::views::code_editor::CodeScrollState,
     config: crate::views::code_editor::NumberedEditorConfig,
     raw_mode: bool,
@@ -605,14 +604,14 @@ pub(crate) fn render_file_preview<'a>(
     p: Palette,
 ) -> Element<'a, Message> {
     if state.uses_selectable_editor(raw_mode) {
-        let mut col = column![].spacing(6).height(Length::Fill);
+        let mut outer = column![].spacing(6).height(Length::Fill);
         match state {
             PreviewState::Json {
                 valid,
                 error: Some(err),
                 ..
             } if !valid => {
-                col = col.push(
+                outer = outer.push(
                     container(
                         text(format!("Invalid JSON: {err}"))
                             .size(type_scale::CAPTION)
@@ -624,27 +623,27 @@ pub(crate) fn render_file_preview<'a>(
                 );
             }
             PreviewState::Json { valid: true, .. } => {
-                col = col.push(
-                    text("Valid JSON — formatted (select text & Ctrl+C to copy)")
+                outer = outer.push(
+                    text("Valid JSON — formatted")
                         .size(type_scale::CAPTION)
                         .color(p.success_fg),
                 );
             }
-            PreviewState::Config { kind, content } => {
-                col = col.push(
+            PreviewState::Config { kind, content, .. } => {
+                outer = outer.push(
                     text(format!(
-                        "{kind} Preview  •  {} lines  (select & Ctrl+C to copy)",
-                        content.lines().count()
+                        "{kind} Preview  •  {} lines",
+                        content.bytes().filter(|&b| b == b'\n').count() + 1
                     ))
                     .size(type_scale::CAPTION)
                     .color(p.text_muted),
                 );
             }
-            PreviewState::Code { lang, content } => {
-                col = col.push(
+            PreviewState::Code { lang, content, .. } => {
+                outer = outer.push(
                     text(format!(
-                        "{lang}  •  {} lines  (select & Ctrl+C to copy)",
-                        content.lines().count()
+                        "{lang}  •  {} lines",
+                        content.bytes().filter(|&b| b == b'\n').count() + 1
                     ))
                     .size(type_scale::CAPTION)
                     .color(p.text_muted),
@@ -653,29 +652,88 @@ pub(crate) fn render_file_preview<'a>(
             _ => {}
         }
 
-        let hl_settings = PreviewHighlightSettings {
-            kind: state.highlight_kind(),
-            theme_mode,
+        let Some(doc) = state.highlighted_doc(theme_mode) else {
+            return outer.into();
         };
-        let ed = text_editor(editor)
-            .on_action(Message::PreviewEditorAction)
-            .highlight_with::<PreviewHighlighter>(hl_settings, |color, _theme| {
-                adv_text::highlighter::Format {
-                    color: Some(*color),
-                    font: None,
-                }
+
+        let row_h = config.line_height_px().max(DIFF_LINE_H).ceil();
+        let total_lines = doc.lines.len();
+        let total_h = total_lines as f32 * row_h;
+        let viewport_h = scroll.viewport_h.max(600.0);
+        let first = (((scroll.scroll_y - DIFF_OVERSCAN_PX).max(0.0) / row_h).floor() as usize)
+            .min(total_lines);
+        let last = (((scroll.scroll_y + viewport_h + DIFF_OVERSCAN_PX) / row_h).ceil() as usize)
+            .min(total_lines)
+            .max(first);
+        let top_spacer = first as f32 * row_h;
+        let bottom_spacer = (total_h - last as f32 * row_h).max(0.0);
+        let gutter_w = crate::views::code_editor::gutter_width(total_lines, config.font_size);
+
+        let mut lines_col = column![Space::with_height(Length::Fixed(top_spacer))].spacing(0);
+        for i in first..last {
+            let line = &doc.lines[i];
+            let gutter = container(
+                text(format!("{}", i + 1))
+                    .size(config.font_size.min(type_scale::CAPTION))
+                    .font(theme::CODE_FONT)
+                    .color(p.text_muted)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fixed(gutter_w))
+            .height(Length::Fixed(row_h))
+            .padding([0, 8])
+            .align_x(alignment::Horizontal::Right)
+            .align_y(alignment::Vertical::Center)
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(p.surface_sidebar)),
+                ..Default::default()
             });
 
-        let numbered = crate::views::code_editor::numbered_code_editor(
-            editor,
-            ed,
-            scroll,
-            config,
-            p,
+            let code_el: Element<'_, Message> = if line.spans.is_empty() {
+                text(line.text.clone())
+                    .size(config.font_size)
+                    .font(theme::CODE_FONT)
+                    .color(p.text_primary)
+                    .wrapping(text::Wrapping::None)
+                    .into()
+            } else {
+                render_highlighted_code(&line.text, &[], &line.spans, p.text_primary, None)
+            };
+
+            let code_cell = container(code_el)
+                .width(Length::Fill)
+                .height(Length::Fixed(row_h))
+                .padding([0, 10])
+                .align_y(alignment::Vertical::Center);
+
+            let sep = container(Space::with_width(Length::Fixed(1.0)))
+                .width(Length::Fixed(1.0))
+                .height(Length::Fixed(row_h))
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(p.border_subtle)),
+                    ..Default::default()
+                });
+
+            lines_col = lines_col.push(
+                row![gutter, sep, code_cell]
+                    .spacing(0)
+                    .height(Length::Fixed(row_h))
+                    .align_y(Alignment::Center),
+            );
+        }
+        lines_col = lines_col.push(Space::with_height(Length::Fixed(bottom_spacer)));
+
+        let min_w = (doc.max_chars as f32 * (config.font_size * 0.62) + gutter_w + 36.0)
+            .clamp(380.0, 3200.0);
+        let scroller = theme::responsive_hscroll_synced(
+            lines_col,
+            min_w,
+            scroll.id.clone(),
             Message::PreviewScrolled,
+            p,
         );
 
-        return col.push(numbered).into();
+        return outer.push(scroller).into();
     }
 
     let content = state.view(p, theme_mode, Message::PreviewLinkClicked);

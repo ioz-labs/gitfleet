@@ -1,8 +1,9 @@
 use crate::app::types::{
     AddRepoMode, BottomLeftTab, BottomViewMode, CommandLogFilter, CommitModalScope,
     ContextMenuSubmenu, ContextMenuTarget, DiffGapExpandMode, DiffSelectionSide, DrawerTab,
-    EncodingModalMode, FilesViewMode, GraphTab, HostLayoutMode, PendingConfirm, RepoFilter,
-    ScanLevelPreset, SettingsTab, SyncDirection, TerminalMenuSubmenu, WorkspaceModalTab,
+    EncodingModalMode, FilesViewMode, GraphSelection, GraphTab, HostLayoutMode, PendingConfirm,
+    RepoFilter, ScanLevelPreset, SettingsTab, SyncDirection, TerminalMenuSubmenu,
+    WorkspaceModalTab,
 };
 use crate::views::overlays::blueprint_modal::BlueprintExportRepoItem;
 use crate::views::overlays::rebase_modal::RebaseActionChoice;
@@ -34,9 +35,12 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub(crate) struct DocContextPayload {
     pub(crate) req_id: u64,
+    pub(crate) selection: GraphSelection,
+    pub(crate) is_working_tree_doc: bool,
     pub(crate) rel_path: String,
     pub(crate) full_path: PathBuf,
     pub(crate) doc: Option<OpenDocumentCapability>,
+    pub(crate) prebuilt_preview: crate::preview::PrebuiltPreviewSlot,
     pub(crate) conflict_parsed: Option<ParsedConflictFile>,
 }
 
@@ -394,12 +398,15 @@ pub(crate) enum Message {
     ToggleCsvDiffIgnoreFormat,
     CsvDiffFilterChanged(String),
     PreviewLinkClicked(String),
+    #[allow(dead_code)]
     PreviewEditorAction(text_editor::Action),
     PreviewScrolled(scrollable::Viewport),
     TogglePreviewRaw,
     CopyPreviewText,
     EditorAction(text_editor::Action),
     EditorScrolled(scrollable::Viewport),
+    BlameScrolled(scrollable::Viewport),
+    EditWorkingTreeCopy(String),
     SaveDocument,
     ToggleEolModal,
     ToggleEncodingModal,

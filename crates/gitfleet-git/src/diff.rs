@@ -353,6 +353,30 @@ impl GitService {
         })
     }
 
+    /// Reads a UTF-8 text snapshot of `file_path` at a historical git revision (`<rev>:<git_path>`),
+    /// capped safely (`MAX_MEDIA_DIFF_BYTES`). Returns `Ok(None)` if deleted, missing, or binary.
+    pub async fn read_revision_file_text(
+        &self,
+        repo_path: &Path,
+        rev: &str,
+        file_path: &str,
+    ) -> AppResult<Option<String>> {
+        let git_path = file_path.replace('\\', "/");
+        let spec = format!("{rev}:{git_path}");
+        let mut bytes_opt = read_git_blob_capped(repo_path, &spec).await?;
+        if bytes_opt.is_none() && rev.starts_with("stash@{") {
+            let untracked_spec = format!("{rev}^3:{git_path}");
+            bytes_opt = read_git_blob_capped(repo_path, &untracked_spec).await?;
+        }
+        let Some(bytes) = bytes_opt else {
+            return Ok(None);
+        };
+        if bytes.iter().take(8192).any(|&b| b == 0) {
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
     /// Loads raw `(before, after)` byte payloads for a file across `<base>..<head>`.
     pub async fn get_range_file_versions(
         &self,

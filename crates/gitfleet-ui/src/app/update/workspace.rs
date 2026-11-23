@@ -52,12 +52,15 @@ impl GitFleetApp {
         self.diff_csv = None;
         self.diff_is_working_file = false;
         self.diff_is_staged = false;
+        self.doc_loading = false;
+        self.open_doc_loaded_target = None;
         self.open_doc_raw_text = None;
         self.preview_hydrated = false;
         self.editor_hydrated = false;
         self.preview_state = preview::PreviewState::Empty;
         self.sync_preview_editor();
         self.editor_content = text_editor::Content::new();
+        self.blame_scroll.reset_offsets();
         self.open_doc_id = None;
         self.open_doc_version = None;
         self.open_doc_path = None;
@@ -964,11 +967,14 @@ impl GitFleetApp {
                         self.clear_ignored_repo_cache();
                         self.diff_title = "No repository selected".into();
                         self.clear_diff_parsed_and_cache();
+                        self.doc_loading = false;
+                        self.open_doc_loaded_target = None;
                         self.open_doc_raw_text = None;
                         self.preview_hydrated = false;
                         self.editor_hydrated = false;
                         self.preview_state = preview::PreviewState::Empty;
                         self.editor_content = text_editor::Content::new();
+                        self.blame_scroll.reset_offsets();
                         self.persist_ui_prefs();
                     }
                 }

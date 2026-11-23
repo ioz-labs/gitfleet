@@ -13,11 +13,11 @@ use iced::{
     Background, Border, Color, Element, Length, Padding, Pixels, Point, Rectangle, Renderer, Shadow,
     Size, Task, Theme, Vector, alignment, event, mouse,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Line-height multiplier used by GitFleet Studio's code editor.
 pub(crate) const STUDIO_LINE_HEIGHT: f32 = 1.48;
@@ -502,7 +502,13 @@ where
         .line_height(text::LineHeight::Relative(config.line_height))
         .padding(config.padding)
         .wrapping(wrapping)
-        .height(Length::Shrink)
+        .height(if config.word_wrap {
+            Length::Shrink
+        } else {
+            // Unwrapped height is computed deterministically in O(1) by `NumberedEditorCanvas::layout`,
+            // avoiding `TextEditor`'s O(N) `min_bounds()` full-buffer measurement on every layout pass.
+            Length::Fill
+        })
         .style(theme::transparent_code_editor(p, !config.boxed))
         .into();
 
@@ -728,6 +734,8 @@ impl<'a, M> Widget<M, Theme, Renderer> for ViewportMeasure<'a, M> {
     }
 }
 
+type BracketPairCoords = Option<((usize, usize), (usize, usize))>;
+
 #[derive(Default)]
 struct GutterLayoutState {
     /// Cache key for wrapped visual-row prefix sums:
@@ -736,8 +744,51 @@ struct GutterLayoutState {
     /// Prefix sums of visual rows (`len == line_count + 1`).
     /// Logical line `i` starts at visual row `prefix_rows[i]`.
     prefix_rows: Vec<u32>,
+    /// O(1) document signature & cached max visual columns for unwrapped horizontal sizing.
+    cols_doc_sig: Option<u64>,
+    cols_cursor_sig: Option<u64>,
+    cached_max_cols: usize,
+    /// O(1) cached matching-bracket visual coordinates `((abs_line_a, vcol_a), (abs_line_b, vcol_b))`
+    /// keyed by `(cursor_sig, cursor_line, cursor_col)` so `draw()` allocates zero `String`s on idle/hover frames.
+    bracket_cache: RefCell<Option<((u64, usize, usize), BracketPairCoords)>>,
     /// True while a mouse drag started in the editor or gutter.
     dragging: bool,
+}
+
+fn hash_str_into(mut h: u64, s: &str) -> u64 {
+    for &b in s.as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h ^= 0xff;
+    h.wrapping_mul(0x100000001b3)
+}
+
+/// Computes an O(1) `(doc_sig, cursor_sig)` probe by inspecting only 4 boundary/active lines
+/// instead of scanning all N lines of the document.
+fn fast_content_probe(content: &text_editor::Content) -> (u64, u64) {
+    let lc = content.line_count();
+    let (cl, cc) = content.cursor_position();
+    let mut h: u64 = 0xcbf29ce484222325 ^ (lc as u64).wrapping_mul(0x9e3779b97f4a7c15);
+    if lc > 0 {
+        if let Some(first) = content.line(0) {
+            h = hash_str_into(h, &first);
+        }
+        if let Some(mid) = content.line(lc / 2) {
+            h = hash_str_into(h, &mid);
+        }
+        if let Some(last) = content.line(lc - 1) {
+            h = hash_str_into(h, &last);
+        }
+    }
+    let doc_sig = h;
+    let mut ch = doc_sig
+        ^ ((cl as u64) << 16)
+        ^ (cc as u64).wrapping_mul(0x517cc1b727220a95);
+    if let Some(cur) = content.line(cl) {
+        ch = hash_str_into(ch, &cur);
+    }
+    (doc_sig, ch)
 }
 
 impl GutterLayoutState {
@@ -827,6 +878,17 @@ fn max_line_visual_cols(content: &text_editor::Content) -> usize {
 }
 
 fn mono_char_width(font_size: f32, line_height: f32) -> f32 {
+    static CACHE: OnceLock<Mutex<HashMap<(u32, u32), f32>>> = OnceLock::new();
+    let key = (
+        (font_size * 100.0).round() as u32,
+        (line_height * 100.0).round() as u32,
+    );
+    let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = map.lock()
+        && let Some(&w) = guard.get(&key)
+    {
+        return w;
+    }
     let para = <Renderer as adv_text::Renderer>::Paragraph::with_text(adv_text::Text {
         content: "0000000000",
         bounds: Size::new(f32::INFINITY, f32::INFINITY),
@@ -838,8 +900,12 @@ fn mono_char_width(font_size: f32, line_height: f32) -> f32 {
         shaping: text::Shaping::Basic,
         wrapping: text::Wrapping::None,
     });
-    let w = para.min_bounds().width / 10.0;
-    if w > 1.0 { w } else { font_size * 0.60 }
+    let raw_w = para.min_bounds().width / 10.0;
+    let w = if raw_w > 1.0 { raw_w } else { font_size * 0.60 };
+    if let Ok(mut guard) = map.lock() {
+        guard.insert(key, w);
+    }
+    w
 }
 
 fn visual_col_at_char(line: &str, target_char_idx: usize) -> usize {
@@ -906,7 +972,29 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
             ((avail - g_w).max(60.0), false)
         } else {
             let base_editor_w = (vp.width - g_w).max(80.0);
-            let max_cols = max_line_visual_cols(self.content);
+            let (doc_sig, cursor_sig) = fast_content_probe(self.content);
+            let state = tree.state.downcast_mut::<GutterLayoutState>();
+            let max_cols = if state.cols_doc_sig != Some(doc_sig) {
+                let computed = max_line_visual_cols(self.content);
+                state.cols_doc_sig = Some(doc_sig);
+                state.cols_cursor_sig = Some(cursor_sig);
+                state.cached_max_cols = computed;
+                computed
+            } else if state.cols_cursor_sig != Some(cursor_sig) {
+                let (cl, _) = self.content.cursor_position();
+                let cur_cols = self
+                    .content
+                    .line(cl)
+                    .map(|l| line_visual_cols(&l))
+                    .unwrap_or(0);
+                state.cols_cursor_sig = Some(cursor_sig);
+                if cur_cols > state.cached_max_cols {
+                    state.cached_max_cols = cur_cols;
+                }
+                state.cached_max_cols
+            } else {
+                state.cached_max_cols
+            };
             let needed_w = (max_cols as f32 * (self.config.font_size * 0.62)
                 + self.config.padding.horizontal()
                 + 48.0)
@@ -915,11 +1003,19 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
             (chosen, g_w + chosen > vp.width + 0.5)
         };
 
-        let min_inner_h = (vp.height - self.config.padding.vertical()).max(0.0);
-        let child_limits = adv_layout::Limits::new(
-            Size::new(editor_w, min_inner_h),
-            Size::new(editor_w, f32::MAX),
-        );
+        let child_limits = if self.config.word_wrap {
+            let min_inner_h = (vp.height - self.config.padding.vertical()).max(0.0);
+            adv_layout::Limits::new(
+                Size::new(editor_w, min_inner_h),
+                Size::new(editor_w, f32::MAX),
+            )
+        } else {
+            let exact_h = (line_count as f32 * self.config.line_height_px()
+                + self.config.padding.vertical())
+            .ceil()
+            .max(vp.height);
+            adv_layout::Limits::new(Size::new(editor_w, exact_h), Size::new(editor_w, exact_h))
+        };
 
         let child_node = self
             .editor
@@ -1062,13 +1158,10 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                             a: 0.35,
                             ..self.p.border_subtle
                         };
-                        for (idx, line_cow) in self
-                            .content
-                            .lines()
-                            .enumerate()
-                            .skip(vis_lines.start)
-                            .take(vis_lines.len())
-                        {
+                        for idx in vis_lines.clone() {
+                            let Some(line_cow) = self.content.line(idx) else {
+                                continue;
+                            };
                             let mut leading_vcols = 0usize;
                             for ch in line_cow.chars() {
                                 if ch == ' ' {
@@ -1102,19 +1195,45 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                     }
 
                     if self.config.match_brackets && line_count <= 8_000 {
-                        let win_lo = cursor_line.saturating_sub(250);
-                        let win_hi = (cursor_line + 250).min(line_count.saturating_sub(1));
-                        let window_lines: Vec<String> = self
-                            .content
-                            .lines()
-                            .skip(win_lo)
-                            .take(win_hi.saturating_sub(win_lo) + 1)
-                            .map(|l| l.to_string())
-                            .collect();
-                        let rel_cursor = cursor_line.saturating_sub(win_lo);
-                        if let Some(((rel_a, col_a), (rel_b, col_b))) =
-                            find_matching_bracket_in_lines(&window_lines, rel_cursor, cursor_col, 250)
-                        {
+                        let (_, cursor_sig) = fast_content_probe(self.content);
+                        let bkey = (cursor_sig, cursor_line, cursor_col);
+                        let cached_pair = {
+                            let mut guard = state.bracket_cache.borrow_mut();
+                            if let Some((k, coords)) = *guard
+                                && k == bkey
+                            {
+                                coords
+                            } else {
+                                let win_lo = cursor_line.saturating_sub(200);
+                                let win_hi = (cursor_line + 200).min(line_count.saturating_sub(1));
+                                let mut window_lines =
+                                    Vec::with_capacity(win_hi.saturating_sub(win_lo) + 1);
+                                for i in win_lo..=win_hi {
+                                    window_lines.push(
+                                        self.content
+                                            .line(i)
+                                            .map(|l| l.to_string())
+                                            .unwrap_or_default(),
+                                    );
+                                }
+                                let rel_cursor = cursor_line.saturating_sub(win_lo);
+                                let computed = find_matching_bracket_in_lines(
+                                    &window_lines,
+                                    rel_cursor,
+                                    cursor_col,
+                                    200,
+                                )
+                                .and_then(|((rel_a, col_a), (rel_b, col_b))| {
+                                    let va = visual_col_at_char(window_lines.get(rel_a)?, col_a);
+                                    let vb = visual_col_at_char(window_lines.get(rel_b)?, col_b);
+                                    Some(((win_lo + rel_a, va), (win_lo + rel_b, vb)))
+                                });
+                                *guard = Some((bkey, computed));
+                                computed
+                            }
+                        };
+
+                        if let Some(coords) = cached_pair {
                             let pair_fill = Color {
                                 a: 0.20,
                                 ..self.p.accent_primary
@@ -1123,33 +1242,29 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                                 a: 0.72,
                                 ..self.p.accent_fg
                             };
-                            for (rel_ln, char_c) in [(rel_a, col_a), (rel_b, col_b)] {
-                                let abs_ln = win_lo + rel_ln;
-                                if let Some(ln_str) = window_lines.get(rel_ln) {
-                                    let vcol = visual_col_at_char(ln_str, char_c);
-                                    let bx = code_origin_x + vcol as f32 * char_w;
-                                    let by =
-                                        bounds.y + self.config.padding.top + abs_ln as f32 * line_h;
-                                    let brect = Rectangle {
-                                        x: bx - 1.0,
-                                        y: by + 1.0,
-                                        width: char_w + 2.0,
-                                        height: (line_h - 2.0).max(4.0),
-                                    };
-                                    if brect.intersection(&code_clip).is_some() {
-                                        renderer.fill_quad(
-                                            renderer::Quad {
-                                                bounds: brect,
-                                                border: Border {
-                                                    color: pair_border,
-                                                    width: 1.0,
-                                                    radius: 2.0.into(),
-                                                },
-                                                shadow: Shadow::default(),
+                            for (abs_ln, vcol) in [coords.0, coords.1] {
+                                let bx = code_origin_x + vcol as f32 * char_w;
+                                let by =
+                                    bounds.y + self.config.padding.top + abs_ln as f32 * line_h;
+                                let brect = Rectangle {
+                                    x: bx - 1.0,
+                                    y: by + 1.0,
+                                    width: char_w + 2.0,
+                                    height: (line_h - 2.0).max(4.0),
+                                };
+                                if brect.intersection(&code_clip).is_some() {
+                                    renderer.fill_quad(
+                                        renderer::Quad {
+                                            bounds: brect,
+                                            border: Border {
+                                                color: pair_border,
+                                                width: 1.0,
+                                                radius: 2.0.into(),
                                             },
-                                            Background::Color(pair_fill),
-                                        );
-                                    }
+                                            shadow: Shadow::default(),
+                                        },
+                                        Background::Color(pair_fill),
+                                    );
                                 }
                             }
                         }

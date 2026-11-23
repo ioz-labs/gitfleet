@@ -483,22 +483,11 @@ impl GitFleetApp {
                 ));
             }
             if self.preview_state.copyable_text().is_some() {
-                let has_preview_sel = self
-                    .preview_editor
-                    .selection()
-                    .is_some_and(|s| !s.is_empty());
                 header = header.push(tip(
                     button(
                         row![
-                            icons::copy(
-                                12.0,
-                                if has_preview_sel {
-                                    p.accent_fg
-                                } else {
-                                    p.text_secondary
-                                }
-                            ),
-                            text(if has_preview_sel { "Copy Sel" } else { "Copy" })
+                            icons::copy(12.0, p.text_secondary),
+                            text("Copy")
                                 .size(type_scale::CAPTION)
                                 .wrapping(text::Wrapping::None),
                         ]
@@ -506,9 +495,9 @@ impl GitFleetApp {
                         .align_y(Alignment::Center),
                     )
                     .padding([3, 8])
-                    .style(theme::filter_pill_btn(p, has_preview_sel))
+                    .style(theme::filter_pill_btn(p, false))
                     .on_press(Message::CopyPreviewText),
-                    "Copy selected preview text (Ctrl+C), or full preview content",
+                    "Copy preview content to clipboard",
                     tooltip::Position::Top,
                     p,
                 ));
@@ -516,32 +505,53 @@ impl GitFleetApp {
         }
 
         if self.bottom_mode == BottomViewMode::Edit {
-            header = header
-                .push(
-                    button(text("Open File…").size(type_scale::CAPTION))
-                        .padding([3, 8])
-                        .style(theme::subtle_btn(p))
-                        .on_press(Message::PickOpenIgnoredFile),
-                )
-                .push(
-                    button(text("Save As…").size(type_scale::CAPTION))
-                        .padding([3, 8])
-                        .style(theme::subtle_btn(p))
-                        .on_press(Message::PickSaveDocAs),
-                )
-                .push(
+            if self.graph_selection == crate::app::GraphSelection::WorkingTree {
+                header = header
+                    .push(
+                        button(text("Open File…").size(type_scale::CAPTION))
+                            .padding([3, 8])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::PickOpenIgnoredFile),
+                    )
+                    .push(
+                        button(text("Save As…").size(type_scale::CAPTION))
+                            .padding([3, 8])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::PickSaveDocAs),
+                    )
+                    .push(
+                        button(
+                            row![
+                                icons::save(13.0, Color::WHITE),
+                                text("Save (Ctrl+S)").size(type_scale::CAPTION)
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 9])
+                        .style(theme::primary_btn(p))
+                        .on_press_maybe(self.editor_dirty.then_some(Message::SaveDocument)),
+                    );
+            } else if let Some(rel) = self.active_file_path.clone() {
+                header = header.push(tip(
                     button(
                         row![
-                            icons::save(13.0, Color::WHITE),
-                            text("Save (Ctrl+S)").size(type_scale::CAPTION)
+                            icons::file_code(12.0, Color::WHITE),
+                            text("Edit Working Copy")
+                                .size(type_scale::CAPTION)
+                                .wrapping(text::Wrapping::None),
                         ]
                         .spacing(4)
                         .align_y(Alignment::Center),
                     )
                     .padding([3, 9])
                     .style(theme::primary_btn(p))
-                    .on_press_maybe(self.editor_dirty.then_some(Message::SaveDocument)),
-                );
+                    .on_press(Message::EditWorkingTreeCopy(rel)),
+                    "Switch to Working Tree and open the live disk file in the editor",
+                    tooltip::Position::Top,
+                    p,
+                ));
+            }
         }
 
         let body: Element<'_, Message> = match self.bottom_mode {
@@ -591,6 +601,15 @@ impl GitFleetApp {
     }
 
     pub(crate) fn view_file_preview(&self, p: Palette) -> Element<'_, Message> {
+        if self.doc_loading && matches!(self.preview_state, crate::preview::PreviewState::Empty) {
+            return container(
+                text("Loading file preview…")
+                    .size(type_scale::BODY)
+                    .color(p.text_muted),
+            )
+            .padding(12)
+            .into();
+        }
         render_file_preview(
             &self.preview_state,
             &self.preview_editor,
@@ -603,17 +622,74 @@ impl GitFleetApp {
     }
 
     pub(crate) fn view_file_editor(&self, p: Palette) -> Element<'_, Message> {
+        if self.graph_selection != crate::app::GraphSelection::WorkingTree {
+            if self.active_file_path.is_none() {
+                return container(
+                    text("Select a file from this commit to inspect its snapshot, or switch to Working Tree to edit files.")
+                        .size(type_scale::BODY)
+                        .color(p.text_muted),
+                )
+                .padding(10)
+                .into();
+            }
+            let rev_badge = match &self.graph_selection {
+                crate::app::GraphSelection::Commit(oid) => {
+                    format!("commit {}", &oid[..oid.len().min(8)])
+                }
+                crate::app::GraphSelection::Range { base, head } => format!(
+                    "{}..{}",
+                    &base[..base.len().min(8)],
+                    &head[..head.len().min(8)]
+                ),
+                crate::app::GraphSelection::Stash(idx) => format!("stash@{{{idx}}}"),
+                crate::app::GraphSelection::WorkingTree => "Working Tree".to_string(),
+            };
+            let banner = container(
+                row![
+                    icons::file_code(13.0, p.accent_fg),
+                    theme::clipped_line(
+                        text(format!(
+                            "Read-only snapshot ({rev_badge}) — historical commits cannot be modified in place."
+                        ))
+                        .size(type_scale::CAPTION)
+                        .color(p.text_secondary),
+                        Length::Fill,
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([5, 10])
+            .width(Length::Fill)
+            .style(theme::pill_box(p.fill_selected, p.accent_fg, p.border_subtle));
+
+            return column![banner, self.view_file_preview(p)]
+                .spacing(6)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
+
         if self.open_doc_id.is_none() {
             return container(
-                text("Select any file from 'All Files' or 'Changed' to edit it directly.")
-                    .size(type_scale::BODY)
-                    .color(p.text_muted),
+                text(if self.doc_loading {
+                    "Loading file…"
+                } else {
+                    "Select any file from 'All Files' or 'Changed' to edit it directly."
+                })
+                .size(type_scale::BODY)
+                .color(p.text_muted),
             )
             .padding(10)
             .into();
         }
+        let effective_lang = if self.editor_content.line_count() > 4_000 {
+            crate::syntax::CodeLanguage::PlainText
+        } else {
+            self.open_doc_language
+        };
         let hl_settings = crate::syntax::CodeHighlightSettings {
-            language: self.open_doc_language,
+            language: effective_lang,
             theme_mode: self.theme_mode,
             search_query: String::new(),
             search_options: gitfleet_search::SearchOptions::default(),
@@ -674,9 +750,29 @@ impl GitFleetApp {
             .into();
         }
 
-        let mut rows_col = column![].spacing(0);
-        let mut prev_oid = String::new();
-        for line in &self.blame_lines {
+        let total_lines = self.blame_lines.len();
+        let row_h = DIFF_LINE_H;
+        let total_h = total_lines as f32 * row_h;
+        let viewport_h = self.blame_scroll.viewport_h.max(600.0);
+        let first = (((self.blame_scroll.scroll_y - DIFF_OVERSCAN_PX).max(0.0) / row_h).floor()
+            as usize)
+            .min(total_lines);
+        let last = (((self.blame_scroll.scroll_y + viewport_h + DIFF_OVERSCAN_PX) / row_h).ceil()
+            as usize)
+            .min(total_lines)
+            .max(first);
+        let top_spacer = first as f32 * row_h;
+        let bottom_spacer = (total_h - last as f32 * row_h).max(0.0);
+
+        let mut rows_col = column![Space::with_height(Length::Fixed(top_spacer))].spacing(0);
+        let mut prev_oid = if first > 0 {
+            self.blame_lines[first - 1].oid.clone()
+        } else {
+            String::new()
+        };
+        let mut max_chars = 40usize;
+
+        for line in &self.blame_lines[first..last] {
             let is_new_group = line.oid != prev_oid;
             prev_oid.clone_from(&line.oid);
             let is_committed = !line.oid.chars().all(|c| c == '0');
@@ -703,7 +799,8 @@ impl GitFleetApp {
                     .wrapping(text::Wrapping::None),
             )
             .width(Length::Fixed(242.0))
-            .padding([2, 6])
+            .height(Length::Fixed(row_h))
+            .padding([0, 6])
             .style(theme::subtle_btn(p))
             .on_press_maybe(is_committed.then(|| Message::SelectCommit(line.oid.clone())));
 
@@ -725,25 +822,39 @@ impl GitFleetApp {
                     .color(p.text_muted)
                     .wrapping(text::Wrapping::None),
             )
-            .width(Length::Fixed(44.0))
-            .padding([2, 4]);
+            .width(Length::Fixed(48.0))
+            .height(Length::Fixed(row_h))
+            .align_y(iced::alignment::Vertical::Center)
+            .padding([0, 4]);
 
-            let code_el = text(theme::sanitize_code_line(&line.content))
+            let clean_code = theme::sanitize_code_line(&line.content);
+            max_chars = max_chars.max(clean_code.chars().count());
+            let code_el = text(clean_code)
                 .size(type_scale::CODE)
                 .font(theme::CODE_FONT)
                 .color(p.text_primary)
                 .wrapping(text::Wrapping::None);
 
-            if is_new_group && line.final_line > 1 {
-                rows_col = rows_col.push(horizontal_rule(1).style(theme::subtle_rule(p)));
-            }
-            rows_col = rows_col.push(
+            let row_el = container(
                 row![gutter_el, ln_el, code_el]
                     .spacing(6)
+                    .height(Length::Fixed(row_h))
                     .align_y(Alignment::Center),
-            );
-        }
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(row_h));
 
-        crate::views::slim_scroll_h(rows_col, 680.0, p)
+            rows_col = rows_col.push(row_el);
+        }
+        rows_col = rows_col.push(Space::with_height(Length::Fixed(bottom_spacer)));
+
+        let min_w = (max_chars as f32 * 7.8 + 320.0).clamp(680.0, 3200.0);
+        theme::responsive_hscroll_synced(
+            rows_col,
+            min_w,
+            self.blame_scroll.id.clone(),
+            Message::BlameScrolled,
+            p,
+        )
     }
 }

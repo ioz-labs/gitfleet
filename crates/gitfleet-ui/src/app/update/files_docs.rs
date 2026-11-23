@@ -55,6 +55,11 @@ impl GitFleetApp {
                 if let Some(first) = self.active_changed_files().into_iter().next() {
                     return self.update(Message::SelectChangedFile(first));
                 }
+                if !self.editor_dirty {
+                    self.open_doc_loaded_target = None;
+                    self.preview_state = preview::PreviewState::Empty;
+                    self.preview_hydrated = false;
+                }
                 Task::none()
             }
             Message::SelectCommit(oid) => {
@@ -78,6 +83,7 @@ impl GitFleetApp {
                     }
                 }
                 self.last_file_click = None;
+                self.doc_request_id = self.doc_request_id.wrapping_add(1);
                 self.graph_selection = GraphSelection::Commit(oid.clone());
                 self.selected_dir_filter = None;
                 self.selected_changed_file = None;
@@ -370,7 +376,9 @@ impl GitFleetApp {
                     self.keyboard_modifiers.command(),
                 );
                 self.selected_changed_file = Some(file.clone());
-                let doc_task = self.open_file_for_preview_and_edit_async(&file.path);
+                self.active_file_path = Some(file.path.clone());
+                self.open_doc_language =
+                    crate::syntax::CodeLanguage::from_path(std::path::Path::new(&file.path));
 
                 let is_img = is_image_diff_path(&file.path);
                 let is_raster = is_raster_image_path(&file.path);
@@ -423,15 +431,56 @@ impl GitFleetApp {
                     }
                 }
 
+                let target_already_loaded = self
+                    .open_doc_loaded_target
+                    .as_ref()
+                    .is_some_and(|(sel, p)| sel == &self.graph_selection && p == &file.path);
+                let in_preview_or_edit = matches!(
+                    self.bottom_mode,
+                    BottomViewMode::Preview | BottomViewMode::Edit
+                );
+                let needs_doc_now = self.graph_selection == GraphSelection::WorkingTree
+                    || in_preview_or_edit
+                    || self.bottom_mode == BottomViewMode::ResolveConflicts
+                    || is_conflict;
+                let needs_diff_now = matches!(
+                    self.bottom_mode,
+                    BottomViewMode::UnifiedDiff
+                        | BottomViewMode::SideBySideDiff
+                        | BottomViewMode::ImageDiff
+                        | BottomViewMode::CsvDiff
+                );
+
+                let doc_task = if needs_doc_now && !target_already_loaded {
+                    self.load_doc_context_for_selection_async(&file.path, Some(file.kind))
+                } else if self.bottom_mode == BottomViewMode::Blame {
+                    self.load_blame_task(file.path.clone())
+                } else {
+                    Task::none()
+                };
+
                 let Some(repo) = self.current_repo() else {
                     return doc_task;
                 };
 
                 match &self.graph_selection {
-                    GraphSelection::WorkingTree => Task::batch([
-                        doc_task,
-                        self.load_working_file_diff_tasks(repo.path.clone(), &file, req_id),
-                    ]),
+                    GraphSelection::WorkingTree => {
+                        if !needs_diff_now {
+                            self.clear_diff_parsed_and_cache();
+                            self.diff_is_working_file = true;
+                            self.diff_is_staged = file.staged;
+                            self.diff_title = if file.staged {
+                                format!("{} (Staged)", file.path)
+                            } else {
+                                file.path.clone()
+                            };
+                            return doc_task;
+                        }
+                        Task::batch([
+                            doc_task,
+                            self.load_working_file_diff_tasks(repo.path.clone(), &file, req_id),
+                        ])
+                    }
                     GraphSelection::Commit(oid) => {
                         self.diff_is_working_file = false;
                         self.diff_is_staged = false;
@@ -442,6 +491,10 @@ impl GitFleetApp {
                             &oid[..oid.len().min(8)]
                         );
                         self.diff_title = title.clone();
+                        if !needs_diff_now {
+                            self.clear_diff_parsed_and_cache();
+                            return doc_task;
+                        }
                         let mut tasks = vec![doc_task];
 
                         if !is_raster {
@@ -574,6 +627,10 @@ impl GitFleetApp {
                         let h_short = &head[..head.len().min(8)];
                         let title = format!("{} ({b_short} .. {h_short})", file.path);
                         self.diff_title = title.clone();
+                        if !needs_diff_now {
+                            self.clear_diff_parsed_and_cache();
+                            return doc_task;
+                        }
                         let mut tasks = vec![doc_task];
 
                         if !is_raster {
@@ -706,6 +763,10 @@ impl GitFleetApp {
                         self.diff_is_staged = false;
                         let title = format!("{} @ stash@{{{index}}}", file.path);
                         self.diff_title = title.clone();
+                        if !needs_diff_now {
+                            self.clear_diff_parsed_and_cache();
+                            return doc_task;
+                        }
                         let svc = self.service.clone();
                         let repo_path = repo.path.clone();
                         let fpath = file.path.clone();
@@ -795,6 +856,8 @@ impl GitFleetApp {
                                 self.selected_changed_file = None;
                                 self.selected_changed_files.clear();
                                 self.file_selection_anchor = None;
+                                self.doc_loading = false;
+                                self.open_doc_loaded_target = None;
                                 self.open_doc_raw_text = None;
                                 self.open_doc_id = None;
                                 self.open_doc_version = None;
@@ -1383,13 +1446,41 @@ impl GitFleetApp {
                     return Task::none();
                 }
                 if matches!(mode, BottomViewMode::Edit | BottomViewMode::Preview) {
-                    if mode == BottomViewMode::Preview {
-                        self.ensure_preview_hydrated();
-                    } else {
-                        self.ensure_editor_hydrated();
+                    let Some(rel) = self.active_file_path.clone() else {
+                        return Task::none();
+                    };
+                    let already_loaded = self
+                        .open_doc_loaded_target
+                        .as_ref()
+                        .is_some_and(|(sel, p)| sel == &self.graph_selection && p == &rel);
+                    if already_loaded {
+                        if mode == BottomViewMode::Edit
+                            && self.graph_selection == GraphSelection::WorkingTree
+                        {
+                            self.ensure_editor_hydrated();
+                        }
+                        return Task::none();
                     }
-                    if let Some(rel) = self.active_file_path.clone() {
-                        self.reload_file_for_preview_and_edit_if_changed(&rel);
+                    let kind = self
+                        .selected_changed_file
+                        .as_ref()
+                        .filter(|f| f.path == rel)
+                        .map(|f| f.kind);
+                    return self.load_doc_context_for_selection_async(&rel, kind);
+                }
+                let missing_diff = match mode {
+                    BottomViewMode::UnifiedDiff | BottomViewMode::SideBySideDiff => {
+                        self.diff_parsed_path.as_deref() != self.active_file_path.as_deref()
+                    }
+                    BottomViewMode::ImageDiff => self.diff_image.is_none(),
+                    BottomViewMode::CsvDiff => self.diff_csv.is_none(),
+                    _ => false,
+                };
+                if missing_diff {
+                    if let Some(changed) = self.selected_changed_file.clone() {
+                        return self.update(Message::SelectChangedFile(changed));
+                    } else if let Some(rel) = self.active_file_path.clone() {
+                        return self.update(Message::SelectRepoFile(rel));
                     }
                 }
                 Task::none()
@@ -1398,6 +1489,7 @@ impl GitFleetApp {
                 if req_id == self.blame_request_id {
                     self.blame_loading = false;
                     self.blame_file_path = Some(path);
+                    self.blame_scroll.reset_offsets();
                     match res {
                         Ok(lines) => {
                             self.blame_lines = lines;
@@ -1408,6 +1500,7 @@ impl GitFleetApp {
                             self.blame_error = Some(e);
                         }
                     }
+                    return self.blame_scroll.reset();
                 }
                 Task::none()
             }
@@ -1765,64 +1858,93 @@ impl GitFleetApp {
                 if payload.req_id != self.doc_request_id {
                     return Task::none();
                 }
-                match payload.doc {
-                    Some(cap) => {
-                        self.open_doc_id = Some(cap.document_id);
-                        self.open_doc_version = Some(cap.version);
-                        self.open_doc_path = Some(payload.full_path);
-                        self.open_doc_line_ending = cap.line_ending;
-                        self.open_doc_encoding = cap.encoding;
-                        self.open_doc_raw_text = Some(cap.content);
-                        self.editor_dirty = false;
-                        self.preview_hydrated = false;
-                        self.editor_hydrated = false;
+                self.doc_loading = false;
+                self.open_doc_loaded_target =
+                    Some((payload.selection.clone(), payload.rel_path.clone()));
+                self.preview_state = payload.prebuilt_preview.take();
+                self.preview_hydrated = true;
+                self.preview_raw_mode = false;
+                self.sync_preview_editor();
+
+                if payload.is_working_tree_doc {
+                    match payload.doc {
+                        Some(cap) => {
+                            let keep_warm_editor = self.open_doc_path.as_ref()
+                                == Some(&payload.full_path)
+                                && self.open_doc_version.as_deref() == Some(cap.version.as_str())
+                                && self.editor_hydrated
+                                && !self.editor_dirty;
+                            self.open_doc_id = Some(cap.document_id);
+                            self.open_doc_version = Some(cap.version);
+                            self.open_doc_path = Some(payload.full_path);
+                            self.open_doc_line_ending = cap.line_ending;
+                            self.open_doc_encoding = cap.encoding;
+                            self.open_doc_raw_text = Some(cap.content);
+                            if !keep_warm_editor {
+                                self.editor_dirty = false;
+                                self.editor_hydrated = false;
+                            }
+                        }
+                        None => {
+                            self.open_doc_id = None;
+                            self.open_doc_version = None;
+                            self.open_doc_path = None;
+                            self.open_doc_raw_text = None;
+                            self.open_doc_line_ending = gitfleet_docs::LineEnding::Lf;
+                            self.open_doc_encoding = gitfleet_docs::FileEncoding::Utf8;
+                            self.editor_dirty = false;
+                            self.editor_hydrated = false;
+                        }
                     }
-                    None => {
-                        self.open_doc_id = None;
-                        self.open_doc_version = None;
-                        self.open_doc_path = None;
-                        self.open_doc_raw_text = None;
-                        self.open_doc_line_ending = gitfleet_docs::LineEnding::Lf;
-                        self.open_doc_encoding = gitfleet_docs::FileEncoding::Utf8;
-                        self.editor_dirty = false;
-                        self.preview_hydrated = false;
-                        self.editor_hydrated = false;
+
+                    if let Some(parsed) = payload.conflict_parsed {
+                        let has_hunks = parsed.conflict_count() > 0;
+                        self.conflict_file_path = Some(payload.rel_path);
+                        self.conflict_parsed = parsed;
+                        self.conflict_active_hunk = has_hunks.then_some(0);
+                        self.conflict_editing_hunk = None;
+                        self.conflict_hunk_editor = text_editor::Content::new();
+                        self.conflict_expanded_segments.clear();
+                        if self.graph_selection == GraphSelection::WorkingTree && has_hunks {
+                            self.bottom_mode = BottomViewMode::ResolveConflicts;
+                        }
+                    } else {
+                        self.clear_conflict_state();
+                        if self.bottom_mode == BottomViewMode::ResolveConflicts {
+                            self.bottom_mode = self.last_text_diff_mode;
+                        }
                     }
+
+                    if self.bottom_mode == BottomViewMode::Edit
+                        && self.graph_selection == GraphSelection::WorkingTree
+                    {
+                        self.ensure_editor_hydrated();
+                    }
+                    if let Some(target_line) = self.pending_jump_line.take() {
+                        let row_0 = target_line.saturating_sub(1);
+                        let prev_cfg = crate::views::code_editor::NumberedEditorConfig::preview(
+                            crate::theme::type_scale::CODE,
+                            false,
+                        );
+                        let edit_cfg = crate::views::code_editor::NumberedEditorConfig::host_edit();
+                        return Task::batch([
+                            self.preview_scroll.scroll_to_visual_row_centered(row_0, prev_cfg),
+                            self.editor_scroll.scroll_to_visual_row_centered(row_0, edit_cfg),
+                        ]);
+                    }
+                    return Task::batch([self.preview_scroll.reset(), self.editor_scroll.reset()]);
                 }
 
-                if let Some(parsed) = payload.conflict_parsed {
-                    let has_hunks = parsed.conflict_count() > 0;
-                    self.conflict_file_path = Some(payload.rel_path);
-                    self.conflict_parsed = parsed;
-                    self.conflict_active_hunk = has_hunks.then_some(0);
-                    self.conflict_editing_hunk = None;
-                    self.conflict_hunk_editor = text_editor::Content::new();
-                    self.conflict_expanded_segments.clear();
-                    if self.graph_selection == GraphSelection::WorkingTree && has_hunks {
-                        self.bottom_mode = BottomViewMode::ResolveConflicts;
-                    }
-                } else if self.bottom_mode == BottomViewMode::ResolveConflicts {
-                    self.bottom_mode = self.last_text_diff_mode;
-                }
-
-                if self.bottom_mode == BottomViewMode::Preview {
-                    self.ensure_preview_hydrated();
-                } else if self.bottom_mode == BottomViewMode::Edit {
-                    self.ensure_editor_hydrated();
-                }
+                // Historical commit / range / stash snapshot: never overwrite live Working Tree editor buffer
                 if let Some(target_line) = self.pending_jump_line.take() {
                     let row_0 = target_line.saturating_sub(1);
                     let prev_cfg = crate::views::code_editor::NumberedEditorConfig::preview(
                         crate::theme::type_scale::CODE,
                         false,
                     );
-                    let edit_cfg = crate::views::code_editor::NumberedEditorConfig::host_edit();
-                    return Task::batch([
-                        self.preview_scroll.scroll_to_visual_row_centered(row_0, prev_cfg),
-                        self.editor_scroll.scroll_to_visual_row_centered(row_0, edit_cfg),
-                    ]);
+                    return self.preview_scroll.scroll_to_visual_row_centered(row_0, prev_cfg);
                 }
-                Task::batch([self.preview_scroll.reset(), self.editor_scroll.reset()])
+                self.preview_scroll.reset()
             }
             Message::ImageDiffLoaded(req_id, title, data) => {
                 if req_id == self.diff_request_id {
@@ -1962,6 +2084,26 @@ impl GitFleetApp {
                 self.editor_scroll.on_scroll(vp);
                 Task::none()
             }
+            Message::BlameScrolled(vp) => {
+                self.blame_scroll.on_scroll(vp);
+                Task::none()
+            }
+            Message::EditWorkingTreeCopy(rel_path) => {
+                self.last_file_click = None;
+                self.graph_selection = GraphSelection::WorkingTree;
+                self.selected_dir_filter = None;
+                self.selected_changed_files.clear();
+                self.file_selection_anchor = None;
+                self.bottom_mode = BottomViewMode::Edit;
+                if let Some(dirty_match) = self
+                    .active_changed_files()
+                    .into_iter()
+                    .find(|f| f.path == rel_path)
+                {
+                    return self.update(Message::SelectChangedFile(dirty_match));
+                }
+                self.update(Message::SelectRepoFile(rel_path))
+            }
             Message::SaveDocument => {
                 if self.bottom_mode != BottomViewMode::Edit || !self.editor_dirty {
                     return Task::none();
@@ -2079,6 +2221,7 @@ impl GitFleetApp {
             Message::SetDocLanguage(lang) => {
                 self.show_syntax_modal = false;
                 self.open_doc_language = lang;
+                self.preview_state.set_code_language(lang);
                 self.rebuild_diff_cache();
                 self.toast_is_error = false;
                 self.toast_message = format!("Syntax highlight: {}", lang.label());
@@ -2528,10 +2671,27 @@ impl GitFleetApp {
         if let Some(sel) = self.selected_changed_file.clone() {
             if let Some(fresh) = find_in_status(self, &sel.path, Some(sel.staged)) {
                 self.selected_changed_file = Some(fresh.clone());
-                self.reload_file_for_preview_and_edit_if_changed(&fresh.path);
-                self.diff_request_id = self.diff_request_id.wrapping_add(1);
-                let req_id = self.diff_request_id;
-                return self.load_working_file_diff_tasks(repo.path, &fresh, req_id);
+                let doc_task = if self.editor_dirty {
+                    Task::none()
+                } else {
+                    self.load_doc_context_for_selection_async(&fresh.path, Some(fresh.kind))
+                };
+                if matches!(
+                    self.bottom_mode,
+                    BottomViewMode::UnifiedDiff
+                        | BottomViewMode::SideBySideDiff
+                        | BottomViewMode::ImageDiff
+                        | BottomViewMode::CsvDiff
+                ) {
+                    self.diff_request_id = self.diff_request_id.wrapping_add(1);
+                    let req_id = self.diff_request_id;
+                    return Task::batch([
+                        doc_task,
+                        self.load_working_file_diff_tasks(repo.path, &fresh, req_id),
+                    ]);
+                }
+                self.clear_diff_parsed_and_cache();
+                return doc_task;
             } else {
                 // Selected changed file is no longer dirty (discarded, committed, or reverted)
                 self.clear_active_diff_viewer();
@@ -2540,13 +2700,30 @@ impl GitFleetApp {
         }
 
         if let Some(rel) = self.active_file_path.clone() {
-            self.reload_file_for_preview_and_edit_if_changed(&rel);
+            let doc_task = if self.editor_dirty {
+                Task::none()
+            } else {
+                self.load_doc_context_for_selection_async(&rel, None)
+            };
             if let Some(fresh) = find_in_status(self, &rel, None) {
                 self.selected_changed_file = Some(fresh.clone());
-                self.diff_request_id = self.diff_request_id.wrapping_add(1);
-                let req_id = self.diff_request_id;
-                return self.load_working_file_diff_tasks(repo.path, &fresh, req_id);
+                if matches!(
+                    self.bottom_mode,
+                    BottomViewMode::UnifiedDiff
+                        | BottomViewMode::SideBySideDiff
+                        | BottomViewMode::ImageDiff
+                        | BottomViewMode::CsvDiff
+                ) {
+                    self.diff_request_id = self.diff_request_id.wrapping_add(1);
+                    let req_id = self.diff_request_id;
+                    return Task::batch([
+                        doc_task,
+                        self.load_working_file_diff_tasks(repo.path, &fresh, req_id),
+                    ]);
+                }
+                self.clear_diff_parsed_and_cache();
             }
+            return doc_task;
         }
 
         Task::none()

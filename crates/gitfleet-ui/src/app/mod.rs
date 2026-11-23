@@ -157,6 +157,8 @@ pub(crate) struct GitFleetApp {
     pub(crate) diff_last_click: Option<(Instant, DiffSelectionSide, usize, usize, u8)>,
 
     pub(crate) doc_request_id: u64,
+    pub(crate) doc_loading: bool,
+    pub(crate) open_doc_loaded_target: Option<(GraphSelection, String)>,
     pub(crate) open_doc_raw_text: Option<String>,
     pub(crate) pending_jump_line: Option<usize>,
     pub(crate) preview_hydrated: bool,
@@ -206,6 +208,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) blame_request_id: u64,
     pub(crate) blame_file_path: Option<String>,
     pub(crate) blame_lines: Vec<BlameLine>,
+    pub(crate) blame_scroll: crate::views::code_editor::CodeScrollState,
     pub(crate) blame_loading: bool,
     pub(crate) blame_error: Option<String>,
 
@@ -527,6 +530,8 @@ impl GitFleetApp {
             diff_selection: None,
             diff_last_click: None,
             doc_request_id: 0,
+            doc_loading: false,
+            open_doc_loaded_target: None,
             open_doc_raw_text: None,
             pending_jump_line: None,
             preview_hydrated: false,
@@ -574,6 +579,7 @@ impl GitFleetApp {
             blame_request_id: 0,
             blame_file_path: None,
             blame_lines: Vec::new(),
+            blame_scroll: crate::views::code_editor::CodeScrollState::new(),
             blame_loading: false,
             blame_error: None,
             show_merge_modal: false,
@@ -1193,11 +1199,7 @@ impl GitFleetApp {
     }
 
     pub(crate) fn sync_preview_editor(&mut self) {
-        if let Some(txt) = self.preview_state.copyable_text() {
-            self.preview_editor = text_editor::Content::with_text(txt);
-        } else {
-            self.preview_editor = text_editor::Content::new();
-        }
+        self.preview_editor = text_editor::Content::new();
         self.preview_raw_mode = false;
     }
 
@@ -1242,8 +1244,11 @@ impl GitFleetApp {
                     .map(|rel| r.path.join(rel))
             })
         }) {
-            self.preview_state =
-                preview::PreviewState::from_file(&full_path, self.open_doc_raw_text.as_deref());
+            self.preview_state = preview::PreviewState::from_file_prewarmed(
+                &full_path,
+                self.open_doc_raw_text.as_deref(),
+                self.theme_mode,
+            );
             self.sync_preview_editor();
         } else {
             self.preview_state = preview::PreviewState::Empty;
@@ -1264,71 +1269,261 @@ impl GitFleetApp {
         self.editor_hydrated = true;
     }
 
-    /// Asynchronously loads file metadata/content & scans for conflict markers off the UI thread,
-    /// avoiding synchronous disk reads and `cosmic_text` editor/preview shaping when clicking
-    /// between files in Diff view.
-    pub(crate) fn open_file_for_preview_and_edit_async(&mut self, rel_path: &str) -> Task<Message> {
+    /// Asynchronously loads file content (either working-tree disk document OR historical git
+    /// commit/range/stash snapshot) and prebuilds + pre-highlights `PreviewState` off the UI thread.
+    pub(crate) fn load_doc_context_for_selection_async(
+        &mut self,
+        rel_path: &str,
+        file_kind: Option<gitfleet_git::FileChangeKind>,
+    ) -> Task<Message> {
         self.active_file_path = Some(rel_path.to_string());
         self.open_doc_language = CodeLanguage::from_path(std::path::Path::new(rel_path));
-        self.editor_dirty = false;
-        self.open_doc_raw_text = None;
-        self.preview_hydrated = false;
-        self.editor_hydrated = false;
-        self.clear_conflict_state();
 
         let Some(repo) = self.current_repo() else {
-            self.open_doc_id = None;
-            self.open_doc_version = None;
-            self.open_doc_path = None;
+            self.doc_loading = false;
+            self.open_doc_loaded_target = None;
+            if self.graph_selection == GraphSelection::WorkingTree && !self.editor_dirty {
+                self.open_doc_id = None;
+                self.open_doc_version = None;
+                self.open_doc_path = None;
+            }
             return Task::none();
         };
 
+        let selection = self.graph_selection.clone();
+        let full_path = repo.path.join(rel_path);
+
+        // Preserve unsaved edits in Working Tree
+        if selection == GraphSelection::WorkingTree
+            && self.editor_dirty
+            && self.open_doc_path.as_ref() == Some(&full_path)
+        {
+            return Task::none();
+        }
+
         self.doc_request_id = self.doc_request_id.wrapping_add(1);
         let req_id = self.doc_request_id;
-        let full_path = repo.path.join(rel_path);
+        self.doc_loading = true;
         let rel = rel_path.to_string();
-        let is_git_conflicted = self
-            .active_status()
-            .is_some_and(|st| st.conflict_files.iter().any(|f| f.path == rel_path));
+        let theme_mode = self.theme_mode;
         let svc = self.service.clone();
 
-        let doc_task = Task::perform(
-            async move {
-                let payload = tokio::task::spawn_blocking(move || {
-                    let doc = svc.docs.open_document(&full_path).ok();
-                    let conflict_parsed = if let Some(cap) = &doc {
-                        if is_git_conflicted || has_conflict_markers(&cap.content) {
-                            Some(ParsedConflictFile::parse(&cap.content))
+        let doc_task = match &selection {
+            GraphSelection::WorkingTree => {
+                let is_git_conflicted = self
+                    .active_status()
+                    .is_some_and(|st| st.conflict_files.iter().any(|f| f.path == rel_path));
+                let sel_clone = selection.clone();
+                Task::perform(
+                    async move {
+                        let payload = tokio::task::spawn_blocking(move || {
+                            let doc = svc.docs.open_document(&full_path).ok();
+                            let prebuilt = preview::PreviewState::from_file_prewarmed(
+                                &full_path,
+                                doc.as_ref().map(|c| c.content.as_str()),
+                                theme_mode,
+                            );
+                            let conflict_parsed = if let Some(cap) = &doc {
+                                if is_git_conflicted || has_conflict_markers(&cap.content) {
+                                    Some(ParsedConflictFile::parse(&cap.content))
+                                } else {
+                                    None
+                                }
+                            } else if is_git_conflicted {
+                                std::fs::read_to_string(&full_path)
+                                    .ok()
+                                    .map(|raw| ParsedConflictFile::parse(&raw))
+                            } else {
+                                None
+                            };
+                            crate::app::message::DocContextPayload {
+                                req_id,
+                                selection: sel_clone,
+                                is_working_tree_doc: true,
+                                rel_path: rel,
+                                full_path,
+                                doc,
+                                prebuilt_preview: preview::PrebuiltPreviewSlot::new(prebuilt),
+                                conflict_parsed,
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|_| crate::app::message::DocContextPayload {
+                            req_id,
+                            selection: GraphSelection::WorkingTree,
+                            is_working_tree_doc: true,
+                            rel_path: String::new(),
+                            full_path: PathBuf::new(),
+                            doc: None,
+                            prebuilt_preview: preview::PrebuiltPreviewSlot::empty(),
+                            conflict_parsed: None,
+                        });
+                        Box::new(payload)
+                    },
+                    Message::DocContextLoaded,
+                )
+            }
+            GraphSelection::Commit(oid) => {
+                let rev_spec = oid.clone();
+                let rev_label = format!("commit {}", &oid[..oid.len().min(8)]);
+                let repo_path = repo.path.clone();
+                let sel_clone = selection.clone();
+                let is_deleted = file_kind == Some(gitfleet_git::FileChangeKind::Deleted);
+                Task::perform(
+                    async move {
+                        let raw_opt = if is_deleted {
+                            Some(format!(
+                                "// '{rel}' was deleted in {rev_label}.\n// Switch to Unified or Side-by-Side Diff to inspect the removed lines."
+                            ))
                         } else {
-                            None
-                        }
-                    } else if is_git_conflicted {
-                        std::fs::read_to_string(&full_path)
-                            .ok()
-                            .map(|raw| ParsedConflictFile::parse(&raw))
-                    } else {
-                        None
-                    };
-                    crate::app::message::DocContextPayload {
-                        req_id,
-                        rel_path: rel,
-                        full_path,
-                        doc,
-                        conflict_parsed,
-                    }
-                })
-                .await
-                .unwrap_or_else(|_| crate::app::message::DocContextPayload {
-                    req_id,
-                    rel_path: String::new(),
-                    full_path: PathBuf::new(),
-                    doc: None,
-                    conflict_parsed: None,
-                });
-                Box::new(payload)
-            },
-            Message::DocContextLoaded,
-        );
+                            svc.git
+                                .read_revision_file_text(&repo_path, &rev_spec, &rel)
+                                .await
+                                .ok()
+                                .flatten()
+                        };
+                        let sel_for_err = sel_clone.clone();
+                        let payload = tokio::task::spawn_blocking(move || {
+                            let prebuilt = preview::PreviewState::from_file_prewarmed(
+                                &full_path,
+                                raw_opt.as_deref(),
+                                theme_mode,
+                            );
+                            crate::app::message::DocContextPayload {
+                                req_id,
+                                selection: sel_clone,
+                                is_working_tree_doc: false,
+                                rel_path: rel,
+                                full_path,
+                                doc: None,
+                                prebuilt_preview: preview::PrebuiltPreviewSlot::new(prebuilt),
+                                conflict_parsed: None,
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|_| crate::app::message::DocContextPayload {
+                            req_id,
+                            selection: sel_for_err,
+                            is_working_tree_doc: false,
+                            rel_path: String::new(),
+                            full_path: PathBuf::new(),
+                            doc: None,
+                            prebuilt_preview: preview::PrebuiltPreviewSlot::empty(),
+                            conflict_parsed: None,
+                        });
+                        Box::new(payload)
+                    },
+                    Message::DocContextLoaded,
+                )
+            }
+            GraphSelection::Range { head, .. } => {
+                let rev_spec = head.clone();
+                let rev_label = format!("commit {}", &head[..head.len().min(8)]);
+                let repo_path = repo.path.clone();
+                let sel_clone = selection.clone();
+                let is_deleted = file_kind == Some(gitfleet_git::FileChangeKind::Deleted);
+                Task::perform(
+                    async move {
+                        let raw_opt = if is_deleted {
+                            Some(format!(
+                                "// '{rel}' was deleted in {rev_label}.\n// Switch to Unified or Side-by-Side Diff to inspect the removed lines."
+                            ))
+                        } else {
+                            svc.git
+                                .read_revision_file_text(&repo_path, &rev_spec, &rel)
+                                .await
+                                .ok()
+                                .flatten()
+                        };
+                        let sel_for_err = sel_clone.clone();
+                        let payload = tokio::task::spawn_blocking(move || {
+                            let prebuilt = preview::PreviewState::from_file_prewarmed(
+                                &full_path,
+                                raw_opt.as_deref(),
+                                theme_mode,
+                            );
+                            crate::app::message::DocContextPayload {
+                                req_id,
+                                selection: sel_clone,
+                                is_working_tree_doc: false,
+                                rel_path: rel,
+                                full_path,
+                                doc: None,
+                                prebuilt_preview: preview::PrebuiltPreviewSlot::new(prebuilt),
+                                conflict_parsed: None,
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|_| crate::app::message::DocContextPayload {
+                            req_id,
+                            selection: sel_for_err,
+                            is_working_tree_doc: false,
+                            rel_path: String::new(),
+                            full_path: PathBuf::new(),
+                            doc: None,
+                            prebuilt_preview: preview::PrebuiltPreviewSlot::empty(),
+                            conflict_parsed: None,
+                        });
+                        Box::new(payload)
+                    },
+                    Message::DocContextLoaded,
+                )
+            }
+            GraphSelection::Stash(index) => {
+                let rev_spec = format!("stash@{{{index}}}");
+                let rev_label = rev_spec.clone();
+                let repo_path = repo.path.clone();
+                let sel_clone = selection.clone();
+                let is_deleted = file_kind == Some(gitfleet_git::FileChangeKind::Deleted);
+                Task::perform(
+                    async move {
+                        let raw_opt = if is_deleted {
+                            Some(format!(
+                                "// '{rel}' was deleted in {rev_label}.\n// Switch to Unified or Side-by-Side Diff to inspect the removed lines."
+                            ))
+                        } else {
+                            svc.git
+                                .read_revision_file_text(&repo_path, &rev_spec, &rel)
+                                .await
+                                .ok()
+                                .flatten()
+                        };
+                        let sel_for_err = sel_clone.clone();
+                        let payload = tokio::task::spawn_blocking(move || {
+                            let prebuilt = preview::PreviewState::from_file_prewarmed(
+                                &full_path,
+                                raw_opt.as_deref(),
+                                theme_mode,
+                            );
+                            crate::app::message::DocContextPayload {
+                                req_id,
+                                selection: sel_clone,
+                                is_working_tree_doc: false,
+                                rel_path: rel,
+                                full_path,
+                                doc: None,
+                                prebuilt_preview: preview::PrebuiltPreviewSlot::new(prebuilt),
+                                conflict_parsed: None,
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|_| crate::app::message::DocContextPayload {
+                            req_id,
+                            selection: sel_for_err,
+                            is_working_tree_doc: false,
+                            rel_path: String::new(),
+                            full_path: PathBuf::new(),
+                            doc: None,
+                            prebuilt_preview: preview::PrebuiltPreviewSlot::empty(),
+                            conflict_parsed: None,
+                        });
+                        Box::new(payload)
+                    },
+                    Message::DocContextLoaded,
+                )
+            }
+        };
+
         if self.bottom_mode == BottomViewMode::Blame {
             let blame_task = self.load_blame_task(rel_path.to_string());
             Task::batch([doc_task, blame_task])
@@ -1337,61 +1532,8 @@ impl GitFleetApp {
         }
     }
 
-    pub(crate) fn reload_file_for_preview_and_edit_if_changed(&mut self, rel_path: &str) {
-        if self.editor_dirty {
-            return;
-        }
-        let Some(repo) = self.current_repo() else {
-            return;
-        };
-        let full_path = repo.path.join(rel_path);
-        let same_path = self.active_file_path.as_deref() == Some(rel_path);
-        match self.service.docs.open_document(&full_path) {
-            Ok(cap) => {
-                if same_path
-                    && self.open_doc_version.as_deref() == Some(cap.version.as_str())
-                    && self.open_doc_raw_text.is_some()
-                {
-                    if self.bottom_mode == BottomViewMode::Preview {
-                        self.ensure_preview_hydrated();
-                    } else if self.bottom_mode == BottomViewMode::Edit {
-                        self.ensure_editor_hydrated();
-                    }
-                    return;
-                }
-                self.active_file_path = Some(rel_path.to_string());
-                self.open_doc_id = Some(cap.document_id);
-                self.open_doc_version = Some(cap.version);
-                self.open_doc_path = Some(full_path);
-                self.open_doc_line_ending = cap.line_ending;
-                self.open_doc_encoding = cap.encoding;
-                self.open_doc_raw_text = Some(cap.content);
-                self.editor_dirty = false;
-                self.preview_hydrated = false;
-                self.editor_hydrated = false;
-                if self.bottom_mode == BottomViewMode::Preview {
-                    self.ensure_preview_hydrated();
-                } else if self.bottom_mode == BottomViewMode::Edit {
-                    self.ensure_editor_hydrated();
-                }
-            }
-            Err(_) => {
-                self.active_file_path = Some(rel_path.to_string());
-                self.open_doc_id = None;
-                self.open_doc_version = None;
-                self.open_doc_path = None;
-                self.open_doc_raw_text = None;
-                self.open_doc_line_ending = LineEnding::Lf;
-                self.open_doc_encoding = FileEncoding::Utf8;
-                self.editor_dirty = false;
-                self.preview_hydrated = false;
-                self.editor_hydrated = false;
-                if self.bottom_mode == BottomViewMode::Preview {
-                    self.ensure_preview_hydrated();
-                }
-            }
-        }
-        self.load_conflict_state_for_file(rel_path);
+    pub(crate) fn open_file_for_preview_and_edit_async(&mut self, rel_path: &str) -> Task<Message> {
+        self.load_doc_context_for_selection_async(rel_path, None)
     }
 
     /// Clears the active diff/preview viewer when the currently selected working-tree file is no
@@ -1399,6 +1541,7 @@ impl GitFleetApp {
     pub(crate) fn clear_active_diff_viewer(&mut self) {
         self.diff_request_id = self.diff_request_id.wrapping_add(1);
         self.doc_request_id = self.doc_request_id.wrapping_add(1);
+        self.doc_loading = false;
         self.selected_changed_file = None;
         self.diff_is_working_file = false;
         self.diff_is_staged = false;
@@ -1408,6 +1551,7 @@ impl GitFleetApp {
         self.clear_conflict_state();
         if !self.editor_dirty {
             self.active_file_path = None;
+            self.open_doc_loaded_target = None;
             self.diff_title = "No file selected".into();
             self.open_doc_raw_text = None;
             self.preview_hydrated = false;
@@ -1417,6 +1561,7 @@ impl GitFleetApp {
             self.preview_scroll.reset_offsets();
             self.editor_content = text_editor::Content::new();
             self.editor_scroll.reset_offsets();
+            self.blame_scroll.reset_offsets();
             self.open_doc_id = None;
             self.open_doc_version = None;
             self.open_doc_path = None;
@@ -1874,5 +2019,58 @@ mod tests {
             });
             let _ = app.view_host(p);
         }
+        app.context_menu = None;
+
+        // Exercise populated virtualized Preview, WorkingTree Edit, Commit Snapshot Edit, and Blame
+        let mut big_rs = String::with_capacity(120_000);
+        for i in 1..=3_000 {
+            big_rs.push_str(&format!(
+                "pub fn compute_row_{i}(x: usize) -> usize {{ x.saturating_add({i}) }}\n"
+            ));
+        }
+        app.active_file_path = Some("src/engine.rs".into());
+        app.open_doc_language = CodeLanguage::Rust;
+        app.preview_state = preview::PreviewState::from_file_prewarmed(
+            std::path::Path::new("src/engine.rs"),
+            Some(&big_rs),
+            app.theme_mode,
+        );
+        app.preview_hydrated = true;
+        app.open_doc_id = Some(DocumentId("test-doc-1".into()));
+        app.open_doc_raw_text = Some(big_rs);
+        app.ensure_editor_hydrated();
+        app.blame_lines = (1..=1_000)
+            .map(|ln| BlameLine {
+                oid: "8e930e2abcdef1234567890abcdef1234567890a".into(),
+                short_oid: "8e930e2a".into(),
+                author: "Dev".into(),
+                date_short: "2026-11-24".into(),
+                summary: "perf: virtualize preview".into(),
+                final_line: ln,
+                content: format!("let v_{ln} = {ln};"),
+            })
+            .collect();
+
+        let t0 = Instant::now();
+        app.graph_selection = GraphSelection::WorkingTree;
+        for bmode in [
+            BottomViewMode::Preview,
+            BottomViewMode::Edit,
+            BottomViewMode::Blame,
+        ] {
+            app.bottom_mode = bmode;
+            let _ = app.view_host(p);
+        }
+
+        app.graph_selection = GraphSelection::Commit("8e930e2abcdef".into());
+        for bmode in [BottomViewMode::Preview, BottomViewMode::Edit] {
+            app.bottom_mode = bmode;
+            let _ = app.view_host(p);
+        }
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(250),
+            "5 full host frames on a 3,000-line file should build quickly, took {:?}",
+            t0.elapsed()
+        );
     }
 }

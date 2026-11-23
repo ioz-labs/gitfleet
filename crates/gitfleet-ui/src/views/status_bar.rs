@@ -206,7 +206,9 @@ impl GitFleetApp {
                 )
                 .padding([0, 4]),
             );
-            if self.open_doc_id.is_some() {
+            if self.graph_selection == crate::app::GraphSelection::WorkingTree
+                && self.open_doc_id.is_some()
+            {
                 let enc_color = if self.show_encoding_modal {
                     p.accent_fg
                 } else {

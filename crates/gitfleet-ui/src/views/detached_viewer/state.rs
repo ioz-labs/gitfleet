@@ -640,10 +640,8 @@ impl StudioTab {
     }
 
     pub(crate) fn sync_preview_editor(&mut self) {
-        self.preview_editor = match self.preview_state.copyable_text() {
-            Some(raw) => text_editor::Content::with_text(raw),
-            None => text_editor::Content::new(),
-        };
+        // Read-only Preview renders via virtualized `HighlightedPreviewDoc` (zero `cosmic_text::Editor` allocation).
+        self.preview_editor = text_editor::Content::new();
     }
 
     /// Lazily shapes `editor_content` only when entering Code/Edit view (avoids redundant cosmic_text work).

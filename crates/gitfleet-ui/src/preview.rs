@@ -1,10 +1,138 @@
+use crate::syntax::{CodeLanguage, DiffSyntaxHighlighter, TokenFormat};
 use crate::theme::{self, Palette, ThemeMode, type_scale};
 use iced::advanced::text::Highlighter as TextHighlighter;
 use iced::widget::{Space, column, container, horizontal_rule, image, markdown, row, svg, text};
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Length, alignment};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone)]
+pub struct HighlightedPreviewLine {
+    pub text: String,
+    pub spans: Vec<(Range<usize>, TokenFormat)>,
+}
+
+#[derive(Debug)]
+pub struct HighlightedPreviewDoc {
+    pub lines: Vec<HighlightedPreviewLine>,
+    pub max_chars: usize,
+    pub language: CodeLanguage,
+    pub theme_mode: ThemeMode,
+}
+
+impl HighlightedPreviewDoc {
+    pub fn build(raw: &str, language: CodeLanguage, theme_mode: ThemeMode) -> Arc<Self> {
+        let line_est = raw.bytes().filter(|&b| b == b'\n').count() + 1;
+        let mut lines = Vec::with_capacity(line_est.min(50_000));
+        let mut max_chars = 40usize;
+        let effective_lang = if line_est > 12_000 {
+            CodeLanguage::PlainText
+        } else {
+            language
+        };
+        let mut hl = DiffSyntaxHighlighter::new(effective_lang, theme_mode);
+        for raw_line in raw.lines().take(50_000) {
+            let clean = theme::sanitize_code_line(raw_line);
+            max_chars = max_chars.max(clean.chars().count());
+            let spans = if effective_lang == CodeLanguage::PlainText {
+                Vec::new()
+            } else {
+                hl.highlight_line(&clean)
+            };
+            lines.push(HighlightedPreviewLine { text: clean, spans });
+        }
+        if lines.is_empty() {
+            lines.push(HighlightedPreviewLine {
+                text: String::new(),
+                spans: Vec::new(),
+            });
+        }
+        Arc::new(Self {
+            lines,
+            max_chars,
+            language,
+            theme_mode,
+        })
+    }
+}
+
+pub struct PreviewCodeCache {
+    pub language: CodeLanguage,
+    inner: Mutex<Option<Arc<HighlightedPreviewDoc>>>,
+}
+
+impl PreviewCodeCache {
+    pub fn new(language: CodeLanguage) -> Self {
+        Self {
+            language,
+            inner: Mutex::new(None),
+        }
+    }
+
+    pub fn clone_with_language(&self) -> Self {
+        let cached = self.inner.lock().ok().and_then(|g| g.clone());
+        Self {
+            language: self.language,
+            inner: Mutex::new(cached),
+        }
+    }
+
+    pub fn get_or_build(&self, raw: &str, theme_mode: ThemeMode) -> Arc<HighlightedPreviewDoc> {
+        if let Ok(guard) = self.inner.lock()
+            && let Some(existing) = guard.as_ref()
+            && existing.theme_mode == theme_mode
+            && existing.language == self.language
+        {
+            return Arc::clone(existing);
+        }
+        let built = HighlightedPreviewDoc::build(raw, self.language, theme_mode);
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some(Arc::clone(&built));
+        }
+        built
+    }
+
+    pub fn set_language(&mut self, language: CodeLanguage) {
+        if self.language != language {
+            self.language = language;
+            if let Ok(mut guard) = self.inner.lock() {
+                *guard = None;
+            }
+        }
+    }
+}
+
+/// Zero-copy `Clone + Debug + Send + Sync` slot for moving an off-thread prebuilt `PreviewState`
+/// across Iced `Message` boundaries onto the UI state without re-parsing on the main thread.
+#[derive(Clone)]
+pub struct PrebuiltPreviewSlot(Arc<Mutex<Option<PreviewState>>>);
+
+impl std::fmt::Debug for PrebuiltPreviewSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrebuiltPreviewSlot(..)")
+    }
+}
+
+impl PrebuiltPreviewSlot {
+    pub fn new(state: PreviewState) -> Self {
+        Self(Arc::new(Mutex::new(Some(state))))
+    }
+
+    pub fn empty() -> Self {
+        Self::new(PreviewState::Empty)
+    }
+
+    pub fn take(&self) -> PreviewState {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+            .unwrap_or(PreviewState::Empty)
+    }
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewHighlightKind {
     Plain,
@@ -13,12 +141,14 @@ pub enum PreviewHighlightKind {
     Code,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviewHighlightSettings {
     pub kind: PreviewHighlightKind,
     pub theme_mode: ThemeMode,
 }
 
+#[allow(dead_code)]
 pub struct PreviewHighlighter {
     settings: PreviewHighlightSettings,
     current_line: usize,
@@ -66,6 +196,7 @@ impl TextHighlighter for PreviewHighlighter {
     }
 }
 
+#[allow(dead_code)]
 fn highlight_json_line(line: &str, p: Palette) -> Vec<(Range<usize>, Color)> {
     let mut out = Vec::new();
     let bytes = line.as_bytes();
@@ -123,6 +254,7 @@ fn highlight_json_line(line: &str, p: Palette) -> Vec<(Range<usize>, Color)> {
     out
 }
 
+#[allow(dead_code)]
 fn highlight_config_line(line: &str, p: Palette) -> Vec<(Range<usize>, Color)> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -155,6 +287,7 @@ fn highlight_config_line(line: &str, p: Palette) -> Vec<(Range<usize>, Color)> {
     }
 }
 
+#[allow(dead_code)]
 fn highlight_code_line(line: &str, p: Palette) -> Vec<(Range<usize>, Color)> {
     let trimmed = line.trim_start();
     if trimmed.starts_with("//")
@@ -265,6 +398,7 @@ pub enum PreviewState {
     Markdown {
         items: Vec<markdown::Item>,
         raw: String,
+        cache: PreviewCodeCache,
     },
     Image {
         path: PathBuf,
@@ -278,6 +412,7 @@ pub enum PreviewState {
         pretty: String,
         valid: bool,
         error: Option<String>,
+        cache: PreviewCodeCache,
     },
     Table {
         delimiter: char,
@@ -286,14 +421,17 @@ pub enum PreviewState {
         rows: Vec<Vec<String>>,
         total_rows: usize,
         raw: String,
+        cache: PreviewCodeCache,
     },
     Config {
         kind: &'static str,
         content: String,
+        cache: PreviewCodeCache,
     },
     Code {
         lang: String,
         content: String,
+        cache: PreviewCodeCache,
     },
     Binary {
         ext: String,
@@ -313,9 +451,10 @@ impl PreviewState {
     pub fn clone_snapshot(&self) -> Self {
         match self {
             Self::Empty => Self::Empty,
-            Self::Markdown { raw, .. } => Self::Markdown {
+            Self::Markdown { raw, cache, .. } => Self::Markdown {
                 items: markdown::parse(raw).collect(),
                 raw: raw.clone(),
+                cache: cache.clone_with_language(),
             },
             Self::Image { path, size_bytes } => Self::Image {
                 path: path.clone(),
@@ -329,10 +468,12 @@ impl PreviewState {
                 pretty,
                 valid,
                 error,
+                cache,
             } => Self::Json {
                 pretty: pretty.clone(),
                 valid: *valid,
                 error: error.clone(),
+                cache: cache.clone_with_language(),
             },
             Self::Table {
                 delimiter,
@@ -341,6 +482,7 @@ impl PreviewState {
                 rows,
                 total_rows,
                 raw,
+                cache,
             } => Self::Table {
                 delimiter: *delimiter,
                 headers: headers.clone(),
@@ -348,14 +490,25 @@ impl PreviewState {
                 rows: rows.clone(),
                 total_rows: *total_rows,
                 raw: raw.clone(),
+                cache: cache.clone_with_language(),
             },
-            Self::Config { kind, content } => Self::Config {
+            Self::Config {
+                kind,
+                content,
+                cache,
+            } => Self::Config {
                 kind,
                 content: content.clone(),
+                cache: cache.clone_with_language(),
             },
-            Self::Code { lang, content } => Self::Code {
+            Self::Code {
+                lang,
+                content,
+                cache,
+            } => Self::Code {
                 lang: lang.clone(),
                 content: content.clone(),
+                cache: cache.clone_with_language(),
             },
             Self::Binary { ext, size_bytes } => Self::Binary {
                 ext: ext.clone(),
@@ -363,8 +516,23 @@ impl PreviewState {
             },
         }
     }
+
+    /// Builds `PreviewState` and pre-tokenizes syntax highlighting on the caller thread (ideal inside `spawn_blocking`).
+    pub fn from_file_prewarmed(
+        full_path: &Path,
+        text_content: Option<&str>,
+        theme_mode: ThemeMode,
+    ) -> Self {
+        let state = Self::from_file(full_path, text_content);
+        let _ = state.highlighted_doc(theme_mode);
+        state
+    }
+
     pub fn from_file(full_path: &Path, text_content: Option<&str>) -> Self {
-        let size_bytes = std::fs::metadata(full_path).map(|m| m.len()).unwrap_or(0);
+        let code_lang = CodeLanguage::from_path(full_path);
+        let size_bytes = std::fs::metadata(full_path)
+            .map(|m| m.len())
+            .unwrap_or_else(|_| text_content.map(|s| s.len() as u64).unwrap_or(0));
         let file_name = full_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -405,11 +573,28 @@ impl PreviewState {
             return Self::Markdown {
                 items,
                 raw: raw.to_string(),
+                cache: PreviewCodeCache::new(CodeLanguage::Markdown),
             };
         }
 
-        // 4. JSON
+        // 4. JSON (fast zero-DOM streaming validation above 512 KB)
         if ext == "json" {
+            if raw.len() > 512 * 1024 {
+                return match serde_json::from_str::<serde::de::IgnoredAny>(raw) {
+                    Ok(_) => Self::Json {
+                        pretty: raw.to_string(),
+                        valid: true,
+                        error: None,
+                        cache: PreviewCodeCache::new(CodeLanguage::Json),
+                    },
+                    Err(e) => Self::Json {
+                        pretty: raw.to_string(),
+                        valid: false,
+                        error: Some(e.to_string()),
+                        cache: PreviewCodeCache::new(CodeLanguage::Json),
+                    },
+                };
+            }
             return match serde_json::from_str::<serde_json::Value>(raw) {
                 Ok(val) => {
                     let pretty =
@@ -418,12 +603,14 @@ impl PreviewState {
                         pretty,
                         valid: true,
                         error: None,
+                        cache: PreviewCodeCache::new(CodeLanguage::Json),
                     }
                 }
                 Err(e) => Self::Json {
                     pretty: raw.to_string(),
                     valid: false,
                     error: Some(e.to_string()),
+                    cache: PreviewCodeCache::new(CodeLanguage::Json),
                 },
             };
         }
@@ -489,6 +676,7 @@ impl PreviewState {
                 rows,
                 total_rows,
                 raw: raw.to_string(),
+                cache: PreviewCodeCache::new(CodeLanguage::PlainText),
             };
         }
 
@@ -505,6 +693,7 @@ impl PreviewState {
             return Self::Config {
                 kind,
                 content: raw.to_string(),
+                cache: PreviewCodeCache::new(code_lang),
             };
         }
 
@@ -517,6 +706,18 @@ impl PreviewState {
         Self::Code {
             lang,
             content: raw.to_string(),
+            cache: PreviewCodeCache::new(code_lang),
+        }
+    }
+
+    pub fn highlighted_doc(&self, theme_mode: ThemeMode) -> Option<Arc<HighlightedPreviewDoc>> {
+        match self {
+            Self::Json { pretty, cache, .. } => Some(cache.get_or_build(pretty, theme_mode)),
+            Self::Config { content, cache, .. } => Some(cache.get_or_build(content, theme_mode)),
+            Self::Code { content, cache, .. } => Some(cache.get_or_build(content, theme_mode)),
+            Self::Markdown { raw, cache, .. } => Some(cache.get_or_build(raw, theme_mode)),
+            Self::Table { raw, cache, .. } => Some(cache.get_or_build(raw, theme_mode)),
+            Self::Empty | Self::Image { .. } | Self::Svg { .. } | Self::Binary { .. } => None,
         }
     }
 
@@ -566,6 +767,18 @@ impl PreviewState {
         }
     }
 
+    pub fn set_code_language(&mut self, lang: CodeLanguage) {
+        match self {
+            Self::Config { cache, .. }
+            | Self::Code { cache, .. }
+            | Self::Json { cache, .. }
+            | Self::Markdown { cache, .. }
+            | Self::Table { cache, .. } => cache.set_language(lang),
+            Self::Empty | Self::Image { .. } | Self::Svg { .. } | Self::Binary { .. } => {}
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn highlight_kind(&self) -> PreviewHighlightKind {
         match self {
             Self::Json { .. } => PreviewHighlightKind::Json,
@@ -664,6 +877,7 @@ impl PreviewState {
                 pretty,
                 valid,
                 error,
+                ..
             } => {
                 let mut col = column![].spacing(3);
                 if let Some(err) = error {
@@ -888,7 +1102,7 @@ impl PreviewState {
                 tbl.width(Length::Fill).into()
             }
 
-            Self::Config { kind, content } => {
+            Self::Config { kind, content, .. } => {
                 let mut col = column![
                     text(format!("{kind} Structured Preview"))
                         .size(type_scale::CAPTION)
@@ -957,7 +1171,7 @@ impl PreviewState {
                 container(col).padding(8).width(Length::Fill).into()
             }
 
-            Self::Code { lang, content } => {
+            Self::Code { lang, content, .. } => {
                 let mut col = column![
                     text(format!("{lang}  •  {} lines", content.lines().count()))
                         .size(type_scale::CAPTION)
