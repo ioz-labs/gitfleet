@@ -37,7 +37,8 @@ pub(crate) const DIFF_SEP_H: f32 = 26.0;
 pub(crate) const DIFF_CONTEXT_LINES: usize = 3;
 pub(crate) const DIFF_EXPAND_STEP: usize = 20;
 pub(crate) const LINE_NUM_W: f32 = 48.0;
-pub(crate) const OVERVIEW_BAR_W: f32 = 5.0;
+pub(crate) const CONNECTOR_W: f32 = 28.0;
+pub(crate) const OVERVIEW_BAR_W: f32 = 10.0;
 /// Overscan buffer above & below the visible diff viewport (~17 lines) so wheel scrolling stays seamless.
 pub(crate) const DIFF_OVERSCAN_PX: f32 = 360.0;
 
@@ -48,6 +49,7 @@ pub(crate) struct TextDiffRenderCtx<'a> {
     pub(crate) is_staged: bool,
     pub(crate) diff_title: &'a str,
     pub(crate) selection: Option<DiffTextSelection>,
+    pub(crate) active_change: usize,
     pub(crate) left_scroll_id: scrollable::Id,
     pub(crate) unified_scroll_id: scrollable::Id,
     pub(crate) left_scroll_y: f32,
@@ -591,6 +593,7 @@ impl GitFleetApp {
             is_staged: self.diff_is_staged,
             diff_title: &self.diff_title,
             selection: self.diff_selection,
+            active_change: self.diff_active_change,
             left_scroll_id: self.diff_left_scroll_id.clone(),
             unified_scroll_id: self.diff_unified_scroll_id.clone(),
             left_scroll_y: self.diff_left_scroll_y,

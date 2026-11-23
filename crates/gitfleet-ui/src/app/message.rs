@@ -378,6 +378,7 @@ pub(crate) enum Message {
     DiffLeftScrolled(scrollable::Viewport),
     DiffUnifiedScrolled(scrollable::Viewport),
     DiffJumpChange(isize),
+    DiffOverviewJump { unified: bool, ratio: f32 },
     DiffSelStart { side: DiffSelectionSide, row: usize, col: usize },
     DiffSelDrag { side: DiffSelectionSide, row: usize, col: usize },
     CopyDiffSelection(window::Id),

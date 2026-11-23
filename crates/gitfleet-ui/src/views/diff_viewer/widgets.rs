@@ -5,7 +5,7 @@
 use super::inline_diff::InlineSpan;
 use super::layout::ConnectorSpan;
 use super::selection::{col_to_x, diff_code_char_width, x_to_col};
-use super::{DIFF_EXPAND_STEP, DIFF_HIDDEN_H, DIFF_LINE_H, LINE_NUM_W};
+use super::{CONNECTOR_W, DIFF_EXPAND_STEP, DIFF_HIDDEN_H, DIFF_LINE_H, LINE_NUM_W};
 use crate::app::{DiffGapExpandMode, DiffSelectionSide, Message};
 use crate::icons;
 use crate::syntax::TokenFormat;
@@ -15,7 +15,7 @@ use iced::advanced::layout as adv_layout;
 use iced::advanced::text as adv_text;
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, overlay, renderer};
-use iced::widget::canvas::{self, Geometry};
+use iced::widget::canvas::{self, Canvas, Geometry, Path as CanvasPath, Stroke};
 use iced::widget::{button, container, rich_text, row, scrollable, span, text};
 use iced::{
     Alignment, Background, Border, Color, Element, Length, Pixels, Point, Rectangle, Renderer,
@@ -26,12 +26,32 @@ use std::ops::Range;
 use std::rc::Rc;
 
 pub(crate) fn change_colors(kind: DiffChangeKind, p: Palette) -> (Color, Color, Color) {
-    // Returns (soft_bg, accent_border, text_fg) using WCAG-verified diff semantic tokens
+    // Returns (soft_bg, accent_border, text_fg) using SmartGit-aligned semantic tokens
     match kind {
         DiffChangeKind::Added => (p.diff_add_line_bg, p.git_added, p.text_primary),
         DiffChangeKind::Removed => (p.diff_del_line_bg, p.git_deleted, p.text_primary),
-        DiffChangeKind::Modified => (p.diff_hunk_bg, p.accent_fg, p.text_primary),
+        DiffChangeKind::Modified => (
+            Color {
+                a: if p.is_dark { 0.13 } else { 0.11 },
+                ..p.git_modified
+            },
+            p.git_modified,
+            p.text_primary,
+        ),
     }
+}
+
+/// Computes `(left_w, conn_x_rel, right_x_rel, right_w)` for Side-by-Side viewport width `vw`,
+/// carving out `CONNECTOR_W` in the center for SmartGit cubic-Bezier diff connectors.
+#[inline]
+fn split_pane_columns(vw: f32) -> (f32, f32, f32, f32) {
+    let vw = vw.max(240.0);
+    let usable = (vw - CONNECTOR_W).max(160.0);
+    let left_w = (usable * 0.5).floor();
+    let conn_x = left_w;
+    let right_x = left_w + CONNECTOR_W;
+    let right_w = (vw - right_x).max(80.0);
+    (left_w, conn_x, right_x, right_w)
 }
 
 pub(crate) struct DiffRowSelConfig {
@@ -379,14 +399,116 @@ fn shift_cursor_x(cursor: mouse::Cursor, dx: f32) -> mouse::Cursor {
     }
 }
 
+/// Center cubic-Bezier S-curve connector overlay linking Left (Old) and Right (New) change blocks
+/// across the 28px center gutter without obscuring full-width `"N lines hidden"` context bars.
+struct DiffConnectorCanvas {
+    spans: Vec<ConnectorSpan>,
+    scroll_y: f32,
+    active_idx: usize,
+    p: Palette,
+}
+
+impl canvas::Program<Message> for DiffConnectorCanvas {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let w = bounds.width;
+        let h = bounds.height;
+        if w <= 1.0 || h <= 1.0 {
+            return vec![frame.into_geometry()];
+        }
+
+        let mid_x = w * 0.5;
+        for (idx, span) in self.spans.iter().enumerate() {
+            let ly0 = span.left_top - self.scroll_y;
+            let mut ly1 = span.left_bot - self.scroll_y;
+            let ry0 = span.right_top - self.scroll_y;
+            let mut ry1 = span.right_bot - self.scroll_y;
+
+            if ly1.max(ry1) < -6.0 || ly0.min(ry0) > h + 6.0 {
+                continue;
+            }
+            if (ly1 - ly0).abs() < 2.0 {
+                ly1 = ly0 + 2.0;
+            }
+            if (ry1 - ry0).abs() < 2.0 {
+                ry1 = ry0 + 2.0;
+            }
+
+            let (_, accent, _) = change_colors(span.kind, self.p);
+            let is_active = idx == self.active_idx;
+            let fill = Color {
+                a: if is_active { 0.34 } else { 0.22 },
+                ..accent
+            };
+            let stroke_color = Color {
+                a: if is_active { 0.96 } else { 0.80 },
+                ..accent
+            };
+            let stroke_w = if is_active { 1.5 } else { 1.2 };
+
+            let ribbon = CanvasPath::new(|b| {
+                b.move_to(Point::new(0.0, ly0));
+                b.bezier_curve_to(
+                    Point::new(mid_x, ly0),
+                    Point::new(mid_x, ry0),
+                    Point::new(w, ry0),
+                );
+                b.line_to(Point::new(w, ry1));
+                b.bezier_curve_to(
+                    Point::new(mid_x, ry1),
+                    Point::new(mid_x, ly1),
+                    Point::new(0.0, ly1),
+                );
+                b.close();
+            });
+            frame.fill(&ribbon, fill);
+
+            let top_edge = CanvasPath::new(|b| {
+                b.move_to(Point::new(0.0, ly0 + 0.5));
+                b.bezier_curve_to(
+                    Point::new(mid_x, ly0 + 0.5),
+                    Point::new(mid_x, ry0 + 0.5),
+                    Point::new(w, ry0 + 0.5),
+                );
+            });
+            let bot_edge = CanvasPath::new(|b| {
+                b.move_to(Point::new(0.0, ly1 - 0.5));
+                b.bezier_curve_to(
+                    Point::new(mid_x, ly1 - 0.5),
+                    Point::new(mid_x, ry1 - 0.5),
+                    Point::new(w, ry1 - 0.5),
+                );
+            });
+            let stroke = Stroke::default().with_color(stroke_color).with_width(stroke_w);
+            frame.stroke(&top_edge, stroke);
+            frame.stroke(&bot_edge, stroke);
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
 /// Unified Side-by-Side scrollable host with **one** vertical scrollbar and **one** horizontal
-/// scrollbar that pans both Left (50%) and Right (50%) code columns simultaneously while keeping
-/// both sticky line-number gutters, the 1px center divider, and full-width `"N lines hidden"`
+/// scrollbar that pans both Left and Right code columns simultaneously while keeping sticky
+/// line-number gutters, the 28px SmartGit Bezier connector channel, and full-width `"N lines hidden"`
 /// context bars pinned horizontally inside the viewport.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn split_diff_scroll<'a>(
     content: impl Into<Element<'a, Message>>,
     min_code_w: f32,
     viewport_w: Rc<Cell<f32>>,
+    spans: Vec<ConnectorSpan>,
+    scroll_y: f32,
+    active_idx: usize,
     id: scrollable::Id,
     on_scroll: impl Fn(scrollable::Viewport) -> Message + 'a,
     p: Palette,
@@ -426,9 +548,9 @@ pub(crate) fn split_diff_scroll<'a>(
             _limits: &adv_layout::Limits,
         ) -> adv_layout::Node {
             let vw = self.viewport_w.get().max(240.0);
-            let half_w = (vw * 0.5).floor();
-            let code_vp_w = (half_w - LINE_NUM_W)
-                .min(vw - half_w - LINE_NUM_W - 8.0)
+            let (left_w, _, _, right_w) = split_pane_columns(vw);
+            let code_vp_w = (left_w - LINE_NUM_W)
+                .min(right_w - LINE_NUM_W - 8.0)
                 .max(40.0);
             let max_scroll_x = (self.min_code_w - code_vp_w).max(0.0);
             let overflows_x = max_scroll_x > 0.5;
@@ -475,7 +597,7 @@ pub(crate) fn split_diff_scroll<'a>(
                 viewport,
             );
 
-            // Extend subtle gutter hairlines and 1px center divider into any trailing space
+            // Extend subtle gutter hairlines and 28px center connector channel into any trailing space
             // below short diffs so the split workbench looks cohesive to the bottom of the pane.
             let b = layout.bounds();
             let child_b = child_layout.bounds();
@@ -483,7 +605,7 @@ pub(crate) fn split_diff_scroll<'a>(
             let empty_bot = viewport.y + viewport.height;
             if empty_bot > empty_top + 0.5 {
                 let vw = self.viewport_w.get().max(240.0);
-                let half_w = (vw * 0.5).floor();
+                let (_, conn_x, right_x, _) = split_pane_columns(vw);
                 let vp_x = b.x.max(viewport.x);
                 let h = empty_bot - empty_top;
                 let flat_quad = |bounds: Rectangle| renderer::Quad {
@@ -502,7 +624,16 @@ pub(crate) fn split_diff_scroll<'a>(
                 );
                 renderer.fill_quad(
                     flat_quad(Rectangle {
-                        x: vp_x + half_w + LINE_NUM_W - 1.0,
+                        x: vp_x + conn_x,
+                        y: empty_top,
+                        width: CONNECTOR_W,
+                        height: h,
+                    }),
+                    Background::Color(self.p.surface_titlebar),
+                );
+                renderer.fill_quad(
+                    flat_quad(Rectangle {
+                        x: vp_x + conn_x,
                         y: empty_top,
                         width: 1.0,
                         height: h,
@@ -511,12 +642,21 @@ pub(crate) fn split_diff_scroll<'a>(
                 );
                 renderer.fill_quad(
                     flat_quad(Rectangle {
-                        x: vp_x + half_w,
+                        x: vp_x + right_x - 1.0,
                         y: empty_top,
                         width: 1.0,
                         height: h,
                     }),
-                    Background::Color(self.p.border_default),
+                    Background::Color(self.p.border_subtle),
+                );
+                renderer.fill_quad(
+                    flat_quad(Rectangle {
+                        x: vp_x + right_x + LINE_NUM_W - 1.0,
+                        y: empty_top,
+                        width: 1.0,
+                        height: h,
+                    }),
+                    Background::Color(self.p.border_subtle),
                 );
             }
         }
@@ -603,7 +743,7 @@ pub(crate) fn split_diff_scroll<'a>(
 
     struct SplitDiffScroll<'a> {
         viewport_w: Rc<Cell<f32>>,
-        scroll: Element<'a, Message>,
+        children: [Element<'a, Message>; 2],
     }
 
     impl<'a> Widget<Message, Theme, Renderer> for SplitDiffScroll<'a> {
@@ -616,11 +756,11 @@ pub(crate) fn split_diff_scroll<'a>(
         }
 
         fn children(&self) -> Vec<Tree> {
-            vec![Tree::new(&self.scroll)]
+            self.children.iter().map(Tree::new).collect()
         }
 
         fn diff(&self, tree: &mut Tree) {
-            tree.diff_children(std::slice::from_ref(&self.scroll));
+            tree.diff_children(&self.children);
         }
 
         fn size(&self) -> Size<Length> {
@@ -637,11 +777,21 @@ pub(crate) fn split_diff_scroll<'a>(
             if vw.is_finite() && vw > 1.0 {
                 self.viewport_w.set(vw);
             }
-            let child_node =
-                self.scroll
+            let scroll_node =
+                self.children[0]
                     .as_widget()
                     .layout(&mut tree.children[0], renderer, limits);
-            adv_layout::Node::with_children(child_node.size(), vec![child_node])
+            let size = scroll_node.size();
+            let (_, conn_x, _, _) = split_pane_columns(size.width);
+            let conn_limits = adv_layout::Limits::new(
+                Size::new(CONNECTOR_W, size.height),
+                Size::new(CONNECTOR_W, size.height),
+            );
+            let conn_node = self.children[1]
+                .as_widget()
+                .layout(&mut tree.children[1], renderer, &conn_limits)
+                .move_to(Point::new(conn_x, 0.0));
+            adv_layout::Node::with_children(size, vec![scroll_node, conn_node])
         }
 
         fn draw(
@@ -654,16 +804,43 @@ pub(crate) fn split_diff_scroll<'a>(
             cursor: mouse::Cursor,
             viewport: &Rectangle,
         ) {
-            if let Some(child_layout) = layout.children().next() {
-                self.scroll.as_widget().draw(
+            use iced::advanced::Renderer as _;
+
+            let mut iter = layout.children();
+            if let Some(scroll_layout) = iter.next() {
+                self.children[0].as_widget().draw(
                     &tree.children[0],
                     renderer,
                     theme,
                     style,
-                    child_layout,
+                    scroll_layout,
                     cursor,
                     viewport,
                 );
+            }
+            if let Some(conn_layout) = iter.next() {
+                let cb = conn_layout.bounds();
+                let raw_clip = Rectangle {
+                    x: cb.x,
+                    y: cb.y,
+                    width: cb.width,
+                    height: (cb.height - 8.0).max(0.0),
+                };
+                if let Some(clip) = raw_clip.intersection(viewport)
+                    && clip.height > 1.0
+                {
+                    renderer.with_layer(clip, |renderer| {
+                        self.children[1].as_widget().draw(
+                            &tree.children[1],
+                            renderer,
+                            theme,
+                            style,
+                            conn_layout,
+                            mouse::Cursor::Unavailable,
+                            &clip,
+                        );
+                    });
+                }
             }
         }
 
@@ -678,13 +855,13 @@ pub(crate) fn split_diff_scroll<'a>(
             shell: &mut Shell<'_, Message>,
             viewport: &Rectangle,
         ) -> event::Status {
-            let Some(child_layout) = layout.children().next() else {
+            let Some(scroll_layout) = layout.children().next() else {
                 return event::Status::Ignored;
             };
-            self.scroll.as_widget_mut().on_event(
+            self.children[0].as_widget_mut().on_event(
                 &mut tree.children[0],
                 event,
-                child_layout,
+                scroll_layout,
                 cursor,
                 renderer,
                 clipboard,
@@ -701,12 +878,12 @@ pub(crate) fn split_diff_scroll<'a>(
             viewport: &Rectangle,
             renderer: &Renderer,
         ) -> mouse::Interaction {
-            let Some(child_layout) = layout.children().next() else {
+            let Some(scroll_layout) = layout.children().next() else {
                 return mouse::Interaction::None;
             };
-            self.scroll.as_widget().mouse_interaction(
+            self.children[0].as_widget().mouse_interaction(
                 &tree.children[0],
-                child_layout,
+                scroll_layout,
                 cursor,
                 viewport,
                 renderer,
@@ -720,10 +897,10 @@ pub(crate) fn split_diff_scroll<'a>(
             renderer: &Renderer,
             operation: &mut dyn iced::advanced::widget::Operation,
         ) {
-            if let Some(child_layout) = layout.children().next() {
-                self.scroll.as_widget().operate(
+            if let Some(scroll_layout) = layout.children().next() {
+                self.children[0].as_widget().operate(
                     &mut tree.children[0],
-                    child_layout,
+                    scroll_layout,
                     renderer,
                     operation,
                 );
@@ -737,10 +914,10 @@ pub(crate) fn split_diff_scroll<'a>(
             renderer: &Renderer,
             translation: Vector,
         ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-            let child_layout = layout.children().next()?;
-            self.scroll.as_widget_mut().overlay(
+            let scroll_layout = layout.children().next()?;
+            self.children[0].as_widget_mut().overlay(
                 &mut tree.children[0],
-                child_layout,
+                scroll_layout,
                 renderer,
                 translation,
             )
@@ -761,8 +938,20 @@ pub(crate) fn split_diff_scroll<'a>(
         .direction(theme::slim_both_direction())
         .style(theme::slim_scrollable(p))
         .into();
+    let connector: Element<'a, Message> = Canvas::new(DiffConnectorCanvas {
+        spans,
+        scroll_y,
+        active_idx,
+        p,
+    })
+    .width(Length::Fixed(CONNECTOR_W))
+    .height(Length::Fill)
+    .into();
 
-    Element::new(SplitDiffScroll { viewport_w, scroll })
+    Element::new(SplitDiffScroll {
+        viewport_w,
+        children: [scroll, connector],
+    })
 }
 
 /// Horizontally-pinned full-width row wrapper for shared Side-by-Side rows (`Hidden` context
@@ -995,16 +1184,16 @@ pub(crate) struct SplitSideVisual<'a> {
 }
 
 /// Single fixed-height (`DIFF_LINE_H`) Side-by-Side paired row widget.
-/// Renders Left (50%) and Right (50%) side-by-side with sticky line-number gutters,
-/// hardware-scissored horizontal scrolling for both code cells, empty filler shading,
-/// and independent character-accurate drag-to-select on Left and Right.
+/// Renders Left and Right side-by-side around the 28px SmartGit Bezier connector channel,
+/// with sticky line-number gutters, hardware-scissored horizontal scrolling for both code cells,
+/// SmartGit 2px insertion/deletion seam hairlines, and independent drag-to-select on Left and Right.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn split_paired_code_row<'a>(
     row_idx: usize,
     left: Option<SplitSideVisual<'a>>,
     right: Option<SplitSideVisual<'a>>,
+    block_kind: Option<DiffChangeKind>,
     block_is_first: bool,
-    block_is_last: bool,
     dragging_side: Option<DiffSelectionSide>,
     viewport_w: Rc<Cell<f32>>,
     p: Palette,
@@ -1025,8 +1214,8 @@ pub(crate) fn split_paired_code_row<'a>(
         left_child_idx: Option<usize>,
         right_child_idx: Option<usize>,
         children: Vec<Element<'a, Message>>,
+        block_kind: Option<DiffChangeKind>,
         block_is_first: bool,
-        block_is_last: bool,
         dragging_side: Option<DiffSelectionSide>,
         viewport_w: Rc<Cell<f32>>,
         p: Palette,
@@ -1060,7 +1249,7 @@ pub(crate) fn split_paired_code_row<'a>(
             limits: &adv_layout::Limits,
         ) -> adv_layout::Node {
             let vw = self.viewport_w.get().max(240.0);
-            let half_w = (vw * 0.5).floor();
+            let (_, _, right_x, _) = split_pane_columns(vw);
             let row_w = if limits.max().width.is_finite() {
                 limits.max().width
             } else {
@@ -1077,7 +1266,7 @@ pub(crate) fn split_paired_code_row<'a>(
                 let x = if Some(idx) == self.left_child_idx {
                     LINE_NUM_W + 8.0
                 } else {
-                    half_w + LINE_NUM_W + 8.0
+                    right_x + LINE_NUM_W + 8.0
                 };
                 let node = child
                     .as_widget()
@@ -1110,11 +1299,10 @@ pub(crate) fn split_paired_code_row<'a>(
             }
 
             let vw = self.viewport_w.get().max(240.0);
-            let half_w = (vw * 0.5).floor();
-            let right_w = (vw - half_w).max(1.0);
+            let (left_w, conn_x, right_x, right_w) = split_pane_columns(vw);
             let vp_x = b.x.max(viewport.x);
             let left_pane_x = vp_x;
-            let right_pane_x = vp_x + half_w;
+            let right_pane_x = vp_x + right_x;
 
             let flat_quad = |bounds: Rectangle| renderer::Quad {
                 bounds,
@@ -1122,7 +1310,7 @@ pub(crate) fn split_paired_code_row<'a>(
                 shadow: Shadow::default(),
             };
             let filler_bg = Color {
-                a: 0.52,
+                a: if self.p.is_dark { 0.45 } else { 0.55 },
                 ..self.p.surface_sidebar
             };
             let sel_bg = Color {
@@ -1137,23 +1325,32 @@ pub(crate) fn split_paired_code_row<'a>(
 
             let child_layouts: Vec<Layout<'_>> = layout.children().collect();
 
-            // Helper closure for painting one side's background, borders, sticky gutter, and clipped code
+            // Helper closure for painting one side's background, borders/seam, sticky gutter, and clipped code
             let mut paint_side = |pane_x: f32,
                                   pane_w: f32,
                                   code_origin_x: f32,
+                                  is_left: bool,
                                   meta: Option<&SideMeta>,
                                   child_idx: Option<usize>| {
-                let (bg, top_b, bot_b) = match meta {
+                let (bg, top_b, bot_b, seam_c) = match meta {
                     Some(m) => (
                         m.bg,
-                        m.top_border.map(|c| Color { a: 0.72, ..c }),
-                        m.bottom_border.map(|c| Color { a: 0.72, ..c }),
+                        m.top_border.map(|c| Color { a: 0.78, ..c }),
+                        m.bottom_border.map(|c| Color { a: 0.78, ..c }),
+                        None,
                     ),
-                    None => (
-                        filler_bg,
-                        self.block_is_first.then_some(self.p.border_subtle),
-                        self.block_is_last.then_some(self.p.border_subtle),
-                    ),
+                    None => {
+                        let seam = if self.block_is_first {
+                            match (is_left, self.block_kind) {
+                                (true, Some(DiffChangeKind::Added)) => Some(self.p.git_added),
+                                (false, Some(DiffChangeKind::Removed)) => Some(self.p.git_deleted),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        (filler_bg, None, None, seam)
+                    }
                 };
 
                 if bg != Color::TRANSPARENT {
@@ -1200,6 +1397,19 @@ pub(crate) fn split_paired_code_row<'a>(
                     }),
                     Background::Color(self.p.border_subtle),
                 );
+
+                // SmartGit 2px insertion/deletion seam hairline on opposite side of pure Added/Removed blocks
+                if let Some(c) = seam_c {
+                    renderer.fill_quad(
+                        flat_quad(Rectangle {
+                            x: pane_x,
+                            y: b.y,
+                            width: pane_w,
+                            height: 2.0,
+                        }),
+                        Background::Color(Color { a: 0.88, ..c }),
+                    );
+                }
 
                 // Sticky line number
                 if let Some(ln) = meta.and_then(|m| m.line_no) {
@@ -1285,28 +1495,48 @@ pub(crate) fn split_paired_code_row<'a>(
 
             paint_side(
                 left_pane_x,
-                half_w,
+                left_w,
                 b.x + LINE_NUM_W + 8.0,
+                true,
                 self.left.as_ref(),
                 self.left_child_idx,
             );
             paint_side(
                 right_pane_x,
                 right_w,
-                b.x + half_w + LINE_NUM_W + 8.0,
+                b.x + right_x + LINE_NUM_W + 8.0,
+                false,
                 self.right.as_ref(),
                 self.right_child_idx,
             );
 
-            // Crisp 1px center divider separating Left (Old) and Right (New) panes
+            // Center 28px SmartGit connector channel background + 1px side borders
             renderer.fill_quad(
                 flat_quad(Rectangle {
-                    x: right_pane_x,
+                    x: vp_x + conn_x,
+                    y: b.y,
+                    width: CONNECTOR_W,
+                    height: b.height,
+                }),
+                Background::Color(self.p.surface_titlebar),
+            );
+            renderer.fill_quad(
+                flat_quad(Rectangle {
+                    x: vp_x + conn_x,
                     y: b.y,
                     width: 1.0,
                     height: b.height,
                 }),
-                Background::Color(self.p.border_default),
+                Background::Color(self.p.border_subtle),
+            );
+            renderer.fill_quad(
+                flat_quad(Rectangle {
+                    x: right_pane_x - 1.0,
+                    y: b.y,
+                    width: 1.0,
+                    height: b.height,
+                }),
+                Background::Color(self.p.border_subtle),
             );
         }
 
@@ -1323,9 +1553,10 @@ pub(crate) fn split_paired_code_row<'a>(
         ) -> event::Status {
             let b = layout.bounds();
             let vw = self.viewport_w.get().max(240.0);
-            let half_w = (vw * 0.5).floor();
+            let (left_w, _, right_x, _) = split_pane_columns(vw);
             let vp_x = b.x.max(viewport.x);
-            let right_pane_x = vp_x + half_w;
+            let left_end_x = vp_x + left_w;
+            let right_pane_x = vp_x + right_x;
             let char_w = diff_code_char_width();
 
             match &event {
@@ -1335,7 +1566,7 @@ pub(crate) fn split_paired_code_row<'a>(
                         && abs_pos.y >= b.y
                         && abs_pos.y < b.y + b.height
                     {
-                        if abs_pos.x < right_pane_x {
+                        if abs_pos.x < left_end_x {
                             if let Some(meta) = &self.left {
                                 let col = x_to_col(
                                     &meta.line_text,
@@ -1349,10 +1580,12 @@ pub(crate) fn split_paired_code_row<'a>(
                                 });
                                 return event::Status::Captured;
                             }
-                        } else if let Some(meta) = &self.right {
+                        } else if abs_pos.x >= right_pane_x
+                            && let Some(meta) = &self.right
+                        {
                             let col = x_to_col(
                                 &meta.line_text,
-                                abs_pos.x - (b.x + half_w + LINE_NUM_W + 8.0),
+                                abs_pos.x - (b.x + right_x + LINE_NUM_W + 8.0),
                                 char_w,
                             );
                             shell.publish(Message::DiffSelStart {
@@ -1397,7 +1630,7 @@ pub(crate) fn split_paired_code_row<'a>(
                                     .map(|m| {
                                         x_to_col(
                                             &m.line_text,
-                                            abs_pos.x - (b.x + half_w + LINE_NUM_W + 8.0),
+                                            abs_pos.x - (b.x + right_x + LINE_NUM_W + 8.0),
                                             char_w,
                                         )
                                     })
@@ -1434,11 +1667,13 @@ pub(crate) fn split_paired_code_row<'a>(
                 return mouse::Interaction::None;
             }
             let vw = self.viewport_w.get().max(240.0);
-            let half_w = (vw * 0.5).floor();
+            let (left_w, _, right_x, _) = split_pane_columns(vw);
             let vp_x = b.x.max(viewport.x);
-            let right_pane_x = vp_x + half_w;
+            let right_pane_x = vp_x + right_x;
 
-            if abs_pos.x >= vp_x + LINE_NUM_W - 4.0 && abs_pos.x < right_pane_x && self.left.is_some()
+            if abs_pos.x >= vp_x + LINE_NUM_W - 4.0
+                && abs_pos.x < vp_x + left_w
+                && self.left.is_some()
             {
                 return mouse::Interaction::Text;
             }
@@ -1525,23 +1760,79 @@ pub(crate) fn split_paired_code_row<'a>(
         left_child_idx,
         right_child_idx,
         children,
+        block_kind,
         block_is_first,
-        block_is_last,
         dragging_side,
         viewport_w,
         p,
     })
 }
 
-/// Thin edge minimap strip highlighting where added/removed/modified blocks live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverviewSide {
+    Left,
+    Right,
+    Unified,
+}
+
+/// Interactive SmartGit edge diff-position overview bar showing Added/Removed/Modified markers,
+/// a live viewport position indicator box, and click/drag-to-jump navigation.
 pub(crate) struct DiffOverviewBar {
     pub(crate) spans: Vec<ConnectorSpan>,
+    pub(crate) side: OverviewSide,
     pub(crate) total_h: f32,
+    pub(crate) scroll_y: f32,
+    pub(crate) viewport_h: f32,
+    pub(crate) active_idx: usize,
     pub(crate) p: Palette,
 }
 
 impl canvas::Program<Message> for DiffOverviewBar {
-    type State = ();
+    type State = bool;
+
+    fn update(
+        &self,
+        is_dragging: &mut Self::State,
+        ev: canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {
+        if self.total_h <= 1.0 || bounds.height <= 1.0 {
+            *is_dragging = false;
+            return (event::Status::Ignored, None);
+        }
+        let unified = self.side == OverviewSide::Unified;
+        match ev {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(pos) = cursor.position_in(bounds) {
+                    *is_dragging = true;
+                    let ratio = (pos.y / bounds.height).clamp(0.0, 1.0);
+                    return (
+                        event::Status::Captured,
+                        Some(Message::DiffOverviewJump { unified, ratio }),
+                    );
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) if *is_dragging => {
+                if let Some(abs_pos) = cursor.position() {
+                    let rel_y = abs_pos.y - bounds.y;
+                    let ratio = (rel_y / bounds.height).clamp(0.0, 1.0);
+                    return (
+                        event::Status::Captured,
+                        Some(Message::DiffOverviewJump { unified, ratio }),
+                    );
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if *is_dragging =>
+            {
+                *is_dragging = false;
+                return (event::Status::Captured, None);
+            }
+            _ => {}
+        }
+        (event::Status::Ignored, None)
+    }
 
     fn draw(
         &self,
@@ -1553,22 +1844,97 @@ impl canvas::Program<Message> for DiffOverviewBar {
     ) -> Vec<Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.p.surface_titlebar);
+        let border_x = match self.side {
+            OverviewSide::Left => (bounds.width - 1.0).max(0.0),
+            OverviewSide::Right | OverviewSide::Unified => 0.0,
+        };
+        frame.fill_rectangle(
+            Point::new(border_x, 0.0),
+            Size::new(1.0, bounds.height),
+            self.p.border_subtle,
+        );
+
         if self.total_h <= 1.0 || bounds.height <= 1.0 {
             return vec![frame.into_geometry()];
         }
-        let scale = bounds.height / self.total_h;
-        for span in &self.spans {
-            let (top, bot) = (span.split_top, span.split_bot);
+
+        let eff_total = self.total_h.max(self.viewport_h).max(1.0);
+        let scale = bounds.height / eff_total;
+
+        for (idx, span) in self.spans.iter().enumerate() {
+            let (top, bot) = match self.side {
+                OverviewSide::Left => (span.left_top, span.left_bot),
+                OverviewSide::Right => (span.right_top, span.right_bot),
+                OverviewSide::Unified => (span.unified_top, span.unified_bot),
+            };
             let (_, accent, _) = change_colors(span.kind, self.p);
-            let y = (top * scale).clamp(0.0, (bounds.height - 3.0).max(0.0));
-            let h = ((bot - top) * scale).max(3.0).min(bounds.height - y);
+            let is_seam_only = (bot - top).abs() < 1.0;
+            let min_h = if is_seam_only { 2.0 } else { 3.0 };
+            let y = (top * scale).clamp(0.0, (bounds.height - min_h).max(0.0));
+            let h = ((bot - top) * scale).max(min_h).min(bounds.height - y);
+            let tick_color = Color {
+                a: if idx == self.active_idx {
+                    1.0
+                } else if is_seam_only {
+                    0.70
+                } else {
+                    0.92
+                },
+                ..accent
+            };
             frame.fill_rectangle(
-                Point::new(1.0, y),
-                Size::new((bounds.width - 2.0).max(2.0), h),
-                accent,
+                Point::new(1.5, y),
+                Size::new((bounds.width - 3.0).max(2.0), h),
+                tick_color,
             );
         }
+
+        // Live viewport position window indicator
+        let vp_h = (self.viewport_h * scale).clamp(10.0, bounds.height);
+        let max_scroll = (self.total_h - self.viewport_h).max(0.0);
+        let vp_y = if max_scroll > 0.5 {
+            (self.scroll_y / max_scroll).clamp(0.0, 1.0) * (bounds.height - vp_h)
+        } else {
+            0.0
+        };
+        frame.fill_rectangle(
+            Point::new(1.0, vp_y),
+            Size::new((bounds.width - 2.0).max(2.0), vp_h),
+            Color {
+                a: if self.p.is_dark { 0.14 } else { 0.12 },
+                ..self.p.text_primary
+            },
+        );
+        let vp_box = CanvasPath::rectangle(
+            Point::new(0.5, vp_y + 0.5),
+            Size::new((bounds.width - 1.0).max(2.0), (vp_h - 1.0).max(3.0)),
+        );
+        frame.stroke(
+            &vp_box,
+            Stroke::default()
+                .with_color(Color {
+                    a: 0.52,
+                    ..self.p.text_secondary
+                })
+                .with_width(1.0),
+        );
+
         vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        is_dragging: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if *is_dragging {
+            return mouse::Interaction::Grabbing;
+        }
+        if self.total_h > 1.0 && cursor.is_over(bounds) {
+            return mouse::Interaction::Pointer;
+        }
+        mouse::Interaction::default()
     }
 }
 

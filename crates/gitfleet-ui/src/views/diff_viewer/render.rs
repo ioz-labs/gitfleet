@@ -4,9 +4,9 @@
 use super::layout::{DiffLayoutCache, SplitCodeCell, SplitRow, UnifiedRow, visible_row_range};
 use super::selection::{diff_code_char_width, row_selection_range};
 use super::widgets::{
-    DiffOverviewBar, DiffRowSelConfig, SplitSideVisual, change_colors, diff_code_row_box,
-    hidden_gap_bar, render_highlighted_code, split_diff_scroll, split_paired_code_row,
-    sticky_x_row,
+    DiffOverviewBar, DiffRowSelConfig, OverviewSide, SplitSideVisual, change_colors,
+    diff_code_row_box, hidden_gap_bar, render_highlighted_code, split_diff_scroll,
+    split_paired_code_row, sticky_x_row,
 };
 use super::{
     DIFF_HIDDEN_H, DIFF_LINE_H, DIFF_OVERSCAN_PX, DIFF_SEP_H, LINE_NUM_W, OVERVIEW_BAR_W,
@@ -47,20 +47,18 @@ fn build_split_side_visual<'a>(
             Some(p.diff_del_word_bg),
             p.text_primary,
         ),
-        Some(DiffChangeKind::Modified) => match side {
-            DiffSelectionSide::Left => (
-                p.diff_del_line_bg,
-                Some(p.git_deleted),
-                Some(p.diff_del_word_bg),
-                p.text_primary,
-            ),
-            _ => (
-                p.diff_add_line_bg,
-                Some(p.git_added),
-                Some(p.diff_add_word_bg),
-                p.text_primary,
-            ),
-        },
+        Some(DiffChangeKind::Modified) => (
+            Color {
+                a: if p.is_dark { 0.13 } else { 0.11 },
+                ..p.git_modified
+            },
+            Some(p.git_modified),
+            Some(Color {
+                a: if p.is_dark { 0.30 } else { 0.24 },
+                ..p.git_modified
+            }),
+            p.text_primary,
+        ),
         None => (Color::TRANSPARENT, None, None, p.text_secondary),
     };
     let top_border = if cell.is_first { border_c } else { None };
@@ -436,13 +434,31 @@ pub(crate) fn render_unified_diff_with<'a>(
     lines_col = lines_col.push(Space::with_height(Length::Fixed(bottom_spacer)));
     let min_w =
         (layout.max_unified_chars as f32 * 8.0 + gutter_total + 40.0).clamp(420.0, 2800.0);
-    theme::responsive_hscroll_synced(
+    let scroller = theme::responsive_hscroll_synced(
         lines_col,
         min_w,
         ctx.unified_scroll_id,
         Message::DiffUnifiedScrolled,
         p,
-    )
+    );
+    let overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
+        spans: layout.connectors.clone(),
+        side: OverviewSide::Unified,
+        total_h: layout.total_unified_h,
+        scroll_y: ctx.unified_scroll_y,
+        viewport_h,
+        active_idx: ctx.active_change,
+        p,
+    })
+    .width(Length::Fixed(OVERVIEW_BAR_W))
+    .height(Length::Fill)
+    .into();
+
+    row![scroller, overview]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 pub(crate) fn render_side_by_side_diff_with<'a>(
@@ -479,8 +495,8 @@ pub(crate) fn render_side_by_side_diff_with<'a>(
             SplitRow::PairedCode {
                 left,
                 right,
+                block_kind,
                 block_is_first,
-                block_is_last,
             } => {
                 let left_syn = cache
                     .left_syntax
@@ -518,8 +534,8 @@ pub(crate) fn render_side_by_side_diff_with<'a>(
                     idx,
                     left_vis,
                     right_vis,
+                    *block_kind,
                     *block_is_first,
-                    *block_is_last,
                     dragging_side,
                     Rc::clone(&viewport_w),
                     p,
@@ -573,21 +589,41 @@ pub(crate) fn render_side_by_side_diff_with<'a>(
         split_col,
         min_code_w,
         viewport_w,
+        layout.connectors.clone(),
+        ctx.left_scroll_y,
+        ctx.active_change,
         ctx.left_scroll_id,
         Message::DiffLeftScrolled,
         p,
     );
 
-    let overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
+    let left_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
         spans: layout.connectors.clone(),
+        side: OverviewSide::Left,
         total_h: layout.total_split_h,
+        scroll_y: ctx.left_scroll_y,
+        viewport_h,
+        active_idx: ctx.active_change,
         p,
     })
     .width(Length::Fixed(OVERVIEW_BAR_W))
     .height(Length::Fill)
     .into();
 
-    row![split_pane, overview]
+    let right_overview: Element<'_, Message> = Canvas::new(DiffOverviewBar {
+        spans: layout.connectors.clone(),
+        side: OverviewSide::Right,
+        total_h: layout.total_split_h,
+        scroll_y: ctx.left_scroll_y,
+        viewport_h,
+        active_idx: ctx.active_change,
+        p,
+    })
+    .width(Length::Fixed(OVERVIEW_BAR_W))
+    .height(Length::Fill)
+    .into();
+
+    row![left_overview, split_pane, right_overview]
         .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill)

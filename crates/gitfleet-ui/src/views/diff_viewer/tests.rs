@@ -53,6 +53,10 @@ fn compact_hides_unchanged_lines_into_single_shared_bar_and_expands() {
     assert_eq!(compact.connectors[0].kind, DiffChangeKind::Removed);
     assert_eq!(compact.connectors[1].kind, DiffChangeKind::Added);
     assert!((compact.connectors[0].split_bot - compact.connectors[0].split_top - 2.0 * DIFF_LINE_H).abs() < 0.01);
+    assert!((compact.connectors[0].left_bot - compact.connectors[0].left_top - 2.0 * DIFF_LINE_H).abs() < 0.01);
+    assert!((compact.connectors[0].right_bot - compact.connectors[0].right_top).abs() < 0.01);
+    assert!((compact.connectors[1].left_bot - compact.connectors[1].left_top).abs() < 0.01);
+    assert!((compact.connectors[1].right_bot - compact.connectors[1].right_top - 2.0 * DIFF_LINE_H).abs() < 0.01);
 
     expanded.insert(
         0,
@@ -215,4 +219,28 @@ fn virtualized_row_range_preserves_exact_total_height_and_caches_syntax() {
         .sum();
     assert!((top_sp + rendered_h + bot_sp - cache.layout.total_split_h).abs() < 0.01);
     assert!(range.start > 0 && range.end < cache.layout.split_rows.len());
+}
+
+#[test]
+fn uneven_modified_block_records_exact_left_and_right_connector_spans() {
+    let raw = "\
+diff --git a/state.rs b/state.rs
+--- a/state.rs
++++ b/state.rs
+@@ -18,4 +18,2 @@
+-use super::io::{
+-    editor_buffer_text, jump_editor_to_span,
+-};
++use super::io::editor_buffer_text;
+ use super::smart_edit::EditorSnapshot;
+";
+    let parsed = parse_unified_diff(raw);
+    let layout = build_diff_layout(&parsed, true, &HashMap::new());
+    assert_eq!(layout.connectors.len(), 1);
+    let c = layout.connectors[0];
+    assert_eq!(c.kind, DiffChangeKind::Modified);
+    assert!((c.left_bot - c.left_top - 3.0 * DIFF_LINE_H).abs() < 0.01);
+    assert!((c.right_bot - c.right_top - 1.0 * DIFF_LINE_H).abs() < 0.01);
+    assert!((c.split_bot - c.split_top - 3.0 * DIFF_LINE_H).abs() < 0.01);
+    assert!(c.unified_bot > c.unified_top);
 }

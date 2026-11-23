@@ -1590,6 +1590,63 @@ impl GitFleetApp {
                     _ => Task::none(),
                 }
             }
+            Message::DiffOverviewJump { unified, ratio } => {
+                let layout = &self.diff_cache.layout;
+                let ratio = ratio.clamp(0.0, 1.0);
+                if unified {
+                    let vp_h = self.diff_unified_viewport_h.max(200.0);
+                    let total_h = layout.total_unified_h.max(vp_h);
+                    let max_scroll = (layout.total_unified_h - vp_h).max(0.0);
+                    let target_y = (ratio * total_h - vp_h * 0.5).clamp(0.0, max_scroll);
+                    self.diff_unified_scroll_y = target_y;
+                    if !layout.connectors.is_empty() {
+                        let focus_y = ratio * total_h;
+                        if let Some((idx, _)) = layout.connectors.iter().enumerate().min_by(|(_, a), (_, b)| {
+                            let ca = (a.unified_top + a.unified_bot) * 0.5;
+                            let cb = (b.unified_top + b.unified_bot) * 0.5;
+                            (ca - focus_y)
+                                .abs()
+                                .partial_cmp(&(cb - focus_y).abs())
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        }) {
+                            self.diff_active_change = idx;
+                        }
+                    }
+                    scrollable::scroll_to(
+                        self.diff_unified_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: target_y,
+                        },
+                    )
+                } else {
+                    let vp_h = self.diff_left_viewport_h.max(200.0);
+                    let total_h = layout.total_split_h.max(vp_h);
+                    let max_scroll = (layout.total_split_h - vp_h).max(0.0);
+                    let target_y = (ratio * total_h - vp_h * 0.5).clamp(0.0, max_scroll);
+                    self.diff_left_scroll_y = target_y;
+                    if !layout.connectors.is_empty() {
+                        let focus_y = ratio * total_h;
+                        if let Some((idx, _)) = layout.connectors.iter().enumerate().min_by(|(_, a), (_, b)| {
+                            let ca = (a.split_top + a.split_bot) * 0.5;
+                            let cb = (b.split_top + b.split_bot) * 0.5;
+                            (ca - focus_y)
+                                .abs()
+                                .partial_cmp(&(cb - focus_y).abs())
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        }) {
+                            self.diff_active_change = idx;
+                        }
+                    }
+                    scrollable::scroll_to(
+                        self.diff_left_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: self.diff_left_scroll_x,
+                            y: target_y,
+                        },
+                    )
+                }
+            }
             Message::DiffSelStart { side, row, col } => {
                 self.terminal_focused = false;
                 self.focus_pane = ActiveFocusPane::Diff;

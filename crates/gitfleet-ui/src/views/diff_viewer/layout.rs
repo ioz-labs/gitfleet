@@ -26,8 +26,8 @@ pub(crate) enum SplitRow {
     PairedCode {
         left: Option<SplitCodeCell>,
         right: Option<SplitCodeCell>,
+        block_kind: Option<DiffChangeKind>,
         block_is_first: bool,
-        block_is_last: bool,
     },
     Hidden {
         gap_id: usize,
@@ -87,9 +87,14 @@ impl UnifiedRow {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConnectorSpan {
     pub(crate) kind: DiffChangeKind,
+    pub(crate) left_top: f32,
+    pub(crate) left_bot: f32,
+    pub(crate) right_top: f32,
+    pub(crate) right_bot: f32,
     pub(crate) split_top: f32,
     pub(crate) split_bot: f32,
     pub(crate) unified_top: f32,
+    pub(crate) unified_bot: f32,
 }
 
 #[derive(Debug, Default)]
@@ -362,8 +367,8 @@ pub(crate) fn build_diff_layout(
                             is_first: false,
                             is_last: false,
                         }),
+                        block_kind: None,
                         block_is_first: false,
-                        block_is_last: false,
                     });
                     out.unified_rows.push(UnifiedRow::Code {
                         old_line: Some(ctx.old_line),
@@ -416,8 +421,8 @@ pub(crate) fn build_diff_layout(
                                 is_first: false,
                                 is_last: false,
                             }),
+                            block_kind: None,
                             block_is_first: false,
-                            block_is_last: false,
                         });
                         out.unified_rows.push(UnifiedRow::Code {
                             old_line: Some(ctx.old_line),
@@ -528,17 +533,22 @@ pub(crate) fn build_diff_layout(
                     out.split_rows.push(SplitRow::PairedCode {
                         left,
                         right,
+                        block_kind: Some(cb.kind),
                         block_is_first: row_i == 0,
-                        block_is_last: row_i + 1 == row_len,
                     });
                     split_y += DIFF_LINE_H;
                 }
 
                 out.connectors.push(ConnectorSpan {
                     kind: cb.kind,
+                    left_top: split_top,
+                    left_bot: split_top + (old_n as f32) * DIFF_LINE_H,
+                    right_top: split_top,
+                    right_bot: split_top + (new_n as f32) * DIFF_LINE_H,
                     split_top,
                     split_bot: split_y,
                     unified_top,
+                    unified_bot: unified_y,
                 });
             }
             DiffBlock::Separator(hdr) => {

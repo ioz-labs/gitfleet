@@ -268,6 +268,10 @@ pub(crate) enum DetachedAction {
     LeftScrolled(scrollable::Viewport),
     UnifiedScrolled(scrollable::Viewport),
     JumpChange(i32),
+    OverviewJump {
+        unified: bool,
+        ratio: f32,
+    },
     SelStart {
         side: DiffSelectionSide,
         row: usize,
