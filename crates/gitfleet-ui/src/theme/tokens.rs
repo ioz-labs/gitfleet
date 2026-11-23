@@ -71,7 +71,7 @@ pub mod icon_size {
 
 /// Chrome dimensions, modal widths, splitter geometry, and dock sizing.
 pub mod layout {
-    pub const RIBBON_HEIGHT: f32 = 40.0;
+    pub const RIBBON_HEIGHT: f32 = 48.0;
     pub const PANE_HEADER_HEIGHT: f32 = 30.0;
     pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 

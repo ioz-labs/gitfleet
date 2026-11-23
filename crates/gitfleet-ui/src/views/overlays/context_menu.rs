@@ -1382,6 +1382,121 @@ impl GitFleetApp {
                     true,
                 ));
             }
+            ContextMenuTarget::RibbonPull => {
+                items = items.push(
+                    container(
+                        text("Remote Sync & Pull")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([5, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::pull(12.0, p.accent_fg).into(),
+                    "Pull with Options (Auto-Stash / Rebase)…".into(),
+                    Message::OpenPullSyncModal { push_after: false },
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::sync_arrows(12.0, p.accent_fg).into(),
+                    "Sync (Pull & Push)…".into(),
+                    Message::OpenPullSyncModal { push_after: true },
+                    false,
+                ));
+                items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                items = items.push(ctx_btn(
+                    icons::fetch(12.0, p.text_secondary).into(),
+                    "Fetch All & Prune".into(),
+                    Message::FetchSelected,
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::pull(12.0, p.text_secondary).into(),
+                    "Quick Pull (--ff-only)".into(),
+                    Message::PullSelected,
+                    false,
+                ));
+            }
+            ContextMenuTarget::RibbonStash => {
+                let changed = self
+                    .active_status()
+                    .map(|s| s.total_changes())
+                    .unwrap_or(0);
+                let sel_paths = self.selected_discard_paths();
+                items = items.push(
+                    container(
+                        text(format!("Stash ({} saved)", self.stashes.len()))
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([5, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::stash_save(12.0, p.accent_fg).into(),
+                    "Save Stash with Message & Options…".into(),
+                    Message::OpenSaveStashModal,
+                    false,
+                ));
+                if changed > 0 {
+                    items = items.push(ctx_btn(
+                        icons::stash(12.0, p.text_secondary).into(),
+                        format!("Quick Stash All ({changed} file(s))"),
+                        Message::StashSelected,
+                        false,
+                    ));
+                }
+                if !sel_paths.is_empty() {
+                    items = items.push(ctx_btn(
+                        icons::stash_save(12.0, p.text_secondary).into(),
+                        format!("Stash Selected Files ({})", sel_paths.len()),
+                        Message::StashPaths(sel_paths),
+                        false,
+                    ));
+                }
+                if !self.stashes.is_empty() {
+                    items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+                    items = items.push(ctx_btn(
+                        icons::stash_apply(12.0, p.success_fg).into(),
+                        "Pop Latest Stash (stash@{0})".into(),
+                        Message::PopStash(0),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::stash_apply(12.0, p.text_secondary).into(),
+                        "Apply Latest & Keep (stash@{0})".into(),
+                        Message::ApplyStash(0),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::layers(12.0, p.accent_fg).into(),
+                        "Manage & Inspect Stashes…".into(),
+                        Message::OpenApplyStashModal,
+                        false,
+                    ));
+                }
+            }
+            ContextMenuTarget::RibbonRebase => {
+                items = items.push(
+                    container(
+                        text("Rebase Operations")
+                            .size(type_scale::CAPTION)
+                            .color(p.text_muted),
+                    )
+                    .padding([5, 10]),
+                );
+                items = items.push(ctx_btn(
+                    icons::git_rebase(12.0, p.violet_fg).into(),
+                    "Interactive Rebase (Squash / Reword / Reorder)…".into(),
+                    Message::RibbonInteractiveRebaseRecent,
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::git_merge(12.0, p.accent_fg).into(),
+                    "Rebase Current Branch onto Another Branch…".into(),
+                    Message::ToggleMergeModal,
+                    false,
+                ));
+            }
         }
 
         let menu_w = 272.0_f32;

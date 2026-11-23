@@ -529,3 +529,43 @@ pub fn pause(size: f32, color: Color) -> svg::Svg<'static> {
         color,
     )
 }
+
+pub fn sync_arrows(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg>"#,
+        size,
+        color,
+    )
+}
+
+pub fn stash_save(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M23 4H1v4h22V4Z"/><path d="M12 11v6"/><path d="m9.5 14.5 2.5 2.5 2.5-2.5"/></svg>"#,
+        size,
+        color,
+    )
+}
+
+pub fn stash_apply(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8"/><path d="M8 7H2v4h7"/><path d="M12 16v-6a4 4 0 0 1 4-4h5"/><path d="m18 3 3 3-3 3"/></svg>"#,
+        size,
+        color,
+    )
+}
+
+pub fn git_rebase(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M6 8.5v7"/><path d="M8.5 6h7"/><path d="m13 3.5 2.5 2.5-2.5 2.5"/></svg>"#,
+        size,
+        color,
+    )
+}
+
+pub fn git_blame(size: f32, color: Color) -> svg::Svg<'static> {
+    icon(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="3"/><path d="M3 19a6 6 0 0 1 12 0"/><line x1="16" x2="22" y1="7" y2="7"/><line x1="16" x2="22" y1="12" y2="12"/><line x1="18" x2="22" y1="17" y2="17"/></svg>"#,
+        size,
+        color,
+    )
+}

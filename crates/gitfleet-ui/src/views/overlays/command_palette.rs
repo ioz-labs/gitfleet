@@ -95,7 +95,36 @@ impl GitFleetApp {
                 Message::RefreshAll,
             ),
             ("Git: Fetch", "", PaletteEntryKind::Command, Message::FetchSelected),
-            ("Git: Pull", "", PaletteEntryKind::Command, Message::PullSelected),
+            (
+                "Git: Pull (Smart Auto-Stash)…",
+                "",
+                PaletteEntryKind::Command,
+                Message::SmartPullClicked,
+            ),
+            (
+                "Git: Sync (Pull & Push with Auto-Stash)…",
+                "",
+                PaletteEntryKind::Command,
+                Message::OpenPullSyncModal { push_after: true },
+            ),
+            (
+                "Git: Save Stash (Message, Untracked & Keep-Index)…",
+                "",
+                PaletteEntryKind::Command,
+                Message::OpenSaveStashModal,
+            ),
+            (
+                "Git: Apply / Pop Stash…",
+                "",
+                PaletteEntryKind::Command,
+                Message::OpenApplyStashModal,
+            ),
+            (
+                "Git: Interactive Rebase (Squash / Reword / Reorder)…",
+                "",
+                PaletteEntryKind::Command,
+                Message::RibbonInteractiveRebaseRecent,
+            ),
             (
                 "Git: Push…",
                 "",
@@ -108,6 +137,12 @@ impl GitFleetApp {
                 )),
             ),
             ("Git: Stage All", "Ctrl+T", PaletteEntryKind::Command, Message::StageAll),
+            (
+                "Git: Focus Commit Message Summary",
+                "",
+                PaletteEntryKind::Command,
+                Message::FocusCommitSummary,
+            ),
             (
                 "Git: Discard Local or Staged Changes…",
                 "Ctrl+Z",

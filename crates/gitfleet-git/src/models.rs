@@ -218,6 +218,47 @@ pub struct StashEntry {
     pub date_relative: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PullStrategy {
+    #[default]
+    FastForwardOnly,
+    Rebase,
+    Merge,
+}
+
+impl PullStrategy {
+    pub fn as_flag(self) -> &'static str {
+        match self {
+            Self::FastForwardOnly => "--ff-only",
+            Self::Rebase => "--rebase",
+            Self::Merge => "--no-rebase",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FastForwardOnly => "Fast-Forward Only",
+            Self::Rebase => "Rebase Local Commits",
+            Self::Merge => "Merge Upstream",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashApplyOutcome {
+    pub summary: String,
+    pub conflicted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullOutcome {
+    pub summary: String,
+    pub auto_stashed: bool,
+    pub pull_conflicted: bool,
+    pub stash_pop_conflicted: bool,
+    pub pushed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflogEntry {
     pub short_oid: String,

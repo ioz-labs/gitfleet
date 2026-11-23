@@ -18,6 +18,9 @@ use crate::views::overlays::blueprint_modal::{
 };
 use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
 use crate::views::overlays::rebase_modal::RebaseModalState;
+use crate::views::overlays::stash_pull_modal::{
+    ApplyStashModalState, PullSyncModalState, SaveStashModalState,
+};
 use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
 use gitfleet_docs::{FileEncoding, LineEnding};
@@ -194,6 +197,11 @@ pub(crate) struct GitFleetApp {
     pub(crate) blueprint_export_modal: Option<BlueprintExportModalState>,
     pub(crate) blueprint_import_modal: Option<BlueprintImportModalState>,
     pub(crate) rebase_modal: Option<RebaseModalState>,
+    pub(crate) save_stash_modal: Option<SaveStashModalState>,
+    pub(crate) save_stash_input_id: text_input::Id,
+    pub(crate) apply_stash_modal: Option<ApplyStashModalState>,
+    pub(crate) pull_sync_modal: Option<PullSyncModalState>,
+    pub(crate) auto_open_first_conflict: bool,
     pub(crate) blame_request_id: u64,
     pub(crate) blame_file_path: Option<String>,
     pub(crate) blame_lines: Vec<BlameLine>,
@@ -556,6 +564,11 @@ impl GitFleetApp {
             blueprint_export_modal: None,
             blueprint_import_modal: None,
             rebase_modal: None,
+            save_stash_modal: None,
+            save_stash_input_id: text_input::Id::unique(),
+            apply_stash_modal: None,
+            pull_sync_modal: None,
+            auto_open_first_conflict: false,
             blame_request_id: 0,
             blame_file_path: None,
             blame_lines: Vec::new(),
@@ -977,6 +990,9 @@ impl GitFleetApp {
             || self.blueprint_export_modal.is_some()
             || self.blueprint_import_modal.is_some()
             || self.rebase_modal.is_some()
+            || self.save_stash_modal.is_some()
+            || self.apply_stash_modal.is_some()
+            || self.pull_sync_modal.is_some()
     }
 
     pub(crate) fn unsaved_editor_names(&self) -> Vec<String> {
@@ -1806,6 +1822,38 @@ mod tests {
         }
         app.drawer_tab = None;
         app.show_settings_modal = true;
+        let _ = app.view_host(p);
+        app.show_settings_modal = false;
+
+        app.window_size = Size::new(1024.0, 660.0);
+        let _ = app.view_host(p);
+        app.window_size = Size::new(1440.0, 900.0);
+
+        app.save_stash_modal = Some(SaveStashModalState {
+            message: "WIP feature".into(),
+            include_untracked: true,
+            keep_index: false,
+            selected_only: false,
+            selected_paths: vec!["src/main.rs".into()],
+        });
+        let _ = app.view_host(p);
+        app.save_stash_modal = None;
+
+        app.stashes = vec![StashEntry {
+            index: 0,
+            ref_name: "stash@{0}".into(),
+            message: "WIP on main".into(),
+            date_relative: "2 minutes ago".into(),
+        }];
+        app.apply_stash_modal = Some(ApplyStashModalState { selected_index: 0 });
+        let _ = app.view_host(p);
+        app.apply_stash_modal = None;
+
+        app.pull_sync_modal = Some(PullSyncModalState {
+            strategy: gitfleet_git::PullStrategy::Rebase,
+            auto_stash: true,
+            push_after: true,
+        });
         let _ = app.view_host(p);
     }
 }

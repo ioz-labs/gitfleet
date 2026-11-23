@@ -1,5 +1,11 @@
 use crate::app::{ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm};
 use crate::views::diff_viewer::build_selected_lines_patch;
+use crate::views::overlays::stash_pull_modal::{
+    ApplyStashModalState, PullSyncModalState, SaveStashModalState,
+};
+use chrono::Utc;
+use gitfleet_core::UndoEntry;
+use gitfleet_git::PullStrategy;
 use iced::Task;
 
 impl GitFleetApp {
@@ -86,11 +92,23 @@ impl GitFleetApp {
                                 || old.in_merge != summary.in_merge
                                 || old.in_rebase != summary.in_rebase
                         });
+                        let first_conflict = summary.conflict_files.first().cloned();
                         self.statuses.insert(id, summary);
                         if is_selected {
                             self.prune_file_selection();
                             let mut follow_up = Vec::new();
-                            follow_up.push(self.sync_active_working_file_after_status());
+                            if self.auto_open_first_conflict {
+                                self.auto_open_first_conflict = false;
+                                if let Some(cf) = first_conflict {
+                                    self.graph_selection = GraphSelection::WorkingTree;
+                                    self.selected_changed_file = Some(cf.clone());
+                                    follow_up.push(self.update(Message::OpenConflictSolver(cf.path)));
+                                } else {
+                                    follow_up.push(self.sync_active_working_file_after_status());
+                                }
+                            } else {
+                                follow_up.push(self.sync_active_working_file_after_status());
+                            }
                             if let Some(repo) = self.current_repo() {
                                 if refs_or_tracking_changed {
                                     follow_up.push(self.load_log_task(repo.clone()));
@@ -374,15 +392,332 @@ impl GitFleetApp {
             Message::FetchSelected => self.run_git_op("Fetch", move |svc, repo| async move {
                 svc.git.fetch(&repo.path).await
             }),
-            Message::PullSelected => self.run_git_op("Pull", move |svc, repo| async move {
-                svc.git.pull(&repo.path).await
-            }),
+            Message::PullSelected => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.busy_label = Some("Pull…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        svc.git
+                            .pull_smart(&repo.path, PullStrategy::FastForwardOnly, false, false)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::PullSmartDone {
+                        push_after: false,
+                        result,
+                    },
+                )
+            }
+            Message::SmartPullClicked => {
+                if self.selected_repo.is_none() {
+                    return Task::none();
+                }
+                let (dirty, diverged) = self
+                    .active_status()
+                    .map(|s| {
+                        (
+                            (s.staged_count + s.unstaged_count + s.untracked_count) > 0,
+                            s.ahead > 0 && s.behind > 0,
+                        )
+                    })
+                    .unwrap_or((false, false));
+                if dirty || diverged {
+                    self.update(Message::OpenPullSyncModal { push_after: false })
+                } else {
+                    self.update(Message::PullSelected)
+                }
+            }
+            Message::OpenPullSyncModal { push_after } => {
+                if self.selected_repo.is_none() {
+                    return Task::none();
+                }
+                self.context_menu = None;
+                self.show_palette = false;
+                let st = self.active_status();
+                let dirty = st.is_some_and(|s| {
+                    (s.staged_count + s.unstaged_count + s.untracked_count) > 0
+                });
+                let ahead = st.map(|s| s.ahead).unwrap_or(0);
+                let strategy = if ahead > 0 {
+                    PullStrategy::Rebase
+                } else {
+                    PullStrategy::FastForwardOnly
+                };
+                self.pull_sync_modal = Some(PullSyncModalState {
+                    strategy,
+                    auto_stash: dirty,
+                    push_after,
+                });
+                Task::none()
+            }
+            Message::ClosePullSyncModal => {
+                self.pull_sync_modal = None;
+                Task::none()
+            }
+            Message::PullSyncSetStrategy(strat) => {
+                if let Some(m) = &mut self.pull_sync_modal {
+                    m.strategy = strat;
+                }
+                Task::none()
+            }
+            Message::PullSyncToggleAutoStash(v) => {
+                if let Some(m) = &mut self.pull_sync_modal {
+                    m.auto_stash = v;
+                }
+                Task::none()
+            }
+            Message::PullSyncTogglePushAfter(v) => {
+                if let Some(m) = &mut self.pull_sync_modal {
+                    m.push_after = v;
+                }
+                Task::none()
+            }
+            Message::PullSyncFetchOnly => {
+                self.pull_sync_modal = None;
+                self.update(Message::FetchSelected)
+            }
+            Message::ConfirmPullSyncModal => {
+                let Some(modal) = self.pull_sync_modal.take() else {
+                    return Task::none();
+                };
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                let strategy = modal.strategy;
+                let auto_stash = modal.auto_stash;
+                let push_after = modal.push_after;
+                self.busy_label = Some(if push_after {
+                    "Syncing…".into()
+                } else {
+                    "Pulling…".into()
+                });
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        if strategy != PullStrategy::FastForwardOnly
+                            && let Ok(prev) = svc.git.head_oid(&repo.path).await
+                        {
+                            svc.undo.record(UndoEntry {
+                                id: format!("{}", Utc::now().timestamp_millis()),
+                                repo_id: repo.id.clone(),
+                                label: format!("Pull ({})", strategy.label()),
+                                previous_head: prev,
+                                created_at: Utc::now(),
+                            });
+                        }
+                        svc.git
+                            .pull_smart(&repo.path, strategy, auto_stash, push_after)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| Message::PullSmartDone { push_after, result },
+                )
+            }
+            Message::PullSmartDone { push_after, result } => {
+                self.busy_label = None;
+                match result {
+                    Ok(out) if out.pull_conflicted => {
+                        self.auto_open_first_conflict = true;
+                        self.toast_is_error = true;
+                        self.toast_message = if out.auto_stashed {
+                            "Upstream conflicts during Pull — local edits kept safely in stash@{0}; opening Conflict Solver".into()
+                        } else {
+                            "Upstream conflicts during Pull — opening 3-Way Conflict Solver".into()
+                        };
+                    }
+                    Ok(out) if out.stash_pop_conflicted => {
+                        self.auto_open_first_conflict = true;
+                        self.toast_is_error = true;
+                        self.toast_message =
+                            "Pulled latest commits; local edits conflicted on Stash Pop — stash@{0} preserved safely; opening Conflict Solver"
+                                .into();
+                    }
+                    Ok(out) => {
+                        self.toast_is_error = false;
+                        self.toast_message = match (out.pushed, out.auto_stashed) {
+                            (true, true) => {
+                                "Synced (Auto-Stashed, Pulled, Restored & Pushed)".into()
+                            }
+                            (true, false) => "Synced (Pulled & Pushed)".into(),
+                            (false, true) => {
+                                "Pulled & restored Auto-Stashed changes cleanly".into()
+                            }
+                            (false, false) => "Pull succeeded".into(),
+                        };
+                    }
+                    Err(e) => {
+                        self.report_action_error(
+                            if push_after {
+                                "Sync Failed"
+                            } else {
+                                "Pull Failed"
+                            },
+                            e,
+                            true,
+                        );
+                    }
+                }
+                self.update(Message::RefreshSelected)
+            }
             Message::PushSelected => self.run_git_op("Push", move |svc, repo| async move {
                 svc.git.push(&repo.path).await
             }),
-            Message::StashSelected => self.run_git_op("Stash", move |svc, repo| async move {
+            Message::StashSelected => self.run_git_op("Save Stash", move |svc, repo| async move {
                 svc.git.stash_push(&repo.path, None).await
             }),
+            Message::OpenSaveStashModal => {
+                if self.selected_repo.is_none() {
+                    return Task::none();
+                }
+                self.context_menu = None;
+                self.show_palette = false;
+                let selected_paths = self.selected_discard_paths();
+                self.save_stash_modal = Some(SaveStashModalState {
+                    message: String::new(),
+                    include_untracked: true,
+                    keep_index: false,
+                    selected_only: false,
+                    selected_paths,
+                });
+                self.focus_pane = ActiveFocusPane::TextInput;
+                iced::widget::text_input::focus(self.save_stash_input_id.clone())
+            }
+            Message::CloseSaveStashModal => {
+                self.save_stash_modal = None;
+                self.focus_pane = ActiveFocusPane::Other;
+                Task::none()
+            }
+            Message::SaveStashMessageChanged(v) => {
+                self.focus_pane = ActiveFocusPane::TextInput;
+                if let Some(m) = &mut self.save_stash_modal {
+                    m.message = v;
+                }
+                Task::none()
+            }
+            Message::SaveStashToggleUntracked(v) => {
+                if let Some(m) = &mut self.save_stash_modal {
+                    m.include_untracked = v;
+                }
+                Task::none()
+            }
+            Message::SaveStashToggleKeepIndex(v) => {
+                if let Some(m) = &mut self.save_stash_modal {
+                    m.keep_index = v;
+                }
+                Task::none()
+            }
+            Message::SaveStashToggleSelectedOnly(v) => {
+                if let Some(m) = &mut self.save_stash_modal {
+                    m.selected_only = v;
+                }
+                Task::none()
+            }
+            Message::ConfirmSaveStashModal => {
+                let Some(modal) = self.save_stash_modal.take() else {
+                    return Task::none();
+                };
+                self.focus_pane = ActiveFocusPane::Other;
+                let msg = modal.message.trim().to_string();
+                let include_untracked = modal.include_untracked;
+                let keep_index = modal.keep_index;
+                let selected_only = modal.selected_only;
+                let paths = modal.selected_paths;
+                if selected_only {
+                    self.selected_changed_files.clear();
+                }
+                self.run_git_op("Save Stash", move |svc, repo| async move {
+                    let msg_opt = (!msg.is_empty()).then_some(msg.as_str());
+                    if selected_only && !paths.is_empty() {
+                        svc.git.stash_push_paths(&repo.path, msg_opt, &paths).await
+                    } else {
+                        svc.git
+                            .stash_push_with_options(
+                                &repo.path,
+                                msg_opt,
+                                include_untracked,
+                                keep_index,
+                            )
+                            .await
+                    }
+                })
+            }
+            Message::OpenApplyStashModal => {
+                if self.selected_repo.is_none() {
+                    return Task::none();
+                }
+                self.context_menu = None;
+                self.show_palette = false;
+                self.apply_stash_modal = Some(ApplyStashModalState { selected_index: 0 });
+                if let Some(repo) = self.current_repo() {
+                    return self.load_stashes_task(repo);
+                }
+                Task::none()
+            }
+            Message::CloseApplyStashModal => {
+                self.apply_stash_modal = None;
+                Task::none()
+            }
+            Message::SelectApplyStashIndex(idx) => {
+                if let Some(m) = &mut self.apply_stash_modal {
+                    m.selected_index = idx;
+                }
+                Task::none()
+            }
+            Message::InspectStashFromModal(idx) => {
+                self.apply_stash_modal = None;
+                self.update(Message::InspectStash(idx))
+            }
+            Message::ConfirmApplyStashModal { pop } => {
+                let Some(modal) = self.apply_stash_modal.take() else {
+                    return Task::none();
+                };
+                if self.stashes.is_empty() {
+                    return Task::none();
+                }
+                let index = modal
+                    .selected_index
+                    .min(self.stashes.len().saturating_sub(1));
+                if pop {
+                    self.update(Message::PopStash(index))
+                } else {
+                    self.update(Message::ApplyStash(index))
+                }
+            }
+            Message::StashApplySmartDone { index, pop, result } => {
+                self.busy_label = None;
+                match result {
+                    Ok(out) if out.conflicted => {
+                        self.auto_open_first_conflict = true;
+                        self.toast_is_error = true;
+                        self.toast_message = format!(
+                            "Conflict applying stash@{{{index}}} — stash entry preserved safely; opening 3-Way Conflict Solver"
+                        );
+                    }
+                    Ok(_) => {
+                        self.toast_is_error = false;
+                        self.toast_message = if pop {
+                            format!("Popped stash@{{{index}}} cleanly")
+                        } else {
+                            format!("Applied stash@{{{index}}} cleanly")
+                        };
+                    }
+                    Err(e) => {
+                        self.report_action_error(
+                            if pop {
+                                "Pop Stash Failed"
+                            } else {
+                                "Apply Stash Failed"
+                            },
+                            e,
+                            true,
+                        );
+                    }
+                }
+                self.update(Message::RefreshSelected)
+            }
             Message::GitActionDone(label, res) => {
                 self.busy_label = None;
                 match res {

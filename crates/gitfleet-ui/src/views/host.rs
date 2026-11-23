@@ -4,11 +4,10 @@ use crate::app::{
 };
 use crate::icons;
 use crate::theme::kit::{
-    ButtonSize, ButtonVariant, SegmentItem, UiButton, hairline_h_splitter, hairline_v_splitter,
-    kbd_pill, segmented_control,
+    SegmentItem, hairline_h_splitter, hairline_v_splitter, kbd_pill, segmented_control,
 };
 use crate::theme::{self, Palette, ThemeMode, icon_size, type_scale};
-use crate::views::{slim_strip_h, tip, truncate_chars};
+use crate::views::{tip, truncate_chars};
 use iced::widget::{
     Space, Stack, button, column, container, horizontal_rule, mouse_area, row, text, tooltip,
 };
@@ -44,10 +43,6 @@ impl GitFleetApp {
             .map(|e| e.label.clone())
             .unwrap_or_else(|| "Last Git operation".into());
 
-        let active_repo_name = self
-            .current_repo()
-            .map(|r| r.name)
-            .unwrap_or_else(|| "No repository".into());
         let active_branch_name = active_status
             .and_then(|s| s.branch.as_deref())
             .unwrap_or("HEAD")
@@ -63,6 +58,7 @@ impl GitFleetApp {
         let has_changes = active_changed > 0;
         let has_unstaged = active_unstaged > 0;
         let has_staged = active_staged > 0;
+        let stash_cnt = self.stashes.len();
         let sel_unstaged_paths = self.selected_unstaged_paths();
         let sel_staged_paths = self.selected_staged_paths();
         let sel_discard_paths = self.selected_discard_paths();
@@ -70,28 +66,45 @@ impl GitFleetApp {
         let sel_staged_n = sel_staged_paths.len();
         let sel_discard_n = sel_discard_paths.len();
 
-        // ── 1. Unified Command Ribbon (40px — merges Titlebar + Git Toolbar + Smart Next Action) ──
+        // ── 1. Spatially-Aligned SmartGit Flight-Deck Ribbon (48px, zero horizontal scroll) ──
+        let compact_ribbon = self.window_size.width < 1280.0;
+        let btn_pad_h: u16 = if compact_ribbon { 5 } else { 7 };
+        let has_sidebar = self.host_layout != HostLayoutMode::ZenDiff;
+        let repo_col_w = self
+            .sidebar_width
+            .clamp(220.0, (self.window_size.width * 0.30).max(240.0));
+        let show_ws_text = !has_sidebar || repo_col_w >= 276.0;
+
+        let ws_inner = if show_ws_text {
+            row![
+                icons::folder(icon_size::XS, p.accent_fg),
+                text(truncate_chars(&ws.name, 10))
+                    .size(type_scale::CAPTION)
+                    .font(theme::UI_FONT_MEDIUM)
+                    .color(p.text_primary)
+                    .wrapping(text::Wrapping::None),
+                icons::chevron_down(10.0, p.text_muted),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+        } else {
+            row![
+                icons::folder(icon_size::SM, p.accent_fg),
+                icons::chevron_down(10.0, p.text_muted),
+            ]
+            .spacing(3)
+            .align_y(Alignment::Center)
+        };
+
         let ws_pill = tip(
             mouse_area(
-                button(
-                    row![
-                        icons::folder(icon_size::XS, p.accent_fg),
-                        text(truncate_chars(&ws.name, 20))
-                            .size(type_scale::CAPTION)
-                            .font(theme::UI_FONT_MEDIUM)
-                            .color(p.text_primary)
-                            .wrapping(text::Wrapping::None),
-                        icons::chevron_down(11.0, p.text_muted),
-                    ]
-                    .spacing(5)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 8])
-                .style(theme::subtle_btn(p))
-                .on_press(Message::ToggleWorkspaceModal),
+                button(ws_inner)
+                    .padding([5, 7])
+                    .style(theme::subtle_btn(p))
+                    .on_press(Message::ToggleWorkspaceModal),
             )
             .on_right_press(Message::OpenContextMenu(ContextMenuTarget::WorkspacePill)),
-            "Workspace Manager (Switch, Rename & Groups) · Right-click for quick actions",
+            "Workspace Manager (Switch, Rename & Blueprints) · Right-click for quick actions",
             tooltip::Position::Bottom,
             p,
         );
@@ -109,20 +122,10 @@ impl GitFleetApp {
             ]
             .spacing(3);
             tooltip(
-                button(
-                    row![
-                        icons::lock(icon_size::XS, p.warning_fg),
-                        text("Claim")
-                            .size(type_scale::BADGE)
-                            .color(p.warning_fg)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([3, 7])
-                .style(theme::subtle_btn(p))
-                .on_press(Message::TakeWorkspaceOwnership),
+                button(icons::lock(icon_size::XS, p.warning_fg))
+                    .padding([5, 6])
+                    .style(theme::subtle_btn(p))
+                    .on_press(Message::TakeWorkspaceOwnership),
                 container(tip_col)
                     .padding([7, 10])
                     .max_width(320.0)
@@ -135,188 +138,55 @@ impl GitFleetApp {
             Space::with_width(Length::Shrink).into()
         };
 
-        let branch_pill: Element<'_, Message> = if has_repo {
-            tip(
-                button(
-                    row![
-                        icons::branch(icon_size::XS, p.accent_fg),
-                        text(truncate_chars(&active_repo_name, 16))
-                            .size(type_scale::CAPTION)
-                            .font(theme::UI_FONT_MEDIUM)
-                            .color(p.text_primary)
-                            .wrapping(text::Wrapping::None),
-                        text("/")
-                            .size(type_scale::CAPTION)
-                            .color(p.text_muted),
-                        text(truncate_chars(&active_branch_name, 18))
-                            .size(type_scale::CAPTION)
-                            .font(theme::CODE_FONT)
-                            .color(p.accent_fg)
-                            .wrapping(text::Wrapping::None),
-                        icons::chevron_down(11.0, p.text_muted),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 8])
-                .style(theme::subtle_btn(p))
-                .on_press(Message::ToggleBranchPopover),
-                "Quick Branch Switcher & Creator (Ctrl+B)",
-                tooltip::Position::Bottom,
-                p,
-            )
-        } else {
-            Space::with_width(Length::Shrink).into()
-        };
-
-        // Smart Next Action 1-Click Workflow CTA
-        let smart_cta: Element<'_, Message> = if !has_repo {
-            Space::with_width(Length::Shrink).into()
-        } else if active_conflicts > 0 {
-            tip(
-                button(
-                    row![
-                        icons::alert_triangle(icon_size::XS, Color::WHITE),
-                        text(format!("Resolve ({active_conflicts})"))
-                            .size(type_scale::CAPTION)
-                            .font(theme::UI_FONT_MEDIUM)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 9])
-                .style(theme::danger_btn(p))
-                .on_press(Message::SetBottomViewMode(BottomViewMode::ResolveConflicts)),
-                "Smart Next Action: Open 3-way conflict solver for conflicted files",
-                tooltip::Position::Bottom,
-                p,
-            )
-        } else if active_behind > 0 && active_ahead == 0 {
-            tip(
-                button(
-                    row![
-                        icons::pull(icon_size::XS, theme::on_accent_ink(p.accent_primary)),
-                        text(format!("Pull ({active_behind})"))
-                            .size(type_scale::CAPTION)
-                            .font(theme::UI_FONT_MEDIUM)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 9])
-                .style(theme::primary_btn(p))
-                .on_press(Message::PullSelected),
-                "Smart Next Action: Pull incoming commits from upstream",
-                tooltip::Position::Bottom,
-                p,
-            )
-        } else if active_staged > 0 {
-            let has_msg = !self.composed_commit_message().trim().is_empty();
-            let commit_msg = if has_msg {
-                Message::CommitSubmitted
-            } else {
-                Message::FocusCommitSummary
-            };
-            tip(
-                button(
-                    row![
-                        icons::check(icon_size::XS, theme::on_accent_ink(p.accent_primary)),
-                        text(format!("Commit ({active_staged})"))
-                            .size(type_scale::CAPTION)
-                            .font(theme::UI_FONT_MEDIUM)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 9])
-                .style(theme::primary_btn(p))
-                .on_press(commit_msg),
-                if has_msg {
-                    "Smart Next Action: Commit staged changes now"
-                } else {
-                    "Smart Next Action: Focus Commit Summary input"
-                },
-                tooltip::Position::Bottom,
-                p,
-            )
-        } else if active_unstaged > 0 {
-            tip(
-                UiButton::new(p, "Stage All")
-                    .variant(ButtonVariant::OutlineAccent)
-                    .size(ButtonSize::Xs)
-                    .badge(active_unstaged.to_string())
-                    .icon(icons::stage_all(icon_size::XS, p.accent_fg))
-                    .on_press(Message::StageAll),
-                "Smart Next Action: Stage modified & untracked files to Index",
-                tooltip::Position::Bottom,
-                p,
-            )
-        } else if active_ahead > 0 {
-            tip(
-                button(
-                    row![
-                        icons::push(icon_size::XS, theme::on_accent_ink(p.accent_primary)),
-                        text(format!("Push ({active_ahead})"))
-                            .size(type_scale::CAPTION)
-                            .font(theme::UI_FONT_MEDIUM)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 9])
-                .style(theme::primary_btn(p))
-                .on_press(Message::RequestConfirm(PendingConfirm::push_selected(
-                    &active_branch_name,
-                    active_ahead,
-                ))),
-                "Smart Next Action: Push local commits to remote",
-                tooltip::Position::Bottom,
-                p,
-            )
-        } else {
-            Space::with_width(Length::Shrink).into()
-        };
-
-        let tb_btn = |icon: Element<'static, Message>,
-                      label: String,
-                      label_color: Color,
-                      active: bool,
-                      msg: Option<Message>,
-                      hint: &'static str|
+        let ribbon_btn = |icon: Element<'static, Message>,
+                          label: String,
+                          label_color: Color,
+                          active: bool,
+                          has_dropdown: bool,
+                          msg: Option<Message>,
+                          right_menu: Option<ContextMenuTarget>,
+                          hint: &'static str|
          -> Element<'_, Message> {
-            let fg = if msg.is_some() {
-                label_color
-            } else {
-                p.text_muted
-            };
-            tip(
-                button(
-                    row![
-                        icon,
-                        text(label)
-                            .size(type_scale::CAPTION)
-                            .color(fg)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-                )
-                .padding([4, 7])
+            let enabled = msg.is_some();
+            let fg = if enabled { label_color } else { p.text_muted };
+            let mut top_row = row![icon].spacing(2).align_y(Alignment::Center);
+            if has_dropdown {
+                top_row = top_row.push(icons::chevron_down(
+                    9.0,
+                    if enabled { p.text_secondary } else { p.text_muted },
+                ));
+            }
+            let content = column![
+                top_row,
+                text(label)
+                    .size(type_scale::BADGE)
+                    .color(fg)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(2)
+            .align_x(Alignment::Center);
+
+            let btn_el: Element<'_, Message> = button(content)
+                .padding([3, btn_pad_h])
                 .style(theme::toolbar_btn(p, active))
-                .on_press_maybe(msg),
-                hint,
-                tooltip::Position::Bottom,
-                p,
-            )
+                .on_press_maybe(msg)
+                .into();
+
+            let interactive: Element<'_, Message> = if let Some(target) = right_menu.filter(|_| has_repo)
+            {
+                mouse_area(btn_el)
+                    .on_right_press(Message::OpenContextMenu(target))
+                    .into()
+            } else {
+                btn_el
+            };
+
+            tip(interactive, hint, tooltip::Position::Bottom, p)
         };
 
         let tb_sep = || {
             container(
-                container(Space::new(1, 16)).style(move |_| container::Style {
+                container(Space::new(1, 24)).style(move |_| container::Style {
                     background: Some(iced::Background::Color(p.border_default)),
                     ..Default::default()
                 }),
@@ -324,302 +194,484 @@ impl GitFleetApp {
             .padding([0, 3])
         };
 
+        // ── Column 1 (above Repositories pane): Workspace + Remote Sync (Pull, Sync, Push) ──
         let pull_label = if active_behind > 0 {
-            format!("Pull ({active_behind})")
+            format!("Pull·{active_behind}")
         } else {
             "Pull".to_string()
         };
         let push_label = if active_ahead > 0 {
-            format!("Push ({active_ahead})")
+            format!("Push·{active_ahead}")
         } else {
             "Push".to_string()
         };
+
+        let repo_col_row = row![
+            ws_pill,
+            lock_badge,
+            Space::with_width(4.0),
+            ribbon_btn(
+                icons::pull(
+                    icon_size::SM,
+                    if active_behind > 0 { p.accent_fg } else { ic },
+                )
+                .into(),
+                pull_label,
+                if active_behind > 0 {
+                    p.accent_fg
+                } else {
+                    p.text_primary
+                },
+                self.pull_sync_modal
+                    .as_ref()
+                    .is_some_and(|m| !m.push_after),
+                true,
+                has_repo.then_some(Message::SmartPullClicked),
+                Some(ContextMenuTarget::RibbonPull),
+                "Pull from remote (auto-opens Auto-Stash / Strategy dialog if working tree has local changes) · Right-click for Fetch & options",
+            ),
+            ribbon_btn(
+                icons::sync_arrows(
+                    icon_size::SM,
+                    if active_behind > 0 || active_ahead > 0 {
+                        p.accent_fg
+                    } else {
+                        ic
+                    },
+                )
+                .into(),
+                "Sync".into(),
+                p.text_primary,
+                self.pull_sync_modal
+                    .as_ref()
+                    .is_some_and(|m| m.push_after),
+                true,
+                has_repo.then_some(Message::OpenPullSyncModal { push_after: true }),
+                Some(ContextMenuTarget::RibbonPull),
+                "Sync repository (Pull with Rebase/Merge + Auto-Stash + Push)… · Right-click for Fetch",
+            ),
+            ribbon_btn(
+                icons::push(
+                    icon_size::SM,
+                    if active_ahead > 0 { p.success_fg } else { ic },
+                )
+                .into(),
+                push_label,
+                if active_ahead > 0 {
+                    p.success_fg
+                } else {
+                    p.text_primary
+                },
+                false,
+                false,
+                has_repo.then(|| {
+                    Message::RequestConfirm(PendingConfirm::push_selected(
+                        &active_branch_name,
+                        active_ahead,
+                    ))
+                }),
+                None,
+                "Push local commits to remote…",
+            ),
+            Space::with_width(if has_sidebar {
+                Length::Fill
+            } else {
+                Length::Shrink
+            }),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center);
+
+        let repo_col_slot = container(repo_col_row)
+            .padding([0, 6])
+            .width(if has_sidebar {
+                Length::Fixed(repo_col_w)
+            } else {
+                Length::Shrink
+            })
+            .height(Length::Fill)
+            .align_y(Alignment::Center);
+
+        let col_divider = container(
+            container(Space::new(1, 28)).style(move |_| container::Style {
+                background: Some(iced::Background::Color(p.border_default)),
+                ..Default::default()
+            }),
+        )
+        .padding([0, 3])
+        .align_y(Alignment::Center);
+
+        // ── Column 2 (above Graph / Working Tree pane): Stage, Unstage, Discard | Save Stash, Apply Stash ──
+        let conflict_pill: Element<'_, Message> = if has_repo && active_conflicts > 0 {
+            tip(
+                button(
+                    column![
+                        icons::alert_triangle(icon_size::SM, Color::WHITE),
+                        text(format!("Resolve·{active_conflicts}"))
+                            .size(type_scale::BADGE)
+                            .color(Color::WHITE)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(2)
+                    .align_x(Alignment::Center),
+                )
+                .padding([3, 8])
+                .style(theme::danger_btn(p))
+                .on_press(Message::SetBottomViewMode(BottomViewMode::ResolveConflicts)),
+                "Open 3-Way Interactive Conflict Solver for conflicted files",
+                tooltip::Position::Bottom,
+                p,
+            )
+        } else {
+            Space::with_width(Length::Shrink).into()
+        };
+
+        let graph_col_group = row![
+            ribbon_btn(
+                icons::stage_all(
+                    icon_size::SM,
+                    if has_unstaged {
+                        p.success_fg
+                    } else {
+                        p.text_muted
+                    },
+                )
+                .into(),
+                if sel_unstaged_n > 0 {
+                    format!("Stage·{sel_unstaged_n}")
+                } else {
+                    "Stage".into()
+                },
+                p.text_primary,
+                false,
+                false,
+                (has_repo && has_unstaged).then_some(if sel_unstaged_n > 0 {
+                    Message::StageSelectedFiles
+                } else {
+                    Message::StageAll
+                }),
+                None,
+                "Stage files to Index (Ctrl+T)",
+            ),
+            ribbon_btn(
+                icons::unstage_all(
+                    icon_size::SM,
+                    if has_staged {
+                        p.warning_fg
+                    } else {
+                        p.text_muted
+                    },
+                )
+                .into(),
+                if sel_staged_n > 0 {
+                    format!("Unstage·{sel_staged_n}")
+                } else {
+                    "Unstage".into()
+                },
+                p.text_primary,
+                false,
+                false,
+                (has_repo && has_staged).then_some(if sel_staged_n > 0 {
+                    Message::UnstageSelectedFiles
+                } else {
+                    Message::UnstageAll
+                }),
+                None,
+                "Unstage files back to Working Tree (Ctrl+Shift+T)",
+            ),
+            ribbon_btn(
+                icons::trash(
+                    icon_size::SM,
+                    if has_changes {
+                        p.danger_fg
+                    } else {
+                        p.text_muted
+                    },
+                )
+                .into(),
+                if sel_discard_n > 0 {
+                    format!("Discard·{sel_discard_n}")
+                } else {
+                    "Discard".into()
+                },
+                p.text_primary,
+                self.discard_modal.is_some(),
+                false,
+                has_changes.then(|| {
+                    if sel_discard_n > 0 {
+                        Message::OpenDiscardModal(Some(sel_discard_paths.clone()))
+                    } else {
+                        Message::OpenDiscardModal(None)
+                    }
+                }),
+                None,
+                "Discard local or staged changes… (Ctrl+Z)",
+            ),
+            tb_sep(),
+            ribbon_btn(
+                icons::stash_save(
+                    icon_size::SM,
+                    if has_changes { p.accent_fg } else { p.text_muted },
+                )
+                .into(),
+                "Save Stash".into(),
+                p.text_primary,
+                self.save_stash_modal.is_some(),
+                true,
+                (has_repo && has_changes).then_some(Message::OpenSaveStashModal),
+                Some(ContextMenuTarget::RibbonStash),
+                "Save Stash (custom message, untracked -u, --keep-index)… · Right-click for Quick Stash",
+            ),
+            ribbon_btn(
+                icons::stash_apply(
+                    icon_size::SM,
+                    if stash_cnt > 0 {
+                        p.success_fg
+                    } else {
+                        p.text_muted
+                    },
+                )
+                .into(),
+                if stash_cnt > 0 {
+                    format!("Apply·{stash_cnt}")
+                } else {
+                    "Apply Stash".into()
+                },
+                p.text_primary,
+                self.apply_stash_modal.is_some(),
+                false,
+                (has_repo && stash_cnt > 0).then_some(Message::OpenApplyStashModal),
+                Some(ContextMenuTarget::RibbonStash),
+                "Apply or Pop Stash back into working tree… · Right-click to Pop stash@{0} immediately",
+            ),
+            conflict_pill,
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center);
+
+        // ── Column 3 (Center-Right Inspection): Blame, Studio, Undo ──
+        let has_active_file = self.active_file_path.is_some();
+        let blame_active = self.bottom_mode == BottomViewMode::Blame;
         let undo_label = if undo_cnt > 0 {
-            format!("Undo ({undo_cnt})")
+            format!("Undo·{undo_cnt}")
         } else {
             "Undo".to_string()
         };
 
-        let git_actions_strip = slim_strip_h(
-            container(
-                row![
-                tb_btn(
-                    icons::fetch(icon_size::XS, ic).into(),
-                    "Fetch".into(),
-                    p.text_primary,
-                    false,
-                    has_repo.then_some(Message::FetchSelected),
-                    "Fetch all remotes & prune",
-                ),
-                tb_btn(
-                    icons::pull(
-                        icon_size::XS,
-                        if active_behind > 0 { p.accent_fg } else { ic },
-                    )
-                    .into(),
-                    pull_label,
-                    if active_behind > 0 {
+        let inspect_group = row![
+            ribbon_btn(
+                icons::git_blame(
+                    icon_size::SM,
+                    if blame_active {
                         p.accent_fg
+                    } else if has_active_file {
+                        ic
                     } else {
-                        p.text_primary
+                        p.text_muted
                     },
-                    false,
-                    has_repo.then_some(Message::PullSelected),
-                    "Pull fast-forward from remote",
-                ),
-                tb_btn(
-                    icons::push(
-                        icon_size::XS,
-                        if active_ahead > 0 { p.success_fg } else { ic },
-                    )
-                    .into(),
-                    push_label,
-                    if active_ahead > 0 {
-                        p.success_fg
-                    } else {
-                        p.text_primary
-                    },
-                    false,
-                    has_repo.then(|| {
-                        Message::RequestConfirm(PendingConfirm::push_selected(
-                            &active_branch_name,
-                            active_ahead,
-                        ))
-                    }),
-                    "Push commits to remote…",
-                ),
-                tb_sep(),
-                tb_btn(
-                    icons::stage_all(
-                        icon_size::XS,
-                        if has_unstaged {
-                            p.success_fg
-                        } else {
-                            p.text_muted
-                        },
-                    )
-                    .into(),
-                    if sel_unstaged_n > 0 {
-                        format!("Stage ({sel_unstaged_n})")
-                    } else {
-                        "Stage".into()
-                    },
-                    p.text_primary,
-                    false,
-                    (has_repo && has_unstaged).then_some(if sel_unstaged_n > 0 {
-                        Message::StageSelectedFiles
-                    } else {
-                        Message::StageAll
-                    }),
-                    "Stage files to Index (Ctrl+T)",
-                ),
-                tb_btn(
-                    icons::unstage_all(
-                        icon_size::XS,
-                        if has_staged {
-                            p.warning_fg
-                        } else {
-                            p.text_muted
-                        },
-                    )
-                    .into(),
-                    if sel_staged_n > 0 {
-                        format!("Unstage ({sel_staged_n})")
-                    } else {
-                        "Unstage".into()
-                    },
-                    p.text_primary,
-                    false,
-                    (has_repo && has_staged).then_some(if sel_staged_n > 0 {
-                        Message::UnstageSelectedFiles
-                    } else {
-                        Message::UnstageAll
-                    }),
-                    "Unstage files back to Working Tree (Ctrl+Shift+T)",
-                ),
-                tb_btn(
-                    icons::stash(icon_size::XS, if has_changes { ic } else { p.text_muted }).into(),
-                    "Stash".into(),
-                    p.text_primary,
-                    false,
-                    has_changes.then(|| {
-                        Message::RequestConfirm(PendingConfirm::stash_selected(active_changed))
-                    }),
-                    "Save Stash (working tree + untracked)…",
-                ),
-                tb_btn(
-                    icons::trash(
-                        icon_size::XS,
-                        if has_changes {
-                            p.danger_fg
-                        } else {
-                            p.text_muted
-                        },
-                    )
-                    .into(),
-                    if sel_discard_n > 0 {
-                        format!("Discard ({sel_discard_n})")
-                    } else {
-                        "Discard".into()
-                    },
-                    p.text_primary,
-                    self.discard_modal.is_some(),
-                    has_changes.then(|| {
-                        if sel_discard_n > 0 {
-                            Message::OpenDiscardModal(Some(sel_discard_paths.clone()))
-                        } else {
-                            Message::OpenDiscardModal(None)
-                        }
-                    }),
-                    "Discard local or staged changes… (Ctrl+Z)",
-                ),
-                tb_sep(),
-                tb_btn(
-                    icons::git_merge(icon_size::XS, ic).into(),
-                    "Merge".into(),
-                    p.text_primary,
-                    self.show_merge_modal,
-                    has_repo.then_some(Message::ToggleMergeModal),
-                    "Merge / Rebase + Live Conflict Forecast",
-                ),
-                tb_btn(
-                    icons::branch(icon_size::XS, ic).into(),
-                    "Git-Flow".into(),
-                    p.text_primary,
-                    self.show_git_flow_modal,
-                    has_repo.then_some(Message::ToggleGitFlowModal),
-                    "Git-Flow (Initialize, Start or Finish branches)",
-                ),
-                tb_btn(
-                    icons::undo(
-                        icon_size::XS,
-                        if undo_cnt > 0 {
-                            p.warning_fg
-                        } else {
-                            p.text_muted
-                        },
-                    )
-                    .into(),
-                    undo_label,
+                )
+                .into(),
+                "Blame".into(),
+                if blame_active {
+                    p.accent_fg
+                } else {
+                    p.text_primary
+                },
+                blame_active,
+                false,
+                (has_repo && has_active_file).then_some(if blame_active {
+                    Message::SetBottomViewMode(self.last_text_diff_mode)
+                } else {
+                    Message::SetBottomViewMode(BottomViewMode::Blame)
+                }),
+                None,
+                "Inspect line-by-line Git Blame & commit authorship for the selected file",
+            ),
+            ribbon_btn(
+                icons::external_window(icon_size::SM, ic).into(),
+                "Studio".into(),
+                p.text_primary,
+                !self.detached_viewers.is_empty(),
+                false,
+                Some(Message::OpenDetachedViewer),
+                None,
+                "Open GitFleet Studio (Multi-tab Code Editor, Search & Replace, Split Live Preview)",
+            ),
+            ribbon_btn(
+                icons::undo(
+                    icon_size::SM,
                     if undo_cnt > 0 {
                         p.warning_fg
                     } else {
                         p.text_muted
                     },
-                    false,
-                    (undo_cnt > 0).then(|| {
-                        Message::RequestConfirm(PendingConfirm::undo_last_action(&last_undo_label))
-                    }),
-                    "Undo last Reset / Revert / Merge / Rebase in this repo…",
-                ),
-                tb_btn(
-                    icons::refresh(icon_size::XS, ic).into(),
-                    String::new(),
-                    p.text_primary,
-                    false,
-                    has_repo.then_some(Message::RefreshSelected),
-                    "Refresh active repository (F5)",
-                ),
-                ]
-                .spacing(2)
-                .align_y(Alignment::Center),
-            )
-            .padding([2, 0]),
-            p,
-        );
-
-        let layout_switcher = tip(
-            segmented_control(
-                p,
-                [
-                    SegmentItem::new(HostLayoutMode::Cockpit, "Cockpit"),
-                    SegmentItem::new(HostLayoutMode::Changes, "Changes"),
-                    SegmentItem::new(HostLayoutMode::History, "History"),
-                    SegmentItem::new(HostLayoutMode::ZenDiff, "Zen"),
-                ],
-                self.host_layout,
-                Message::SetHostLayout,
+                )
+                .into(),
+                undo_label,
+                if undo_cnt > 0 {
+                    p.warning_fg
+                } else {
+                    p.text_muted
+                },
+                false,
+                false,
+                (undo_cnt > 0).then(|| {
+                    Message::RequestConfirm(PendingConfirm::undo_last_action(&last_undo_label))
+                }),
+                None,
+                "Undo last Reset / Revert / Merge / Rebase in this repository…",
             ),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center);
+
+        // ── Column 4 (above Commit / Files pane): Git-Flow, Merge, Rebase + Layout & App Controls ──
+        let layout_switcher = tip(
+            if compact_ribbon {
+                segmented_control(
+                    p,
+                    [
+                        SegmentItem::new(HostLayoutMode::Cockpit, "1"),
+                        SegmentItem::new(HostLayoutMode::Changes, "2"),
+                        SegmentItem::new(HostLayoutMode::History, "3"),
+                        SegmentItem::new(HostLayoutMode::ZenDiff, "Z"),
+                    ],
+                    self.host_layout,
+                    Message::SetHostLayout,
+                )
+            } else {
+                segmented_control(
+                    p,
+                    [
+                        SegmentItem::new(HostLayoutMode::Cockpit, "Cockpit"),
+                        SegmentItem::new(HostLayoutMode::Changes, "Changes"),
+                        SegmentItem::new(HostLayoutMode::History, "History"),
+                        SegmentItem::new(HostLayoutMode::ZenDiff, "Zen"),
+                    ],
+                    self.host_layout,
+                    Message::SetHostLayout,
+                )
+            },
             "Switch Layout Mode · Alt+1 Cockpit · Alt+2 Changes · Alt+3 History · Alt+Z Zen Diff",
             tooltip::Position::Bottom,
             p,
         );
 
-        let ribbon = container(
-            row![
-                ws_pill,
-                lock_badge,
-                branch_pill,
-                smart_cta,
-                tb_sep(),
-                git_actions_strip,
-                if self.bulk_cancel.is_some() {
-                    Element::from(
-                        button(
-                            text("Cancel Bulk")
-                                .size(type_scale::BADGE)
-                                .color(p.danger_fg)
-                                .wrapping(text::Wrapping::None),
-                        )
-                        .padding([3, 8])
-                        .style(theme::subtle_btn(p))
-                        .on_press(Message::CancelBulkOp),
-                    )
-                } else {
-                    Space::with_width(Length::Shrink).into()
-                },
-                layout_switcher,
-                tip(
+        let right_col_group = row![
+            ribbon_btn(
+                icons::branch(icon_size::SM, ic).into(),
+                "Git-Flow".into(),
+                p.text_primary,
+                self.show_git_flow_modal,
+                false,
+                has_repo.then_some(Message::ToggleGitFlowModal),
+                None,
+                "Git-Flow (Initialize, Start or Finish Feature / Release / Hotfix branches)",
+            ),
+            ribbon_btn(
+                icons::git_merge(icon_size::SM, ic).into(),
+                "Merge".into(),
+                p.text_primary,
+                self.show_merge_modal,
+                false,
+                has_repo.then_some(Message::ToggleMergeModal),
+                None,
+                "Merge / Rebase + Live Conflict Forecast (Ctrl+M)",
+            ),
+            ribbon_btn(
+                icons::git_rebase(icon_size::SM, p.violet_fg).into(),
+                "Rebase".into(),
+                p.text_primary,
+                self.rebase_modal.is_some(),
+                true,
+                has_repo.then_some(Message::RibbonRebaseClicked),
+                Some(ContextMenuTarget::RibbonRebase),
+                "Interactive Rebase (Squash, Reword, Fixup, Reorder, Drop)… · Right-click for Branch Rebase",
+            ),
+            tb_sep(),
+            if self.bulk_cancel.is_some() {
+                Element::from(
                     button(
-                        row![
-                            icons::command(icon_size::XS, p.text_secondary),
-                            kbd_pill(p, "Ctrl+K"),
-                        ]
-                        .spacing(4)
-                        .align_y(Alignment::Center),
+                        text("Cancel Bulk")
+                            .size(type_scale::BADGE)
+                            .color(p.danger_fg)
+                            .wrapping(text::Wrapping::None),
                     )
-                    .padding([3, 6])
+                    .padding([4, 8])
                     .style(theme::subtle_btn(p))
-                    .on_press(Message::ToggleCommandPalette),
-                    "Command Palette (Ctrl+K)",
-                    tooltip::Position::Bottom,
-                    p,
-                ),
-                tip(
-                    button(icons::external_window(icon_size::SM, p.text_secondary))
-                        .padding([4, 6])
-                        .style(theme::vscode_icon_btn(p, false))
-                        .on_press(Message::OpenDetachedViewer),
-                    "Open GitFleet Studio (Edit, Search & Replace, Preview, Diff)",
-                    tooltip::Position::Bottom,
-                    p,
-                ),
-                tip(
-                    button(icons::settings(icon_size::SM, p.text_secondary))
-                        .padding([4, 6])
-                        .style(theme::vscode_icon_btn(p, false))
-                        .on_press(Message::ToggleSettingsModal),
-                    "Settings, 5 Theme Presets, Terminal Profiles & Diagnostics",
-                    tooltip::Position::Bottom,
-                    p,
-                ),
-                tip(
-                    button(match self.theme_mode {
-                        ThemeMode::Dark => icons::sun(icon_size::SM, p.warning_fg),
-                        ThemeMode::Light => icons::moon(icon_size::SM, p.accent_fg),
-                    })
+                    .on_press(Message::CancelBulkOp),
+                )
+            } else {
+                Space::with_width(Length::Shrink).into()
+            },
+            layout_switcher,
+            tip(
+                button(if compact_ribbon {
+                    Element::from(icons::command(icon_size::SM, p.text_secondary))
+                } else {
+                    row![
+                        icons::command(icon_size::XS, p.text_secondary),
+                        kbd_pill(p, "Ctrl+K"),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .into()
+                })
+                .padding([4, 6])
+                .style(theme::subtle_btn(p))
+                .on_press(Message::ToggleCommandPalette),
+                "Command Palette (Ctrl+K)",
+                tooltip::Position::Bottom,
+                p,
+            ),
+            tip(
+                button(icons::refresh(icon_size::SM, p.text_secondary))
                     .padding([4, 6])
                     .style(theme::vscode_icon_btn(p, false))
-                    .on_press(Message::ToggleTheme),
-                    "Toggle Dark / Light Polarity",
-                    tooltip::Position::Bottom,
-                    p,
-                ),
+                    .on_press_maybe(has_repo.then_some(Message::RefreshSelected)),
+                "Refresh active repository (F5)",
+                tooltip::Position::Bottom,
+                p,
+            ),
+            tip(
+                button(icons::settings(icon_size::SM, p.text_secondary))
+                    .padding([4, 6])
+                    .style(theme::vscode_icon_btn(p, false))
+                    .on_press(Message::ToggleSettingsModal),
+                "Settings, 5 Theme Presets, Terminal Profiles & Diagnostics",
+                tooltip::Position::Bottom,
+                p,
+            ),
+            tip(
+                button(match self.theme_mode {
+                    ThemeMode::Dark => icons::sun(icon_size::SM, p.warning_fg),
+                    ThemeMode::Light => icons::moon(icon_size::SM, p.accent_fg),
+                })
+                .padding([4, 6])
+                .style(theme::vscode_icon_btn(p, false))
+                .on_press(Message::ToggleTheme),
+                "Toggle Dark / Light Polarity",
+                tooltip::Position::Bottom,
+                p,
+            ),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        let ribbon = container(
+            row![
+                repo_col_slot,
+                col_divider,
+                Space::with_width(4.0),
+                graph_col_group,
+                Space::with_width(Length::Fill),
+                inspect_group,
+                Space::with_width(Length::Fill),
+                right_col_group,
+                Space::with_width(6.0),
             ]
-            .spacing(5)
             .align_y(Alignment::Center),
         )
-        .padding([0, 8])
         .width(Length::Fill)
         .height(Length::Fixed(RIBBON_HEIGHT))
         .align_y(Alignment::Center)
@@ -895,6 +947,18 @@ impl GitFleetApp {
 
         if let Some(modal) = &self.rebase_modal {
             modal_layers.push(self.view_interactive_rebase_modal(p, modal));
+        }
+
+        if let Some(modal) = &self.save_stash_modal {
+            modal_layers.push(self.view_save_stash_modal(p, modal));
+        }
+
+        if let Some(modal) = &self.apply_stash_modal {
+            modal_layers.push(self.view_apply_stash_modal(p, modal));
+        }
+
+        if let Some(modal) = &self.pull_sync_modal {
+            modal_layers.push(self.view_pull_sync_modal(p, modal));
         }
 
         if let Some(modal) = &self.discard_modal {

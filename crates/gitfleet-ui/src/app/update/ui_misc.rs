@@ -276,6 +276,18 @@ impl GitFleetApp {
                     self.rebase_modal = None;
                     return Task::none();
                 }
+                if self.save_stash_modal.is_some() {
+                    self.save_stash_modal = None;
+                    return Task::none();
+                }
+                if self.apply_stash_modal.is_some() {
+                    self.apply_stash_modal = None;
+                    return Task::none();
+                }
+                if self.pull_sync_modal.is_some() {
+                    self.pull_sync_modal = None;
+                    return Task::none();
+                }
                 if self.discard_modal.is_some() {
                     self.discard_modal = None;
                     return Task::none();

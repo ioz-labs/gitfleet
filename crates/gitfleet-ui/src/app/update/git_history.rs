@@ -90,13 +90,49 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::ApplyStash(index) => {
-                self.run_git_op("Apply Stash", move |svc, repo| async move {
-                    svc.git.stash_apply(&repo.path, index).await
-                })
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.busy_label = Some("Apply Stash…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = svc
+                            .git
+                            .stash_apply_smart(&repo.path, index, false)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (index, result)
+                    },
+                    |(index, result)| Message::StashApplySmartDone {
+                        index,
+                        pop: false,
+                        result,
+                    },
+                )
             }
-            Message::PopStash(index) => self.run_git_op("Pop Stash", move |svc, repo| async move {
-                svc.git.stash_pop(&repo.path, index).await
-            }),
+            Message::PopStash(index) => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.busy_label = Some("Pop Stash…".into());
+                let svc = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = svc
+                            .git
+                            .stash_apply_smart(&repo.path, index, true)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (index, result)
+                    },
+                    |(index, result)| Message::StashApplySmartDone {
+                        index,
+                        pop: true,
+                        result,
+                    },
+                )
+            }
             Message::DropStash(index) => {
                 self.run_git_op("Drop Stash", move |svc, repo| async move {
                     svc.git.stash_drop(&repo.path, index).await
@@ -216,6 +252,33 @@ impl GitFleetApp {
                     return self.load_log_task(repo);
                 }
                 Task::none()
+            }
+            Message::RibbonRebaseClicked => self.update(Message::RibbonInteractiveRebaseRecent),
+            Message::RibbonInteractiveRebaseRecent => {
+                self.context_menu = None;
+                self.show_palette = false;
+                if let Some(st) = self.active_status()
+                    && st.ahead > 0
+                    && let Some(up) = st.upstream.clone()
+                {
+                    return self.update(Message::OpenInteractiveRebase {
+                        base_ref: up.clone(),
+                        base_label: up,
+                    });
+                }
+                if self.commits.len() >= 2 {
+                    let depth = (self.commits.len() - 1).min(5);
+                    let base = &self.commits[depth];
+                    return self.update(Message::OpenInteractiveRebase {
+                        base_ref: base.oid.clone(),
+                        base_label: format!(
+                            "{} ({})",
+                            base.short_oid,
+                            crate::views::truncate_chars(&base.summary, 24)
+                        ),
+                    });
+                }
+                self.update(Message::ToggleMergeModal)
             }
             Message::OpenInteractiveRebase {
                 base_ref,

@@ -1083,6 +1083,9 @@ pub(crate) enum ContextMenuTarget {
     RepoDir {
         path: String,
     },
+    RibbonPull,
+    RibbonStash,
+    RibbonRebase,
 }
 
 

@@ -243,10 +243,29 @@ impl GitService {
     }
 
     pub async fn stash_push(&self, repo_path: &Path, message: Option<&str>) -> AppResult<String> {
-        let args = match message {
-            Some(m) if !m.trim().is_empty() => vec!["stash", "push", "-u", "-m", m],
-            _ => vec!["stash", "push", "-u"],
-        };
+        self.stash_push_with_options(repo_path, message, true, false)
+            .await
+    }
+
+    pub async fn stash_push_with_options(
+        &self,
+        repo_path: &Path,
+        message: Option<&str>,
+        include_untracked: bool,
+        keep_index: bool,
+    ) -> AppResult<String> {
+        let mut args: Vec<&str> = vec!["stash", "push"];
+        if include_untracked {
+            args.push("-u");
+        }
+        if keep_index {
+            args.push("--keep-index");
+        }
+        let trimmed = message.map(str::trim).filter(|m| !m.is_empty());
+        if let Some(m) = trimmed {
+            args.push("-m");
+            args.push(m);
+        }
         runner::run_git_ok(
             repo_path,
             &args,
@@ -419,6 +438,56 @@ impl GitService {
             true,
         )
         .await
+    }
+
+    /// Applies or pops `stash@{index}` while distinguishing merge conflicts (`conflicted: true`,
+    /// where Git safely retains the stash entry on `pop`) from command execution errors.
+    pub async fn stash_apply_smart(
+        &self,
+        repo_path: &Path,
+        index: usize,
+        pop: bool,
+    ) -> AppResult<crate::models::StashApplyOutcome> {
+        let target = format!("stash@{{{index}}}");
+        let subcmd = if pop { "pop" } else { "apply" };
+        let out = runner::run_git(
+            repo_path,
+            &["stash", subcmd, &target],
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await?;
+        let combined = match (out.stdout.trim().is_empty(), out.stderr.trim().is_empty()) {
+            (false, false) => format!("{}\n{}", out.stdout.trim(), out.stderr.trim()),
+            (false, true) => out.stdout.trim().to_string(),
+            (true, false) => out.stderr.trim().to_string(),
+            (true, true) => String::new(),
+        };
+        if out.exit_code == 0 {
+            return Ok(crate::models::StashApplyOutcome {
+                summary: combined,
+                conflicted: false,
+            });
+        }
+        let has_conflict = combined.contains("CONFLICT")
+            || combined.contains("Merge conflict")
+            || self
+                .get_status(repo_path)
+                .await
+                .is_ok_and(|st| st.conflict_count > 0);
+        if has_conflict {
+            Ok(crate::models::StashApplyOutcome {
+                summary: combined,
+                conflicted: true,
+            })
+        } else {
+            Err(gitfleet_core::AppError::Git(if combined.is_empty() {
+                format!("git stash {subcmd} exited with code {}", out.exit_code)
+            } else {
+                combined
+            }))
+        }
     }
 
     pub async fn stash_drop(&self, repo_path: &Path, index: usize) -> AppResult<String> {
