@@ -1447,7 +1447,9 @@ impl GitFleetApp {
                 all.extend(st.unstaged_files.clone());
                 all
             }
-            GraphSelection::Commit(_) => self.commit_files.clone(),
+            GraphSelection::Commit(_)
+            | GraphSelection::Range { .. }
+            | GraphSelection::Stash(_) => self.commit_files.clone(),
         }
     }
 

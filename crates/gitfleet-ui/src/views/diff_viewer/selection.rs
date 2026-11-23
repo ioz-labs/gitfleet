@@ -4,10 +4,11 @@
 use super::layout::{DiffLayout, SplitRow, UnifiedRow};
 use crate::app::{DiffSelectionSide, DiffTextSelection};
 use crate::theme::{self, type_scale};
-use gitfleet_git::ParsedDiff;
+use gitfleet_git::{DiffChangeKind, ParsedDiff, build_partial_patch};
 use iced::advanced::text as adv_text;
 use iced::widget::text;
 use iced::{Renderer, Size, alignment};
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 pub(crate) fn diff_code_char_width() -> f32 {
@@ -247,4 +248,140 @@ pub(crate) fn extract_selected_diff_text(
         }
     }
     parts.join("\n")
+}
+
+/// Collects 1-based `(sel_old, sel_new, visual_row_count)` for changed diff lines intersecting `selection`.
+pub(crate) fn selected_changed_line_sets(
+    layout: &DiffLayout,
+    selection: Option<DiffTextSelection>,
+) -> (HashSet<usize>, HashSet<usize>, usize) {
+    let mut sel_old = HashSet::new();
+    let mut sel_new = HashSet::new();
+    let mut row_cnt = 0usize;
+
+    let Some(sel) = selection else {
+        return (sel_old, sel_new, 0);
+    };
+    if sel.is_empty() {
+        return (sel_old, sel_new, 0);
+    }
+    let (start, end) = sel.ordered();
+
+    match sel.side {
+        DiffSelectionSide::Unified => {
+            if layout.unified_rows.is_empty() {
+                return (sel_old, sel_new, 0);
+            }
+            let last = end.row.min(layout.unified_rows.len().saturating_sub(1));
+            for r in start.row..=last {
+                if let Some(UnifiedRow::Code {
+                    old_line,
+                    new_line,
+                    sign,
+                    ..
+                }) = layout.unified_rows.get(r)
+                {
+                    match *sign {
+                        '-' => {
+                            if let Some(ln) = old_line
+                                && sel_old.insert(*ln)
+                            {
+                                row_cnt += 1;
+                            }
+                        }
+                        '+' => {
+                            if let Some(ln) = new_line
+                                && sel_new.insert(*ln)
+                            {
+                                row_cnt += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        DiffSelectionSide::Left => {
+            if layout.split_rows.is_empty() {
+                return (sel_old, sel_new, 0);
+            }
+            let last = end.row.min(layout.split_rows.len().saturating_sub(1));
+            for r in start.row..=last {
+                if let Some(SplitRow::PairedCode {
+                    left: Some(lc),
+                    right,
+                    ..
+                }) = layout.split_rows.get(r)
+                    && lc.kind.is_some()
+                {
+                    let mut touched = false;
+                    if let Some(ln) = lc.line_no {
+                        touched |= sel_old.insert(ln);
+                    }
+                    if lc.kind == Some(DiffChangeKind::Modified)
+                        && let Some(rc) = right
+                        && let Some(rln) = rc.line_no
+                    {
+                        touched |= sel_new.insert(rln);
+                    }
+                    if touched {
+                        row_cnt += 1;
+                    }
+                }
+            }
+        }
+        DiffSelectionSide::Right => {
+            if layout.split_rows.is_empty() {
+                return (sel_old, sel_new, 0);
+            }
+            let last = end.row.min(layout.split_rows.len().saturating_sub(1));
+            for r in start.row..=last {
+                if let Some(SplitRow::PairedCode {
+                    left,
+                    right: Some(rc),
+                    ..
+                }) = layout.split_rows.get(r)
+                    && rc.kind.is_some()
+                {
+                    let mut touched = false;
+                    if let Some(ln) = rc.line_no {
+                        touched |= sel_new.insert(ln);
+                    }
+                    if rc.kind == Some(DiffChangeKind::Modified)
+                        && let Some(lc) = left
+                        && let Some(lln) = lc.line_no
+                    {
+                        touched |= sel_old.insert(lln);
+                    }
+                    if touched {
+                        row_cnt += 1;
+                    }
+                }
+            }
+        }
+        DiffSelectionSide::Raw => {}
+    }
+
+    (sel_old, sel_new, row_cnt)
+}
+
+pub(crate) fn selected_changed_line_count(
+    layout: &DiffLayout,
+    selection: Option<DiffTextSelection>,
+) -> usize {
+    selected_changed_line_sets(layout, selection).2
+}
+
+pub(crate) fn build_selected_lines_patch(
+    parsed: &ParsedDiff,
+    layout: &DiffLayout,
+    selection: Option<DiffTextSelection>,
+    reverse: bool,
+) -> Option<(usize, String)> {
+    let (sel_old, sel_new, count) = selected_changed_line_sets(layout, selection);
+    if count == 0 {
+        return None;
+    }
+    let patch = build_partial_patch(parsed, &sel_old, &sel_new, reverse)?;
+    Some((count, patch))
 }

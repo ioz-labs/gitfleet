@@ -1,4 +1,5 @@
-use crate::app::{ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message};
+use crate::app::{ActiveFocusPane, GitFleetApp, GraphSelection, GraphTab, Message, PendingConfirm};
+use crate::views::diff_viewer::build_selected_lines_patch;
 use iced::Task;
 
 impl GitFleetApp {
@@ -205,6 +206,7 @@ impl GitFleetApp {
                 cached,
                 reverse,
             } => {
+                self.diff_selection = None;
                 let label = match (cached, reverse) {
                     (true, false) => "Stage Hunk",
                     (true, true) => "Unstage Hunk",
@@ -215,6 +217,68 @@ impl GitFleetApp {
                         .apply_hunk(&repo.path, &patch, cached, reverse)
                         .await
                         .map(|_| "Applied hunk".into())
+                })
+            }
+            Message::ApplySelectedDiffLines { cached, reverse } => {
+                if !self.diff_is_working_file {
+                    return Task::none();
+                }
+                let Some((count, patch)) = build_selected_lines_patch(
+                    &self.diff_parsed,
+                    &self.diff_cache.layout,
+                    self.diff_selection,
+                    reverse,
+                ) else {
+                    self.toast_is_error = false;
+                    self.toast_message = "Select changed (+ / -) lines in the diff first".into();
+                    return Task::none();
+                };
+                self.diff_selection = None;
+                let label = match (cached, reverse) {
+                    (true, false) => "Stage Lines",
+                    (true, true) => "Unstage Lines",
+                    _ => "Discard Lines",
+                };
+                self.run_git_op(label, move |svc, repo| async move {
+                    svc.git
+                        .apply_hunk(&repo.path, &patch, cached, reverse)
+                        .await
+                        .map(|_| format!("Applied {count} selected line(s)"))
+                })
+            }
+            Message::RequestDiscardSelectedDiffLines => {
+                if !self.diff_is_working_file || self.diff_is_staged {
+                    return Task::none();
+                }
+                let Some((count, patch)) = build_selected_lines_patch(
+                    &self.diff_parsed,
+                    &self.diff_cache.layout,
+                    self.diff_selection,
+                    true,
+                ) else {
+                    return Task::none();
+                };
+                self.diff_selection = None;
+                self.pending_confirm = Some(PendingConfirm::discard_selected_lines(
+                    &self.diff_title,
+                    count,
+                    patch,
+                ));
+                Task::none()
+            }
+            Message::StashPaths(paths) => {
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                let count = paths.len();
+                let msg = if count == 1 {
+                    format!("Stash {}", paths[0])
+                } else {
+                    format!("Stash {count} selected files")
+                };
+                self.selected_changed_files.clear();
+                self.run_git_op("Stash Selected", move |svc, repo| async move {
+                    svc.git.stash_push_paths(&repo.path, Some(&msg), &paths).await
                 })
             }
             Message::CommitSummaryChanged(val) => {

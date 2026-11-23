@@ -352,6 +352,273 @@ impl GitService {
             after_bytes,
         })
     }
+
+    /// Loads raw `(before, after)` byte payloads for a file across `<base>..<head>`.
+    pub async fn get_range_file_versions(
+        &self,
+        repo_path: &Path,
+        base: &str,
+        head: &str,
+        file_path: &str,
+    ) -> AppResult<FileVersionPair> {
+        let git_path = file_path.replace('\\', "/");
+        let base_short = &base[..base.len().min(12)];
+        let head_short = &head[..head.len().min(12)];
+
+        let before_spec = format!("{base}:{git_path}");
+        let after_spec = format!("{head}:{git_path}");
+        let before_bytes = read_git_blob_capped(repo_path, &before_spec).await?;
+        let after_bytes = read_git_blob_capped(repo_path, &after_spec).await?;
+
+        Ok(FileVersionPair {
+            file_path: file_path.to_string(),
+            before_label: base_short.to_string(),
+            after_label: head_short.to_string(),
+            before_bytes,
+            after_bytes,
+        })
+    }
+}
+
+/// Builds a valid unified diff patch containing only the selected changed lines (`sel_old` 1-based
+/// old line numbers for `'-'` lines, `sel_new` 1-based new line numbers for `'+'` lines).
+///
+/// - When `reverse == false` (forward apply, e.g. **Stage Selected Lines** on unstaged diff):
+///   - Selected `'-'` stay `'-'`; unselected `'-'` become `' '` context (kept in Index).
+///   - Selected `'+'` stay `'+'`; unselected `'+'` are omitted (not added yet).
+/// - When `reverse == true` (`git apply --reverse`, e.g. **Unstage Selected Lines** or **Discard Selected Lines**):
+///   - Selected `'+'` stay `'+'` (removed by `--reverse`); unselected `'+'` become `' '` context (kept).
+///   - Selected `'-'` stay `'-'` (restored by `--reverse`); unselected `'-'` are omitted.
+pub fn build_partial_patch(
+    parsed: &ParsedDiff,
+    sel_old: &std::collections::HashSet<usize>,
+    sel_new: &std::collections::HashSet<usize>,
+    reverse: bool,
+) -> Option<String> {
+    if parsed.hunks.is_empty() || (sel_old.is_empty() && sel_new.is_empty()) {
+        return None;
+    }
+
+    let mut out_hunks: Vec<String> = Vec::new();
+    let mut any_old_lines = false;
+    let mut any_new_lines = false;
+
+    for hunk in &parsed.hunks {
+        let (old_start_raw, _, new_start_raw, _) =
+            parse_hunk_range(&hunk.header).unwrap_or((1, 0, 1, 0));
+        let mut old_ln = old_start_raw.max(1);
+        let mut new_ln = new_start_raw.max(1);
+
+        let mut hunk_out: Vec<String> = Vec::new();
+        let mut old_cnt = 0usize;
+        let mut new_cnt = 0usize;
+        let mut hunk_has_selected = false;
+
+        let mut i = 0usize;
+        while i < hunk.lines.len() {
+            let line = &hunk.lines[i];
+            if line.starts_with('-') || line.starts_with('+') {
+                // Collect one contiguous change run of '-' followed by '+' lines
+                let mut olds: Vec<(usize, String, Option<String>)> = Vec::new();
+                let mut news: Vec<(usize, String, Option<String>)> = Vec::new();
+
+                while i < hunk.lines.len() {
+                    let cur = &hunk.lines[i];
+                    if let Some(rem) = cur.strip_prefix('-') {
+                        if !news.is_empty() {
+                            break;
+                        }
+                        let ln = old_ln;
+                        old_ln += 1;
+                        i += 1;
+                        let mut no_nl = None;
+                        if i < hunk.lines.len() && hunk.lines[i].starts_with('\\') {
+                            no_nl = Some(hunk.lines[i].clone());
+                            i += 1;
+                        }
+                        olds.push((ln, rem.to_string(), no_nl));
+                    } else if let Some(add) = cur.strip_prefix('+') {
+                        let ln = new_ln;
+                        new_ln += 1;
+                        i += 1;
+                        let mut no_nl = None;
+                        if i < hunk.lines.len() && hunk.lines[i].starts_with('\\') {
+                            no_nl = Some(hunk.lines[i].clone());
+                            i += 1;
+                        }
+                        news.push((ln, add.to_string(), no_nl));
+                    } else {
+                        break;
+                    }
+                }
+
+                if !reverse {
+                    // Forward apply: place selected '+' lines immediately after the last selected
+                    // '-' line (or after all unselected '-' context lines if no '-' is selected)
+                    // so paired line modifications replace in-place cleanly.
+                    let last_sel_old = olds.iter().rposition(|(ln, _, _)| sel_old.contains(ln));
+                    let emit_plus_at = last_sel_old.map(|idx| idx + 1).unwrap_or(olds.len());
+
+                    for (idx, (ln, txt, no_nl)) in olds.iter().enumerate() {
+                        if sel_old.contains(ln) {
+                            hunk_has_selected = true;
+                            old_cnt += 1;
+                            hunk_out.push(format!("-{txt}"));
+                            if let Some(nn) = no_nl {
+                                hunk_out.push(nn.clone());
+                            }
+                        } else {
+                            old_cnt += 1;
+                            new_cnt += 1;
+                            hunk_out.push(format!(" {txt}"));
+                            if let Some(nn) = no_nl {
+                                hunk_out.push(nn.clone());
+                            }
+                        }
+                        if idx + 1 == emit_plus_at {
+                            for (nln, ntxt, n_no_nl) in &news {
+                                if sel_new.contains(nln) {
+                                    hunk_has_selected = true;
+                                    new_cnt += 1;
+                                    hunk_out.push(format!("+{ntxt}"));
+                                    if let Some(nn) = n_no_nl {
+                                        hunk_out.push(nn.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if olds.is_empty() {
+                        for (nln, ntxt, n_no_nl) in &news {
+                            if sel_new.contains(nln) {
+                                hunk_has_selected = true;
+                                new_cnt += 1;
+                                hunk_out.push(format!("+{ntxt}"));
+                                if let Some(nn) = n_no_nl {
+                                    hunk_out.push(nn.clone());
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Reverse apply (`git apply --reverse`): place selected '-' lines immediately
+                    // before the first selected '+' line so in-place modifications revert cleanly.
+                    let first_sel_new = news.iter().position(|(ln, _, _)| sel_new.contains(ln));
+                    let emit_minus_at = first_sel_new.unwrap_or(news.len());
+
+                    for (idx, (nln, ntxt, n_no_nl)) in news.iter().enumerate() {
+                        if idx == emit_minus_at {
+                            for (oln, otxt, o_no_nl) in &olds {
+                                if sel_old.contains(oln) {
+                                    hunk_has_selected = true;
+                                    old_cnt += 1;
+                                    hunk_out.push(format!("-{otxt}"));
+                                    if let Some(nn) = o_no_nl {
+                                        hunk_out.push(nn.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if sel_new.contains(nln) {
+                            hunk_has_selected = true;
+                            new_cnt += 1;
+                            hunk_out.push(format!("+{ntxt}"));
+                            if let Some(nn) = n_no_nl {
+                                hunk_out.push(nn.clone());
+                            }
+                        } else {
+                            old_cnt += 1;
+                            new_cnt += 1;
+                            hunk_out.push(format!(" {ntxt}"));
+                            if let Some(nn) = n_no_nl {
+                                hunk_out.push(nn.clone());
+                            }
+                        }
+                    }
+                    if emit_minus_at == news.len() {
+                        for (oln, otxt, o_no_nl) in &olds {
+                            if sel_old.contains(oln) {
+                                hunk_has_selected = true;
+                                old_cnt += 1;
+                                hunk_out.push(format!("-{otxt}"));
+                                if let Some(nn) = o_no_nl {
+                                    hunk_out.push(nn.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if line.starts_with('\\') {
+                hunk_out.push(line.clone());
+                i += 1;
+            } else {
+                let txt = line.strip_prefix(' ').unwrap_or(line);
+                old_ln += 1;
+                new_ln += 1;
+                old_cnt += 1;
+                new_cnt += 1;
+                hunk_out.push(format!(" {txt}"));
+                i += 1;
+            }
+        }
+
+        if hunk_has_selected {
+            if old_cnt > 0 {
+                any_old_lines = true;
+            }
+            if new_cnt > 0 {
+                any_new_lines = true;
+            }
+            let hdr_old_start = if old_cnt == 0 {
+                old_start_raw.saturating_sub(1)
+            } else {
+                old_start_raw.max(1)
+            };
+            let hdr_new_start = if new_cnt == 0 {
+                new_start_raw.saturating_sub(1)
+            } else {
+                new_start_raw.max(1)
+            };
+            let mut block = format!("@@ -{hdr_old_start},{old_cnt} +{hdr_new_start},{new_cnt} @@\n");
+            for l in hunk_out {
+                block.push_str(&l);
+                block.push('\n');
+            }
+            out_hunks.push(block);
+        }
+    }
+
+    if out_hunks.is_empty() {
+        return None;
+    }
+
+    let rel_path = parsed
+        .file_header
+        .lines()
+        .find_map(|l| l.strip_prefix("+++ b/").or_else(|| l.strip_prefix("--- a/")))
+        .unwrap_or("file");
+
+    let rewrite_old_dev_null = parsed.file_header.contains("--- /dev/null") && any_old_lines;
+    let rewrite_new_dev_null = parsed.file_header.contains("+++ /dev/null") && any_new_lines;
+
+    let mut patch = String::new();
+    if rewrite_old_dev_null || rewrite_new_dev_null {
+        patch.push_str(&format!(
+            "diff --git a/{rel_path} b/{rel_path}\n--- a/{rel_path}\n+++ b/{rel_path}\n"
+        ));
+    } else if !parsed.file_header.is_empty() {
+        for hdr_line in parsed.file_header.lines() {
+            if !hdr_line.starts_with("index ") {
+                patch.push_str(hdr_line);
+                patch.push('\n');
+            }
+        }
+    }
+
+    for h in out_hunks {
+        patch.push_str(&h);
+    }
+    Some(patch)
 }
 
 /// Parses a hunk header `@@ -old_start[,old_count] +new_start[,new_count] @@ ...`
@@ -851,5 +1118,111 @@ diff --git a/main.go b/main.go
         assert_eq!(parsed.stats.modified_blocks, 1);
         assert_eq!(parsed.stats.added_blocks, 1);
         assert_eq!(parsed.stats.removed_blocks, 0);
+    }
+
+    #[tokio::test]
+    async fn partial_line_stage_unstage_and_discard_apply_cleanly_via_git() {
+        use gitfleet_core::{CommandLogStore, EventBus};
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_partial_lines_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Tester"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(dir.join("app.rs"), "line1\nold2\nold3\nline4\n").unwrap();
+        svc.stage(&dir, &["app.rs".into()]).await.unwrap();
+        svc.commit(&dir, "init", false).await.unwrap();
+
+        // Modify old2->new2, old3->new3, and add extra5
+        std::fs::write(dir.join("app.rs"), "line1\nnew2\nnew3\nline4\nextra5\n").unwrap();
+        let raw = svc.get_diff(&dir, "app.rs", false, false).await.unwrap();
+        let parsed = parse_unified_diff(&raw);
+
+        // 1. Stage ONLY old2 -> new2 (old line 2, new line 2)
+        let sel_old: HashSet<usize> = [2usize].into_iter().collect();
+        let sel_new: HashSet<usize> = [2usize].into_iter().collect();
+        let stage_patch = build_partial_patch(&parsed, &sel_old, &sel_new, false).unwrap();
+        svc.apply_hunk(&dir, &stage_patch, true, false).await.unwrap();
+
+        let index_blob = runner::run_git_ok(&dir, &["show", ":app.rs"], None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(index_blob, "line1\nnew2\nold3\nline4\n");
+
+        // 2. Stage extra5 too, then Unstage ONLY extra5 from staged diff!
+        let unstaged_raw = svc.get_diff(&dir, "app.rs", false, false).await.unwrap();
+        let unstaged_parsed = parse_unified_diff(&unstaged_raw);
+        let stage_extra = build_partial_patch(
+            &unstaged_parsed,
+            &HashSet::new(),
+            &[5usize].into_iter().collect(),
+            false,
+        )
+        .unwrap();
+        svc.apply_hunk(&dir, &stage_extra, true, false).await.unwrap();
+
+        let staged_raw = svc.get_diff(&dir, "app.rs", true, false).await.unwrap();
+        let staged_parsed = parse_unified_diff(&staged_raw);
+        let unstage_extra = build_partial_patch(
+            &staged_parsed,
+            &HashSet::new(),
+            &[5usize].into_iter().collect(),
+            true,
+        )
+        .unwrap();
+        svc.apply_hunk(&dir, &unstage_extra, true, true).await.unwrap();
+        let index_after_unstage = runner::run_git_ok(&dir, &["show", ":app.rs"], None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(index_after_unstage, "line1\nnew2\nold3\nline4\n");
+
+        // 3. Discard ONLY extra5 from working tree while keeping new3 unstaged!
+        let wt_raw = svc.get_diff(&dir, "app.rs", false, false).await.unwrap();
+        let wt_parsed = parse_unified_diff(&wt_raw);
+        let discard_extra = build_partial_patch(
+            &wt_parsed,
+            &HashSet::new(),
+            &[5usize].into_iter().collect(),
+            true,
+        )
+        .unwrap();
+        svc.apply_hunk(&dir, &discard_extra, false, true).await.unwrap();
+        let disk_after = std::fs::read_to_string(dir.join("app.rs")).unwrap();
+        assert_eq!(disk_after, "line1\nnew2\nnew3\nline4\n");
+
+        // 4. Newly added file: stage all 3 lines, then partially unstage line 2!
+        std::fs::write(dir.join("fresh.txt"), "a\nb\nc\n").unwrap();
+        svc.stage(&dir, &["fresh.txt".into()]).await.unwrap();
+        let fresh_staged_raw = svc.get_diff(&dir, "fresh.txt", true, false).await.unwrap();
+        let fresh_staged_parsed = parse_unified_diff(&fresh_staged_raw);
+        let unstage_b = build_partial_patch(
+            &fresh_staged_parsed,
+            &HashSet::new(),
+            &[2usize].into_iter().collect(),
+            true,
+        )
+        .unwrap();
+        svc.apply_hunk(&dir, &unstage_b, true, true).await.unwrap();
+        let fresh_index = runner::run_git_ok(&dir, &["show", ":fresh.txt"], None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(fresh_index, "a\nc\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

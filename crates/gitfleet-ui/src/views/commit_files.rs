@@ -1117,6 +1117,186 @@ impl GitFleetApp {
                     )
                 }
             }
+            GraphSelection::Range { base, head } => {
+                let b_short = if base.len() > 14 && base.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                    &base[..8]
+                } else {
+                    base.as_str()
+                };
+                let h_short = if head.len() > 14 && head.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                    &head[..8]
+                } else {
+                    head.as_str()
+                };
+                let file_cnt = self.commit_files.len();
+                let hdr = row![
+                    icons::file_diff(icon_size::SM, p.accent_fg),
+                    text("Range Compare")
+                        .size(type_scale::CAPTION)
+                        .font(theme::UI_FONT_MEDIUM)
+                        .color(p.text_primary),
+                    theme::badge(
+                        format!("{file_cnt} files"),
+                        p.fill_selected,
+                        p.accent_fg,
+                        p.border_subtle,
+                        false,
+                    ),
+                    Space::with_width(Length::Fill),
+                    tip(
+                        button(text("⇄ Swap").size(type_scale::BADGE).color(p.text_secondary))
+                            .padding([3, 7])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::CompareRefs(head.clone(), base.clone())),
+                        "Swap base and target revisions",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                    tip(
+                        button(icons::close_x(icon_size::XS, p.text_secondary))
+                            .padding([4, 6])
+                            .style(theme::vscode_icon_btn(p, false))
+                            .on_press(Message::SelectWorkingTree),
+                        "Exit Range Compare and return to Working Tree",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                ]
+                .spacing(space::XS)
+                .align_y(Alignment::Center);
+
+                let range_pills = row![
+                    container(
+                        text(b_short.to_string())
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.warning_fg),
+                    )
+                    .padding([3, 8])
+                    .style(theme::pill_box(p.warning_bg, p.warning_fg, p.border_subtle)),
+                    text("→").size(type_scale::BODY).color(p.text_muted),
+                    container(
+                        text(h_short.to_string())
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.success_fg),
+                    )
+                    .padding([3, 8])
+                    .style(theme::pill_box(p.success_bg, p.success_fg, p.border_subtle)),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center);
+
+                column![
+                    hdr,
+                    horizontal_rule(1).style(theme::subtle_rule(p)),
+                    range_pills,
+                    text("Tip: Ctrl+Click any commit in the Graph to update the comparison target.")
+                        .size(type_scale::BADGE)
+                        .color(p.text_muted),
+                ]
+                .spacing(space::XS)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            }
+            GraphSelection::Stash(index) => {
+                let index = *index;
+                let stash_info = self.stashes.iter().find(|s| s.index == index);
+                let ref_name = stash_info
+                    .map(|s| s.ref_name.clone())
+                    .unwrap_or_else(|| format!("stash@{{{index}}}"));
+                let msg = stash_info
+                    .map(|s| s.message.clone())
+                    .unwrap_or_else(|| "(stash entry)".into());
+                let date_rel = stash_info
+                    .map(|s| s.date_relative.clone())
+                    .unwrap_or_default();
+
+                let hdr = row![
+                    text(ref_name.clone())
+                        .size(type_scale::CAPTION)
+                        .font(theme::CODE_FONT)
+                        .color(p.accent_fg),
+                    theme::badge(
+                        format!("{} files", self.commit_files.len()),
+                        p.surface_card,
+                        p.text_secondary,
+                        p.border_subtle,
+                        false,
+                    ),
+                    Space::with_width(Length::Fill),
+                    tip(
+                        button(
+                            row![
+                                icons::play(11.0, p.text_primary),
+                                text("Apply").size(type_scale::BADGE),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 7])
+                        .style(theme::subtle_btn(p))
+                        .on_press(Message::RequestConfirm(PendingConfirm::apply_stash(
+                            index, &ref_name, &msg,
+                        ))),
+                        "Apply stash and keep it in the stash list",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                    tip(
+                        button(
+                            row![
+                                icons::check(11.0, Color::WHITE),
+                                text("Pop").size(type_scale::BADGE).color(Color::WHITE),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 7])
+                        .style(theme::primary_btn(p))
+                        .on_press(Message::RequestConfirm(PendingConfirm::pop_stash(
+                            index, &ref_name, &msg,
+                        ))),
+                        "Apply stash and remove it from the stash list",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                    tip(
+                        button(icons::trash(11.0, p.danger_fg))
+                            .padding([4, 6])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::RequestConfirm(PendingConfirm::drop_stash(
+                                index, &ref_name, &msg,
+                            ))),
+                        "Drop stash permanently",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                    tip(
+                        button(icons::close_x(icon_size::XS, p.text_secondary))
+                            .padding([4, 6])
+                            .style(theme::vscode_icon_btn(p, false))
+                            .on_press(Message::SelectWorkingTree),
+                        "Return to Working Tree",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                ]
+                .spacing(space::XXS)
+                .align_y(Alignment::Center);
+
+                column![
+                    hdr,
+                    horizontal_rule(1).style(theme::subtle_rule(p)),
+                    text(msg).size(type_scale::BODY).color(p.text_primary),
+                    text(date_rel).size(type_scale::CAPTION).color(p.text_muted),
+                ]
+                .spacing(space::XS)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            }
         }
     }
 

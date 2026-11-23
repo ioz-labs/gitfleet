@@ -661,8 +661,11 @@ impl GitFleetApp {
             {
                 rows_col = rows_col.push(wt);
             }
-            let selected =
-                matches!(&self.graph_selection, GraphSelection::Commit(oid) if oid == &c.oid);
+            let selected = match &self.graph_selection {
+                GraphSelection::Commit(oid) => oid == &c.oid,
+                GraphSelection::Range { base, head } => base == &c.oid || head == &c.oid,
+                _ => false,
+            };
             let row_bg = if selected {
                 p.fill_selected
             } else {
@@ -805,8 +808,41 @@ impl GitFleetApp {
         // opens the full summary & body in the Commit Details pane.
         let min_graph_w = (lanes_w + 56.0 + max_ref_w + 80.0 + 162.0).clamp(320.0, 1400.0);
 
+        let range_banner: Element<'_, Message> =
+            if let GraphSelection::Range { base, head } = &self.graph_selection {
+                let b_disp = &base[..base.len().min(10)];
+                let h_disp = &head[..head.len().min(10)];
+                container(
+                    row![
+                        icons::file_diff(12.0, p.accent_fg),
+                        text(format!("Comparing {b_disp} .. {h_disp}"))
+                            .size(type_scale::CAPTION)
+                            .font(theme::CODE_FONT)
+                            .color(p.accent_fg),
+                        Space::with_width(Length::Fill),
+                        button(text("⇄").size(type_scale::BADGE).color(p.text_secondary))
+                            .padding([1, 6])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::CompareRefs(head.clone(), base.clone())),
+                        button(icons::close_x(10.0, p.text_secondary))
+                            .padding([2, 5])
+                            .style(theme::vscode_icon_btn(p, false))
+                            .on_press(Message::SelectWorkingTree),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([3, 8])
+                .width(Length::Fill)
+                .style(theme::pill_box(p.fill_selected, p.accent_fg, p.border_subtle))
+                .into()
+            } else {
+                Space::with_height(Length::Shrink).into()
+            };
+
         column![
             header,
+            range_banner,
             horizontal_rule(1).style(theme::subtle_rule(p)),
             slim_scroll_h(rows_col, min_graph_w, p)
         ]

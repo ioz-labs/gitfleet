@@ -233,6 +233,110 @@ impl GitService {
         .await
     }
 
+    pub async fn stash_push_paths(
+        &self,
+        repo_path: &Path,
+        message: Option<&str>,
+        paths: &[String],
+    ) -> AppResult<String> {
+        if paths.is_empty() {
+            return Ok(String::new());
+        }
+        let mut args: Vec<&str> = vec!["stash", "push", "-u"];
+        if let Some(m) = message
+            && !m.trim().is_empty()
+        {
+            args.push("-m");
+            args.push(m);
+        }
+        args.push("--");
+        for p in paths {
+            args.push(p.as_str());
+        }
+        runner::run_git_ok(
+            repo_path,
+            &args,
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await
+    }
+
+    pub async fn get_stash_files(
+        &self,
+        repo_path: &Path,
+        index: usize,
+    ) -> AppResult<Vec<FileChange>> {
+        let base = format!("stash@{{{index}}}^1");
+        let head = format!("stash@{{{index}}}");
+        let mut files = self.get_range_files(repo_path, &base, &head).await.unwrap_or_default();
+        let mut seen: std::collections::HashSet<String> =
+            files.iter().map(|f| f.path.clone()).collect();
+
+        // Untracked files saved with `git stash push -u` live in the 3rd parent (`stash@{n}^3`)
+        let untracked_parent = format!("stash@{{{index}}}^3");
+        if let Ok(untracked_out) = runner::run_git_ok(
+            repo_path,
+            &["ls-tree", "-r", "--name-only", &untracked_parent],
+            None,
+            None,
+            false,
+        )
+        .await
+        {
+            for line in untracked_out.lines() {
+                let p = line.trim();
+                if !p.is_empty() && seen.insert(p.to_string()) {
+                    files.push(FileChange {
+                        path: p.to_string(),
+                        kind: crate::models::FileChangeKind::Untracked,
+                        staged: false,
+                    });
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    pub async fn get_stash_file_diff(
+        &self,
+        repo_path: &Path,
+        index: usize,
+        file_path: &str,
+    ) -> AppResult<String> {
+        let base = format!("stash@{{{index}}}^1");
+        let head = format!("stash@{{{index}}}");
+        let tracked_diff = self
+            .get_range_file_diff(repo_path, &base, &head, file_path)
+            .await
+            .unwrap_or_default();
+        if !tracked_diff.trim().is_empty()
+            && !tracked_diff.starts_with("(No diff output for ")
+        {
+            return Ok(tracked_diff);
+        }
+
+        let git_path = file_path.replace('\\', "/");
+        let untracked_spec = format!("stash@{{{index}}}^3:{git_path}");
+        if let Ok(content) =
+            runner::run_git_ok(repo_path, &["show", &untracked_spec], None, None, false).await
+        {
+            let lines: Vec<&str> = content.lines().take(10_000).collect();
+            let mut preview = format!(
+                "diff --git a/{git_path} b/{git_path}\n--- /dev/null\n+++ b/{git_path}\n@@ -0,0 +1,{} @@\n",
+                lines.len()
+            );
+            for l in lines {
+                preview.push('+');
+                preview.push_str(l);
+                preview.push('\n');
+            }
+            return Ok(preview);
+        }
+        Ok(format!("(No diff output for {file_path})"))
+    }
+
     pub async fn list_stashes(&self, repo_path: &Path) -> AppResult<Vec<StashEntry>> {
         let out = runner::run_git_ok(
             repo_path,
@@ -335,6 +439,70 @@ impl GitService {
             false,
         )
         .await
+    }
+
+    pub async fn get_range_files(
+        &self,
+        repo_path: &Path,
+        base_ref: &str,
+        head_ref: &str,
+    ) -> AppResult<Vec<FileChange>> {
+        let out = runner::run_git_ok(
+            repo_path,
+            &["diff", "--name-status", "-r", base_ref, head_ref],
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        let mut files = Vec::new();
+        for line in out.lines() {
+            let mut parts = line.split('\t');
+            if let (Some(status), Some(path)) = (parts.next(), parts.next()) {
+                let c = status.chars().next().unwrap_or('M');
+                let actual_path = parts.next().unwrap_or(path);
+                files.push(FileChange {
+                    path: actual_path.to_string(),
+                    kind: char_to_kind(c),
+                    staged: false,
+                });
+            }
+        }
+        Ok(files)
+    }
+
+    pub async fn get_range_file_diff(
+        &self,
+        repo_path: &Path,
+        base_ref: &str,
+        head_ref: &str,
+        file_path: &str,
+    ) -> AppResult<String> {
+        let out = runner::run_git_ok(
+            repo_path,
+            &["diff", "-U999999", base_ref, head_ref, "--", file_path],
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        let out = if out.len() > 4 * 1024 * 1024 {
+            runner::run_git_ok(
+                repo_path,
+                &["diff", base_ref, head_ref, "--", file_path],
+                Some(&self.command_log),
+                Some(&self.events),
+                false,
+            )
+            .await?
+        } else {
+            out
+        };
+        if out.trim().is_empty() {
+            Ok(format!("(No diff output for {file_path})"))
+        } else {
+            Ok(out)
+        }
     }
 
     pub async fn reset_commit(
@@ -636,6 +804,79 @@ mod tests {
 
         let reflog = svc.get_reflog(&dir, 50).await.unwrap();
         assert!(reflog.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn range_compare_and_stash_inspector_list_and_diff_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_range_stash_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Tester"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(dir.join("alpha.txt"), "v1\n").unwrap();
+        svc.stage(&dir, &["alpha.txt".into()]).await.unwrap();
+        svc.commit(&dir, "c1", false).await.unwrap();
+        let c1 = svc.head_oid(&dir).await.unwrap();
+
+        std::fs::write(dir.join("alpha.txt"), "v2\n").unwrap();
+        std::fs::write(dir.join("beta.txt"), "added\n").unwrap();
+        svc.stage(&dir, &["alpha.txt".into(), "beta.txt".into()])
+            .await
+            .unwrap();
+        svc.commit(&dir, "c2", false).await.unwrap();
+        let c2 = svc.head_oid(&dir).await.unwrap();
+
+        let range_files = svc.get_range_files(&dir, &c1, &c2).await.unwrap();
+        assert_eq!(range_files.len(), 2);
+        let alpha_diff = svc
+            .get_range_file_diff(&dir, &c1, &c2, "alpha.txt")
+            .await
+            .unwrap();
+        assert!(alpha_diff.contains("-v1"));
+        assert!(alpha_diff.contains("+v2"));
+
+        // Partial stash of one tracked + one untracked file while leaving beta.txt dirty
+        std::fs::write(dir.join("alpha.txt"), "stashed_v3\n").unwrap();
+        std::fs::write(dir.join("beta.txt"), "keep_in_wt\n").unwrap();
+        std::fs::write(dir.join("untracked_note.md"), "hello stash\n").unwrap();
+        svc.stash_push_paths(
+            &dir,
+            Some("selected-stash"),
+            &["alpha.txt".into(), "untracked_note.md".into()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("beta.txt")).unwrap(),
+            "keep_in_wt\n"
+        );
+        let stash_files = svc.get_stash_files(&dir, 0).await.unwrap();
+        let stash_paths: Vec<&str> = stash_files.iter().map(|f| f.path.as_str()).collect();
+        assert!(stash_paths.contains(&"alpha.txt"));
+        assert!(stash_paths.contains(&"untracked_note.md"));
+        assert!(!stash_paths.contains(&"beta.txt"));
+
+        let untracked_diff = svc
+            .get_stash_file_diff(&dir, 0, "untracked_note.md")
+            .await
+            .unwrap();
+        assert!(untracked_diff.contains("+hello stash"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

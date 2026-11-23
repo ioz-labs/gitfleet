@@ -17,7 +17,8 @@ pub(crate) use render::{
     render_file_preview, render_side_by_side_diff_with, render_unified_diff_with,
 };
 pub(crate) use selection::{
-    diff_line_text_at, diff_row_count, extract_selected_diff_text, word_bounds_at,
+    build_selected_lines_patch, diff_line_text_at, diff_row_count, extract_selected_diff_text,
+    selected_changed_line_count, word_bounds_at,
 };
 
 use crate::app::{BottomViewMode, DiffTextSelection, GitFleetApp, Message};
@@ -142,6 +143,80 @@ impl GitFleetApp {
                 tooltip::Position::Top,
                 p,
             ));
+        }
+
+        if is_diff_mode && self.diff_is_working_file {
+            let sel_lines =
+                selected_changed_line_count(&self.diff_cache.layout, self.diff_selection);
+            if sel_lines > 0 {
+                if self.diff_is_staged {
+                    header = header.push(tip(
+                        button(
+                            row![
+                                icons::minus(11.0, p.warning_fg),
+                                text(format!("Unstage Lines ({sel_lines})"))
+                                    .size(type_scale::CAPTION)
+                                    .color(p.warning_fg)
+                                    .wrapping(text::Wrapping::None),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 8])
+                        .style(theme::subtle_btn(p))
+                        .on_press(Message::ApplySelectedDiffLines {
+                            cached: true,
+                            reverse: true,
+                        }),
+                        "Unstage only the selected diff line(s) from the Index",
+                        tooltip::Position::Top,
+                        p,
+                    ));
+                } else {
+                    header = header
+                        .push(tip(
+                            button(
+                                row![
+                                    icons::plus(11.0, Color::WHITE),
+                                    text(format!("Stage Lines ({sel_lines})"))
+                                        .size(type_scale::CAPTION)
+                                        .color(Color::WHITE)
+                                        .wrapping(text::Wrapping::None),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding([3, 8])
+                            .style(theme::primary_btn(p))
+                            .on_press(Message::ApplySelectedDiffLines {
+                                cached: true,
+                                reverse: false,
+                            }),
+                            "Stage only the selected diff line(s) to the Index",
+                            tooltip::Position::Top,
+                            p,
+                        ))
+                        .push(tip(
+                            button(
+                                row![
+                                    icons::trash(11.0, p.danger_fg),
+                                    text(format!("Discard ({sel_lines})"))
+                                        .size(type_scale::CAPTION)
+                                        .color(p.danger_fg)
+                                        .wrapping(text::Wrapping::None),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding([3, 8])
+                            .style(theme::subtle_btn(p))
+                            .on_press(Message::RequestDiscardSelectedDiffLines),
+                            "Discard only the selected unstaged diff line(s) from your working tree",
+                            tooltip::Position::Top,
+                            p,
+                        ));
+                }
+            }
         }
 
         if self.conflict_file_path.is_some() {

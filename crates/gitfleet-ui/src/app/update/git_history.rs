@@ -50,38 +50,41 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::InspectStash(index) => {
+                self.last_file_click = None;
+                self.graph_selection = GraphSelection::Stash(index);
+                self.selected_dir_filter = None;
+                self.selected_changed_file = None;
+                self.selected_changed_files.clear();
+                self.file_selection_anchor = None;
+                self.focus_pane = ActiveFocusPane::FilesCommit;
+                self.active_file_path = None;
                 self.diff_is_working_file = false;
+                self.diff_is_staged = false;
                 self.diff_image = None;
                 self.diff_csv = None;
+                self.diff_title = format!("Loading stash@{{{index}}} files…");
+                self.clear_diff_parsed_and_cache();
                 if matches!(
                     self.bottom_mode,
-                    BottomViewMode::ImageDiff | BottomViewMode::CsvDiff
+                    BottomViewMode::ImageDiff
+                        | BottomViewMode::CsvDiff
+                        | BottomViewMode::ResolveConflicts
                 ) {
                     self.bottom_mode = self.last_text_diff_mode;
                 }
                 if let Some(repo) = self.current_repo() {
-                    self.diff_request_id = self.diff_request_id.wrapping_add(1);
-                    let req_id = self.diff_request_id;
-                    let compact = self.diff_compact;
-                    let lang = crate::syntax::CodeLanguage::PlainText;
-                    let theme_mode = self.theme_mode;
                     let svc = self.service.clone();
-                    let title = format!("stash@{{{index}}}");
+                    let path = repo.path;
                     return Task::perform(
                         async move {
-                            let res = match svc.git.stash_show(&repo.path, index).await {
-                                Ok(raw) => tokio::task::spawn_blocking(move || {
-                                    crate::views::diff_viewer::parse_and_cache_diff(
-                                        &raw, compact, lang, theme_mode,
-                                    )
-                                })
+                            let res = svc
+                                .git
+                                .get_stash_files(&path, index)
                                 .await
-                                .map_err(|e| format!("Diff parse task failed: {e}")),
-                                Err(e) => Err(e.to_string()),
-                            };
-                            (req_id, title, res)
+                                .map_err(|e| e.to_string());
+                            (index, res)
                         },
-                        |(id, t, r)| Message::DiffLoaded(id, t, r),
+                        |(idx, res)| Message::StashFilesLoaded(idx, res),
                     );
                 }
                 Task::none()
@@ -1169,42 +1172,50 @@ impl GitFleetApp {
                 )
             }
             Message::CompareRefs(base_ref, target_ref) => {
+                self.last_file_click = None;
+                self.graph_selection = GraphSelection::Range {
+                    base: base_ref.clone(),
+                    head: target_ref.clone(),
+                };
+                self.selected_dir_filter = None;
+                self.selected_changed_file = None;
+                self.selected_changed_files.clear();
+                self.file_selection_anchor = None;
+                self.focus_pane = ActiveFocusPane::FilesCommit;
+                self.active_file_path = None;
                 self.diff_is_working_file = false;
+                self.diff_is_staged = false;
                 self.diff_image = None;
                 self.diff_csv = None;
+                self.diff_title = format!(
+                    "Comparing {} .. {}…",
+                    &base_ref[..base_ref.len().min(12)],
+                    &target_ref[..target_ref.len().min(12)]
+                );
+                self.clear_diff_parsed_and_cache();
                 if matches!(
                     self.bottom_mode,
                     BottomViewMode::Preview
                         | BottomViewMode::Edit
                         | BottomViewMode::ImageDiff
                         | BottomViewMode::CsvDiff
+                        | BottomViewMode::ResolveConflicts
                 ) {
                     self.bottom_mode = self.last_text_diff_mode;
                 }
                 if let Some(repo) = self.current_repo() {
-                    self.diff_request_id = self.diff_request_id.wrapping_add(1);
-                    let req_id = self.diff_request_id;
-                    let compact = self.diff_compact;
-                    let lang = crate::syntax::CodeLanguage::PlainText;
-                    let theme_mode = self.theme_mode;
                     let svc = self.service.clone();
-                    let title = format!("Compare {base_ref} ↔ {target_ref}");
+                    let path = repo.path;
                     return Task::perform(
                         async move {
-                            let res = match svc.git.diff_refs(&repo.path, &base_ref, &target_ref).await
-                            {
-                                Ok(raw) => tokio::task::spawn_blocking(move || {
-                                    crate::views::diff_viewer::parse_and_cache_diff(
-                                        &raw, compact, lang, theme_mode,
-                                    )
-                                })
+                            let result = svc
+                                .git
+                                .get_range_files(&path, &base_ref, &target_ref)
                                 .await
-                                .map_err(|e| format!("Diff parse task failed: {e}")),
-                                Err(e) => Err(e.to_string()),
-                            };
-                            (req_id, title, res)
+                                .map_err(|e| e.to_string());
+                            (base_ref, target_ref, result)
                         },
-                        |(id, t, r)| Message::DiffLoaded(id, t, r),
+                        |(base, head, result)| Message::RangeFilesLoaded { base, head, result },
                     );
                 }
                 Task::none()

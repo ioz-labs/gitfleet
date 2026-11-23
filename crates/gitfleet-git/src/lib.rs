@@ -29,7 +29,7 @@ pub use conflicts::{
 };
 pub use diff::{
     DiffBlock, DiffChangeBlock, DiffChangeKind, DiffContextLine, DiffHunk, DiffStats,
-    FileVersionPair, ParsedDiff, diff_two_texts, parse_unified_diff,
+    FileVersionPair, ParsedDiff, build_partial_patch, diff_two_texts, parse_unified_diff,
 };
 pub use git_flow::{GitFlowKind, GitFlowPrefixes, GitFlowState, normalize_flow_prefix};
 pub use models::*;

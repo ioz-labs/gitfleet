@@ -753,6 +753,17 @@ impl GitFleetApp {
                     Message::CompareRefs("HEAD".into(), oid.clone()),
                     false,
                 ));
+                if let crate::app::GraphSelection::Commit(sel_oid) = &self.graph_selection
+                    && sel_oid != oid
+                {
+                    let sel_short = &sel_oid[..sel_oid.len().min(7)];
+                    items = items.push(ctx_btn(
+                        icons::file_diff(12.0, p.accent_fg).into(),
+                        format!("Compare with Selected ({sel_short})"),
+                        Message::CompareRefs(sel_oid.clone(), oid.clone()),
+                        false,
+                    ));
+                }
                 items = items.push(ctx_btn(
                     icons::tag(12.0, p.warning_fg).into(),
                     "Create Tag Here".into(),
@@ -1131,6 +1142,29 @@ impl GitFleetApp {
                             false,
                         ));
                     }
+                    let stash_paths: Vec<String> = if in_multi_sel {
+                        let mut v: Vec<String> = self
+                            .selected_changed_files
+                            .iter()
+                            .map(|(p, _)| p.clone())
+                            .collect();
+                        v.sort();
+                        v.dedup();
+                        v
+                    } else {
+                        vec![file.path.clone()]
+                    };
+                    let stash_label = if stash_paths.len() > 1 {
+                        format!("Stash {} Selected Files", stash_paths.len())
+                    } else {
+                        "Stash File".into()
+                    };
+                    items = items.push(ctx_btn(
+                        icons::stash(12.0, p.accent_fg).into(),
+                        stash_label,
+                        Message::StashPaths(stash_paths),
+                        false,
+                    ));
                     items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 }
                 items = items.push(ctx_btn(

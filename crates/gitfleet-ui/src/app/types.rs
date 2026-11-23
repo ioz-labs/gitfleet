@@ -128,6 +128,8 @@ pub(crate) enum RepoFilter {
 pub(crate) enum GraphSelection {
     WorkingTree,
     Commit(String),
+    Range { base: String, head: String },
+    Stash(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +310,22 @@ impl PendingConfirm {
                 .into(),
             detail: Some(format!("{file_title}\n{header}")),
             confirm_label: "Discard Hunk".into(),
+            is_danger: true,
+            action: ConfirmAction::DiscardHunk { patch },
+        }
+    }
+
+    pub(crate) fn discard_selected_lines(
+        file_title: &str,
+        line_count: usize,
+        patch: String,
+    ) -> Self {
+        Self {
+            title: format!("Discard {line_count} Selected Line(s)?"),
+            message: "The selected unstaged diff line(s) will be reverted from your working tree and cannot be undone."
+                .into(),
+            detail: Some(file_title.to_string()),
+            confirm_label: format!("Discard {line_count} Line(s)"),
             is_danger: true,
             action: ConfirmAction::DiscardHunk { patch },
         }

@@ -1064,6 +1064,8 @@ impl GitFleetApp {
                     );
                 }
                 for st in &self.stashes {
+                    let is_active_stash =
+                        self.graph_selection == crate::app::GraphSelection::Stash(st.index);
                     list = list.push(
                         container(
                             column![
@@ -1082,7 +1084,7 @@ impl GitFleetApp {
                                 ))
                                 .width(Length::Fill)
                                 .padding([3, 5])
-                                .style(theme::repo_row_btn(p, false))
+                                .style(theme::repo_row_btn(p, is_active_stash))
                                 .on_press(Message::InspectStash(st.index)),
                                 row![
                                     theme::clipped_line(

@@ -1288,6 +1288,7 @@ impl DetachedViewerState {
                     oid: oid.clone(),
                     rel_path: file.path,
                 }),
+                GraphSelection::Range { .. } | GraphSelection::Stash(_) => None,
             };
         }
 
@@ -1390,7 +1391,7 @@ impl DetachedViewerState {
                 oid: oid.clone(),
                 rel_path: f.path.clone(),
             }),
-            (_, Some(f)) => Some(DetachedGitDiffTarget::WorkingFile {
+            (GraphSelection::WorkingTree, Some(f)) => Some(DetachedGitDiffTarget::WorkingFile {
                 repo_path: repo.path.clone(),
                 file: f.clone(),
             }),

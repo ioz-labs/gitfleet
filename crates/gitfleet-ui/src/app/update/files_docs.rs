@@ -58,6 +58,25 @@ impl GitFleetApp {
                 Task::none()
             }
             Message::SelectCommit(oid) => {
+                if self.keyboard_modifiers.command() || self.keyboard_modifiers.shift() {
+                    match &self.graph_selection {
+                        GraphSelection::Commit(first_oid) if first_oid != &oid => {
+                            let idx_a = self.commits.iter().position(|c| &c.oid == first_oid);
+                            let idx_b = self.commits.iter().position(|c| c.oid == oid);
+                            let (base, head) = match (idx_a, idx_b) {
+                                // `commits` is newest-first: larger index is older (`base`)
+                                (Some(a), Some(b)) if a < b => (oid, first_oid.clone()),
+                                _ => (first_oid.clone(), oid),
+                            };
+                            return self.update(Message::CompareRefs(base, head));
+                        }
+                        GraphSelection::Range { base, .. } if base != &oid => {
+                            let base_cl = base.clone();
+                            return self.update(Message::CompareRefs(base_cl, oid));
+                        }
+                        _ => {}
+                    }
+                }
                 self.last_file_click = None;
                 self.graph_selection = GraphSelection::Commit(oid.clone());
                 self.selected_dir_filter = None;
@@ -117,6 +136,51 @@ impl GitFleetApp {
                             self.diff_title = "No files changed in this commit".into();
                             self.clear_diff_parsed_and_cache();
                         }
+                    }
+                }
+                Task::none()
+            }
+            Message::RangeFilesLoaded { base, head, result } => {
+                match result {
+                    Ok(files) => {
+                        self.commit_files = files;
+                        if matches!(
+                            &self.graph_selection,
+                            GraphSelection::Range { base: b, head: h } if b == &base && h == &head
+                        ) {
+                            if let Some(first) = self.commit_files.first().cloned() {
+                                return self.update(Message::SelectChangedFile(first));
+                            } else {
+                                self.diff_title = format!(
+                                    "No differences between {} and {}",
+                                    &base[..base.len().min(12)],
+                                    &head[..head.len().min(12)]
+                                );
+                                self.clear_diff_parsed_and_cache();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.report_action_error("Compare Range Failed", e, true);
+                    }
+                }
+                Task::none()
+            }
+            Message::StashFilesLoaded(index, result) => {
+                match result {
+                    Ok(files) => {
+                        self.commit_files = files;
+                        if self.graph_selection == GraphSelection::Stash(index) {
+                            if let Some(first) = self.commit_files.first().cloned() {
+                                return self.update(Message::SelectChangedFile(first));
+                            } else {
+                                self.diff_title = format!("stash@{{{index}}} has no changed files");
+                                self.clear_diff_parsed_and_cache();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.report_action_error("Inspect Stash Failed", e, true);
                     }
                 }
                 Task::none()
@@ -500,6 +564,173 @@ impl GitFleetApp {
                         }
 
                         Task::batch(tasks)
+                    }
+                    GraphSelection::Range { base, head } => {
+                        self.diff_is_working_file = false;
+                        self.diff_is_staged = false;
+                        let base = base.clone();
+                        let head = head.clone();
+                        let b_short = &base[..base.len().min(8)];
+                        let h_short = &head[..head.len().min(8)];
+                        let title = format!("{} ({b_short} .. {h_short})", file.path);
+                        self.diff_title = title.clone();
+                        let mut tasks = vec![doc_task];
+
+                        if !is_raster {
+                            let svc = self.service.clone();
+                            let repo_path = repo.path.clone();
+                            let fpath = file.path.clone();
+                            let b = base.clone();
+                            let h = head.clone();
+                            let t = title.clone();
+                            let compact = self.diff_compact;
+                            let lang = self.open_doc_language;
+                            let theme_mode = self.theme_mode;
+                            tasks.push(Task::perform(
+                                async move {
+                                    let res = match svc
+                                        .git
+                                        .get_range_file_diff(&repo_path, &b, &h, &fpath)
+                                        .await
+                                    {
+                                        Ok(raw) => tokio::task::spawn_blocking(move || {
+                                            parse_and_cache_diff(&raw, compact, lang, theme_mode)
+                                        })
+                                        .await
+                                        .map_err(|e| format!("Diff parse task failed: {e}")),
+                                        Err(e) => Err(e.to_string()),
+                                    };
+                                    (req_id, t, res)
+                                },
+                                |(id, t, r)| Message::DiffLoaded(id, t, r),
+                            ));
+                        } else {
+                            self.clear_diff_parsed_and_cache();
+                        }
+
+                        if is_img {
+                            let svc = self.service.clone();
+                            let repo_path = repo.path.clone();
+                            let fpath = file.path.clone();
+                            let b = base.clone();
+                            let h = head.clone();
+                            let t = title.clone();
+                            tasks.push(Task::perform(
+                                async move {
+                                    let data = match svc
+                                        .git
+                                        .get_range_file_versions(&repo_path, &b, &h, &fpath)
+                                        .await
+                                    {
+                                        Ok(pair) => tokio::task::spawn_blocking(move || {
+                                            decode_image_diff_pair(pair)
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| ImageDiffData {
+                                            file_path: fpath.clone(),
+                                            is_svg: is_svg_path(&fpath),
+                                            before_label: "Base".into(),
+                                            after_label: "Head".into(),
+                                            before: None,
+                                            after: None,
+                                            diff_handle: None,
+                                            diff_width: 0,
+                                            diff_height: 0,
+                                            diff_changed_pixels: 0,
+                                            diff_total_pixels: 0,
+                                            load_error: Some(format!("Decode task failed: {e}")),
+                                        }),
+                                        Err(e) => ImageDiffData {
+                                            file_path: fpath.clone(),
+                                            is_svg: is_svg_path(&fpath),
+                                            before_label: "Base".into(),
+                                            after_label: "Head".into(),
+                                            before: None,
+                                            after: None,
+                                            diff_handle: None,
+                                            diff_width: 0,
+                                            diff_height: 0,
+                                            diff_changed_pixels: 0,
+                                            diff_total_pixels: 0,
+                                            load_error: Some(e.to_string()),
+                                        },
+                                    };
+                                    (req_id, t, data)
+                                },
+                                |(id, t, d)| Message::ImageDiffLoaded(id, t, d),
+                            ));
+                        } else if is_csv {
+                            let svc = self.service.clone();
+                            let repo_path = repo.path.clone();
+                            let fpath = file.path.clone();
+                            let b = base.clone();
+                            let h = head.clone();
+                            let t = title.clone();
+                            tasks.push(Task::perform(
+                                async move {
+                                    let pair = svc
+                                        .git
+                                        .get_range_file_versions(&repo_path, &b, &h, &fpath)
+                                        .await
+                                        .unwrap_or(gitfleet_git::FileVersionPair {
+                                            file_path: fpath,
+                                            before_label: "Base".into(),
+                                            after_label: "Head".into(),
+                                            before_bytes: None,
+                                            after_bytes: None,
+                                        });
+                                    let data = tokio::task::spawn_blocking(move || {
+                                        compute_csv_diff(pair)
+                                    })
+                                    .await
+                                    .unwrap_or_else(|_| {
+                                        compute_csv_diff(gitfleet_git::FileVersionPair {
+                                            file_path: String::new(),
+                                            before_label: "Base".into(),
+                                            after_label: "Head".into(),
+                                            before_bytes: None,
+                                            after_bytes: None,
+                                        })
+                                    });
+                                    (req_id, t, data)
+                                },
+                                |(id, t, d)| Message::CsvDiffLoaded(id, t, d),
+                            ));
+                        }
+
+                        Task::batch(tasks)
+                    }
+                    GraphSelection::Stash(index) => {
+                        let index = *index;
+                        self.diff_is_working_file = false;
+                        self.diff_is_staged = false;
+                        let title = format!("{} @ stash@{{{index}}}", file.path);
+                        self.diff_title = title.clone();
+                        let svc = self.service.clone();
+                        let repo_path = repo.path.clone();
+                        let fpath = file.path.clone();
+                        let compact = self.diff_compact;
+                        let lang = self.open_doc_language;
+                        let theme_mode = self.theme_mode;
+                        let diff_task = Task::perform(
+                            async move {
+                                let res = match svc
+                                    .git
+                                    .get_stash_file_diff(&repo_path, index, &fpath)
+                                    .await
+                                {
+                                    Ok(raw) => tokio::task::spawn_blocking(move || {
+                                        parse_and_cache_diff(&raw, compact, lang, theme_mode)
+                                    })
+                                    .await
+                                    .map_err(|e| format!("Diff parse task failed: {e}")),
+                                    Err(e) => Err(e.to_string()),
+                                };
+                                (req_id, title, res)
+                            },
+                            |(id, t, r)| Message::DiffLoaded(id, t, r),
+                        );
+                        Task::batch([doc_task, diff_task])
                     }
                 }
             }
