@@ -221,13 +221,20 @@ fn theme_preview_card<'a>(
     .spacing(8)
     .align_y(Alignment::Center);
 
+    let footer_box = container(footer_row)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center);
+
     button(
-        column![mini_window, footer_row]
+        column![mini_window, footer_box]
             .spacing(8)
-            .width(Length::Fill),
+            .width(Length::Fill)
+            .height(Length::Fill),
     )
     .padding(10)
     .width(Length::FillPortion(1))
+    .height(Length::Fixed(164.0))
     .style(theme::choice_card_btn(p, active))
     .on_press(Message::SetThemePreset(target_preset))
     .into()
@@ -518,7 +525,7 @@ impl GitFleetApp {
                 self.theme_preset == ThemePreset::Custom,
             )
         } else {
-            Space::with_width(Length::FillPortion(1)).into()
+            Space::new(Length::FillPortion(1), Length::Fixed(164.0)).into()
         };
 
         let row_bottom = row![

@@ -160,6 +160,27 @@ impl ExplorerDirNode {
     }
 
     pub(crate) fn insert(&mut self, rel: &str, is_ignored: bool) {
+        if let Some(dir_only) = rel.strip_suffix('/') {
+            let segs: Vec<&str> = dir_only.split('/').filter(|s| !s.is_empty()).collect();
+            if segs.is_empty() {
+                return;
+            }
+            if is_ignored {
+                self.has_ignored = true;
+            } else {
+                self.has_non_ignored = true;
+            }
+            let mut cur = self;
+            for dir in segs {
+                cur = cur.dirs.entry(dir.to_string()).or_default();
+                if is_ignored {
+                    cur.has_ignored = true;
+                } else {
+                    cur.has_non_ignored = true;
+                }
+            }
+            return;
+        }
         let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
         if parts.is_empty() {
             return;
@@ -407,7 +428,8 @@ pub(crate) fn render_explorer_sidebar<'a>(
             let mut matched: Vec<(&str, bool)> = Vec::new();
             let mut seen: HashSet<&str> = HashSet::new();
             for rel in &v.explorer_files {
-                if rel.to_lowercase().contains(&q) && seen.insert(rel.as_str()) {
+                if !rel.ends_with('/') && rel.to_lowercase().contains(&q) && seen.insert(rel.as_str())
+                {
                     matched.push((rel.as_str(), false));
                 }
             }

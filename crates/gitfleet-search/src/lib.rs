@@ -403,17 +403,30 @@ pub fn list_directory_files(root: &Path, use_gitignore: bool, max_files: usize) 
     let mut files = Vec::new();
     for entry in walk.build().flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        if path == root {
             continue;
         }
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        files.push(rel);
-        if files.len() >= limit {
-            break;
+        if path.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push(rel);
+            if files.len() >= limit {
+                break;
+            }
+        } else if path.is_dir()
+            && std::fs::read_dir(path).is_ok_and(|mut it| it.next().is_none())
+        {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !rel.is_empty() {
+                files.push(format!("{rel}/"));
+            }
         }
     }
     files

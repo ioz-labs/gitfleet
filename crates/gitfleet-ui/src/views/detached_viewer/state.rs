@@ -1687,7 +1687,7 @@ impl DetachedViewerState {
 
         // 2. Tracked workspace files
         for rel in &self.explorer_files {
-            if !seen.insert(rel.as_str()) {
+            if rel.ends_with('/') || !seen.insert(rel.as_str()) {
                 continue;
             }
             let is_open = open_rels.contains(rel.as_str());

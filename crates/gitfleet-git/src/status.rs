@@ -67,7 +67,8 @@ impl GitService {
         Ok(summary)
     }
 
-    /// Lists all tracked + non-ignored untracked files in the repository (for All Files explorer).
+    /// Lists all tracked + non-ignored untracked files AND empty non-ignored directories
+    /// (represented with a trailing `'/'`, e.g. `"new_folder/"`) for All Files & Studio Explorer.
     pub async fn list_repo_files(&self, repo_path: &Path) -> AppResult<Vec<String>> {
         let out = runner::run_git_ok(
             repo_path,
@@ -90,7 +91,15 @@ impl GitService {
             .filter(|l| !l.is_empty())
             .map(|l| l.to_string())
             .collect();
+
+        let root_buf = repo_path.to_path_buf();
+        if let Ok(empty_dirs) =
+            tokio::task::spawn_blocking(move || collect_empty_non_ignored_dirs(&root_buf)).await
+        {
+            files.extend(empty_dirs);
+        }
         files.sort();
+        files.dedup();
         Ok(files)
     }
 
@@ -896,6 +905,44 @@ fn remove_path_on_disk(repo_path: &Path, rel_path: &str) -> AppResult<()> {
         Err(e) => return Err(e.into()),
     }
     Ok(())
+}
+
+/// Discovers empty non-ignored directories on disk (skipping `.git` and gitignored trees like
+/// `target/` or `node_modules/`), returning relative paths with a trailing `'/'` (e.g. `"docs/empty/"`).
+fn collect_empty_non_ignored_dirs(repo_path: &Path) -> Vec<String> {
+    if !repo_path.is_dir() {
+        return Vec::new();
+    }
+    let mut walk = ignore::WalkBuilder::new(repo_path);
+    walk.hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .filter_entry(|e| e.file_name().to_str().is_none_or(|n| n != ".git"));
+
+    let mut dirs = Vec::new();
+    for entry in walk.build().flatten() {
+        let path = entry.path();
+        if path == repo_path || !path.is_dir() {
+            continue;
+        }
+        if std::fs::read_dir(path).is_ok_and(|mut it| it.next().is_none()) {
+            let rel = path
+                .strip_prefix(repo_path)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !rel.is_empty() {
+                dirs.push(format!("{rel}/"));
+                if dirs.len() >= 1000 {
+                    break;
+                }
+            }
+        }
+    }
+    dirs
 }
 
 pub(crate) fn char_to_kind(c: char) -> FileChangeKind {
@@ -1943,6 +1990,34 @@ mod tests {
         assert!(create_workspace_entry(&dir, "src/sub", "../escape.rs", false).is_err());
         assert!(create_workspace_entry(&dir, "", ".git/hooks/x", false).is_err());
         assert!(duplicate_workspace_file(&dir, "src/sub/nested/widget.rs", "widget.rs").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn list_repo_files_includes_empty_non_ignored_folders() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_empty_dirs_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(dir.join(".gitignore"), "ignored_empty/\n").unwrap();
+        std::fs::create_dir_all(dir.join("empty_top")).unwrap();
+        std::fs::create_dir_all(dir.join("nested_parent/empty_leaf")).unwrap();
+        std::fs::create_dir_all(dir.join("ignored_empty")).unwrap();
+
+        let listed = svc.list_repo_files(&dir).await.unwrap();
+        assert!(listed.contains(&".gitignore".to_string()));
+        assert!(listed.contains(&"empty_top/".to_string()));
+        assert!(listed.contains(&"nested_parent/empty_leaf/".to_string()));
+        assert!(!listed.contains(&"ignored_empty/".to_string()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

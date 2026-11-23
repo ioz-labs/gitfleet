@@ -668,9 +668,9 @@ impl GitFleetApp {
             active_resize: None,
             sidebar_width: 304.0,
             left_split_ratio: 0.52,
-            right_split_ratio: 0.54,
+            right_split_ratio: 0.56,
             top_right_split_ratio: 0.56,
-            commit_files_split_ratio: 0.36,
+            commit_files_split_ratio: 0.46,
             files_staged_split_ratio: 0.62,
             show_terminal_sidebar: false,
             show_terminal_menu: false,
@@ -1759,5 +1759,53 @@ mod tests {
             "error: Your local changes would be overwritten"
         );
         assert!(multi.detail.as_deref().unwrap().contains("src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn host_and_studio_views_build_all_scrollables_without_runtime_panic() {
+        let (mut app, _init_task) = GitFleetApp::new();
+        let p = app.palette();
+
+        for layout in [
+            HostLayoutMode::Cockpit,
+            HostLayoutMode::Changes,
+            HostLayoutMode::History,
+            HostLayoutMode::ZenDiff,
+        ] {
+            app.host_layout = layout;
+            let _ = app.view_host(p);
+        }
+        app.host_layout = HostLayoutMode::Cockpit;
+
+        for fmode in [FilesViewMode::Flat, FilesViewMode::Dir, FilesViewMode::AllFiles] {
+            app.files_mode = fmode;
+            let _ = app.view_host(p);
+        }
+
+        for bmode in [
+            BottomViewMode::UnifiedDiff,
+            BottomViewMode::SideBySideDiff,
+            BottomViewMode::Preview,
+            BottomViewMode::Edit,
+            BottomViewMode::Blame,
+        ] {
+            app.bottom_mode = bmode;
+            let _ = app.view_host(p);
+        }
+
+        for dtab in [
+            DrawerTab::Terminal,
+            DrawerTab::Problems,
+            DrawerTab::Search,
+            DrawerTab::Secrets,
+            DrawerTab::Ignore,
+            DrawerTab::CommandLog,
+        ] {
+            app.drawer_tab = Some(dtab);
+            let _ = app.view_host(p);
+        }
+        app.drawer_tab = None;
+        app.show_settings_modal = true;
+        let _ = app.view_host(p);
     }
 }

@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::icons;
 use crate::theme::{self, Palette, icon_size, pad, space, type_scale};
-use crate::views::{parent_dir, slim_scroll_h, slim_strip_h, tip};
+use crate::views::{parent_dir, slim_scroll, slim_scroll_h, slim_strip_h, tip};
 use gitfleet_git::{ConflictStrategy, FileChange, FileChangeKind, ResetMode};
 use iced::widget::{
     Space, button, checkbox, column, container, horizontal_rule, mouse_area, row, text,
@@ -105,6 +105,27 @@ impl FolderTreeNode {
     }
 
     fn insert_file(&mut self, file_path: &str, dirty: bool, ignored: bool) {
+        if let Some(dir_only) = file_path.strip_suffix('/') {
+            let trimmed = dir_only.trim_matches('/');
+            if trimmed.is_empty() {
+                return;
+            }
+            if ignored {
+                self.has_ignored = true;
+            } else {
+                self.has_non_ignored = true;
+            }
+            let mut cursor = self;
+            for seg in trimmed.split('/').filter(|s| !s.is_empty()) {
+                cursor = cursor.children.entry(seg.to_string()).or_default();
+                if ignored {
+                    cursor.has_ignored = true;
+                } else {
+                    cursor.has_non_ignored = true;
+                }
+            }
+            return;
+        }
         self.total_files += 1;
         if dirty {
             self.has_dirty = true;
@@ -536,8 +557,13 @@ impl GitFleetApp {
                     p,
                 );
 
-                let commit_box = text_editor(&self.commit_editor)
-                    .placeholder("Description body (optional · Ctrl+Enter to commit)")
+                let desc_height = if self.commit_editor.line_count() <= 4 {
+                    Length::Fixed(72.0)
+                } else {
+                    Length::Shrink
+                };
+                let commit_editor_widget = text_editor(&self.commit_editor)
+                    .placeholder("Description body (optional · multi-line · Ctrl+Enter to commit)")
                     .on_action(Message::CommitMessageAction)
                     .key_binding(|key_press| {
                         if key_press.status == text_editor::Status::Focused
@@ -559,8 +585,22 @@ impl GitFleetApp {
                     })
                     .padding(pad::INPUT_COMPACT)
                     .size(type_scale::CAPTION)
+                    .height(desc_height)
+                    .style(theme::transparent_code_editor(p, false));
+
+                let commit_box = container(slim_scroll(commit_editor_widget, p).height(Length::Fill))
+                    .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(theme::dark_editor(p));
+                    .padding(1)
+                    .style(move |_| container::Style {
+                        background: Some(iced::Background::Color(p.surface_input)),
+                        border: iced::Border {
+                            color: p.border_default,
+                            width: 1.0,
+                            radius: 5.0.into(),
+                        },
+                        ..Default::default()
+                    });
 
                 let mut alerts_col = column![].spacing(space::XS);
                 let mut has_alerts = false;
@@ -2285,7 +2325,7 @@ impl GitFleetApp {
             let mut matched: Vec<(&str, bool)> = self
                 .all_repo_files
                 .iter()
-                .filter(|f| f.to_lowercase().contains(&q))
+                .filter(|f| !f.ends_with('/') && f.to_lowercase().contains(&q))
                 .map(|f| (f.as_str(), false))
                 .collect();
             if self.show_ignored_files {
@@ -2321,12 +2361,12 @@ impl GitFleetApp {
             let mut direct: Vec<(&str, bool)> = self
                 .all_repo_files
                 .iter()
-                .filter(|f| parent_dir(f) == self.selected_all_dir)
+                .filter(|f| !f.ends_with('/') && parent_dir(f) == self.selected_all_dir)
                 .map(|f| (f.as_str(), false))
                 .collect();
             if self.show_ignored_files {
                 for f in &self.ignored_repo_files {
-                    if parent_dir(f) == self.selected_all_dir {
+                    if !f.ends_with('/') && parent_dir(f) == self.selected_all_dir {
                         direct.push((f.as_str(), true));
                     }
                 }
@@ -2338,7 +2378,7 @@ impl GitFleetApp {
                 let mut nested: Vec<(&str, bool)> = self
                     .all_repo_files
                     .iter()
-                    .filter(|f| f.starts_with(&prefix))
+                    .filter(|f| !f.ends_with('/') && f.starts_with(&prefix))
                     .map(|f| (f.as_str(), false))
                     .collect();
                 if self.show_ignored_files {
@@ -2618,5 +2658,22 @@ mod tests {
         apply_file_selection(&mut sel, &mut anchor, &visible, &visible[0], false, true);
         assert_eq!(sel.len(), 2);
         assert!(!sel.contains(&("a.rs".into(), false)));
+    }
+
+    #[test]
+    fn all_files_tree_renders_empty_folders_with_zero_count() {
+        let mut root = FolderTreeNode::default();
+        root.insert_file("src/main.rs", false, false);
+        root.insert_file("empty_folder/", false, false);
+        root.insert_file("docs/guides/empty_sub/", false, false);
+
+        assert_eq!(root.total_files, 1);
+        assert!(root.children.contains_key("empty_folder"));
+        assert_eq!(root.children["empty_folder"].total_files, 0);
+        assert!(!root.children["empty_folder"].is_ignored_only());
+
+        let guides = &root.children["docs"].children["guides"];
+        assert!(guides.children.contains_key("empty_sub"));
+        assert_eq!(guides.children["empty_sub"].total_files, 0);
     }
 }

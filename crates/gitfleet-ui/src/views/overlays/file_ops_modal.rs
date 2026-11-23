@@ -182,6 +182,10 @@ pub(crate) fn remap_rel_path(
 }
 
 fn insert_file_and_ancestors(set: &mut BTreeSet<String>, raw: &str) {
+    if raw.ends_with('/') {
+        insert_dir_and_ancestors(set, raw);
+        return;
+    }
     let norm = raw.replace('\\', "/");
     let clean = norm.trim_matches('/');
     if clean.is_empty() {

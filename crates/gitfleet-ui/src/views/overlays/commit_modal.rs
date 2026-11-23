@@ -176,12 +176,29 @@ impl GitFleetApp {
         .width(Length::Fill)
         .style(theme::section_panel_box(p));
 
-        let msg_editor = text_editor(&self.commit_modal_editor)
+        let modal_msg_h = if self.commit_modal_editor.line_count() <= 5 {
+            Length::Fixed(104.0)
+        } else {
+            Length::Shrink
+        };
+        let msg_editor_inner = text_editor(&self.commit_modal_editor)
             .placeholder("Write a clear commit message…")
             .on_action(Message::CommitModalMessageAction)
             .size(type_scale::BODY)
-            .height(Length::Fixed(110.0))
-            .style(theme::dark_editor(p));
+            .height(modal_msg_h)
+            .style(theme::transparent_code_editor(p, false));
+        let msg_editor = container(slim_scroll(msg_editor_inner, p).height(Length::Fixed(110.0)))
+            .width(Length::Fill)
+            .padding(1)
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(p.surface_input)),
+                border: iced::Border {
+                    color: p.border_default,
+                    width: 1.0,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            });
 
         let footer = row![
             checkbox("Amend last commit", modal.amend)

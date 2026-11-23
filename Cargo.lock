@@ -1969,6 +1969,7 @@ version = "0.6.1"
 dependencies = [
  "chrono",
  "gitfleet-core",
+ "ignore",
  "serde",
  "tokio",
 ]
