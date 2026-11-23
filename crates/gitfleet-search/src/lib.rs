@@ -15,7 +15,13 @@ use uuid::Uuid;
 pub struct SearchRequest {
     pub query: String,
     pub case_sensitive: bool,
+    #[serde(default)]
+    pub whole_word: bool,
     pub regex: bool,
+    #[serde(default)]
+    pub include_glob: String,
+    #[serde(default)]
+    pub exclude_glob: String,
     pub targets: Vec<(RepoId, String, PathBuf)>,
 }
 
@@ -616,27 +622,24 @@ impl SearchService {
         let rid = run_id.clone();
 
         let matches = tokio::task::spawn_blocking(move || {
-            let pattern = if request.regex {
-                request.query.clone()
-            } else {
-                regex::escape(&request.query)
+            let opts = SearchOptions {
+                case_sensitive: request.case_sensitive,
+                whole_word: request.whole_word,
+                regex: request.regex,
             };
-            let Ok(re) = RegexBuilder::new(&pattern)
-                .case_insensitive(!request.case_sensitive)
-                .build()
-            else {
+            let Ok(re) = build_search_regex(&request.query, opts) else {
                 return Vec::new();
             };
 
             let mut results = Vec::new();
-            const MAX_MATCHES: usize = 500;
+            const MAX_MATCHES: usize = 2000;
 
             'outer: for (repo_id, repo_name, root) in request.targets {
                 if cancelled.load(Ordering::Relaxed) || !root.is_dir() {
                     break;
                 }
-                let walker = WalkBuilder::new(&root)
-                    .hidden(false)
+                let mut wb = WalkBuilder::new(&root);
+                wb.hidden(false)
                     .git_ignore(true)
                     .git_exclude(true)
                     .max_filesize(Some(2 * 1024 * 1024))
@@ -644,8 +647,13 @@ impl SearchService {
                         e.file_name()
                             .to_str()
                             .is_none_or(|n| n != ".git" && n != "node_modules" && n != "target")
-                    })
-                    .build();
+                    });
+                if let Ok(Some(ov)) =
+                    build_scope_overrides(&root, &request.include_glob, &request.exclude_glob)
+                {
+                    wb.overrides(ov);
+                }
+                let walker = wb.build();
 
                 for entry in walker.flatten() {
                     if cancelled.load(Ordering::Relaxed) {

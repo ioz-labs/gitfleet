@@ -10,6 +10,8 @@ pub struct CommandLogEntry {
     pub command: String,
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_preview: Option<String>,
     pub stderr_preview: Option<String>,
 }
 

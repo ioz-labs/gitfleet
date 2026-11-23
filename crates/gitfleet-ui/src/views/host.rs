@@ -1,6 +1,6 @@
 use crate::app::{
-    BottomViewMode, ContextMenuTarget, GitFleetApp, HostLayoutMode, Message, PendingConfirm,
-    RIBBON_HEIGHT, ResizeTarget,
+    BottomViewMode, ContextMenuTarget, DockPosition, GitFleetApp, HostLayoutMode, Message,
+    PendingConfirm, RIBBON_HEIGHT, ResizeTarget,
 };
 use crate::icons;
 use crate::theme::kit::{
@@ -824,12 +824,23 @@ impl GitFleetApp {
             }
         };
 
+        let center_body: Element<'_, Message> = match (self.drawer_tab, self.dock_position) {
+            (Some(dtab), DockPosition::Right) => row![
+                container(main_split).width(Length::Fill).height(Length::Fill),
+                self.view_auxiliary_drawer(p, dtab),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+            _ => main_split,
+        };
+
         let mut root_col = column![
             ribbon,
             horizontal_rule(1).style(theme::subtle_rule(p)),
-            main_split,
+            center_body,
         ];
-        if let Some(dtab) = self.drawer_tab {
+        if let (Some(dtab), DockPosition::Bottom) = (self.drawer_tab, self.dock_position) {
             root_col = root_col.push(self.view_auxiliary_drawer(p, dtab));
         }
         root_col = root_col

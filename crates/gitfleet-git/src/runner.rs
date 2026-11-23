@@ -94,10 +94,15 @@ pub async fn run_git_with_stdin(
             ),
             exit_code: Some(exit_code),
             duration_ms,
+            stdout_preview: if stdout.trim().is_empty() {
+                None
+            } else {
+                Some(stdout.trim().chars().take(1600).collect())
+            },
             stderr_preview: if stderr.trim().is_empty() {
                 None
             } else {
-                Some(stderr.trim().chars().take(180).collect())
+                Some(stderr.trim().chars().take(1600).collect())
             },
         };
         if let Some(store) = log_store {

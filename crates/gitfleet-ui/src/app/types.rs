@@ -30,6 +30,22 @@ pub(crate) enum ResizeTarget {
     CommitFilesSplit,
     FilesStagedSplit,
     DrawerHeight,
+    DrawerWidth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DockPosition {
+    #[default]
+    Bottom,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CommandLogFilter {
+    #[default]
+    All,
+    Errors,
+    Slow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +142,7 @@ pub(crate) enum BottomLeftTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DrawerTab {
     Terminal,
+    Problems,
     Search,
     Secrets,
     Ignore,
@@ -270,6 +287,7 @@ pub(crate) enum ConfirmAction {
         rel_path: String,
         is_dir: bool,
     },
+    FleetReplaceAll,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +310,19 @@ impl PendingConfirm {
             confirm_label: "Discard Hunk".into(),
             is_danger: true,
             action: ConfirmAction::DiscardHunk { patch },
+        }
+    }
+
+    pub(crate) fn fleet_replace_all(query: &str, replacement: &str, match_cnt: usize) -> Self {
+        Self {
+            title: "Replace Across Fleet?".into(),
+            message: format!(
+                "Replace '{query}' with '{replacement}' across all {match_cnt} matched line(s) in your workspace repositories?"
+            ),
+            detail: Some("Files will preserve their original encoding and line endings (LF/CRLF).".into()),
+            confirm_label: "Replace All".into(),
+            is_danger: true,
+            action: ConfirmAction::FleetReplaceAll,
         }
     }
 

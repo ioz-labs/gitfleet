@@ -522,7 +522,35 @@ impl GitFleetApp {
                 .color(secrets_color),
         );
 
+        let problems_n = self.total_problems_count();
+        let problems_active = self.drawer_tab == Some(DrawerTab::Problems);
+        let problems_color = if problems_active {
+            p.accent_fg
+        } else if problems_n > 0 {
+            p.warning_fg
+        } else {
+            p.text_secondary
+        };
+
         right = right
+            .push(tip(
+                button(
+                    row![
+                        icons::alert_triangle(11.0, problems_color),
+                        text(format!("Problems ({problems_n})"))
+                            .size(type_scale::CAPTION)
+                            .color(problems_color),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([2, 7])
+                .style(theme::vscode_status_item(p))
+                .on_press(Message::ToggleDrawer(DrawerTab::Problems)),
+                "Workspace Problems, Conflicts & Hygiene Checks",
+                tooltip::Position::Top,
+                p,
+            ))
             .push(tip(
                 button(
                     row![

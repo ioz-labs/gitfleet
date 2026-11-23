@@ -787,6 +787,7 @@ impl GitService {
             ),
             exit_code,
             duration_ms,
+            stdout_preview: None,
             stderr_preview,
         };
         self.command_log.push(entry.clone());

@@ -794,6 +794,10 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            Message::SecretKeyFilterChanged(v) => {
+                self.secret_key_filter = v;
+                Task::none()
+            }
             Message::SecretKeyInputChanged(v) => {
                 self.secret_key_input = v;
                 Task::none()
@@ -852,6 +856,45 @@ impl GitFleetApp {
             }
             Message::IgnoreEditorAction(action) => {
                 self.ignore_editor.perform(action);
+                Task::none()
+            }
+            Message::AppendIgnoreSnippet(snippet) => {
+                let mut cur = self.ignore_editor.text();
+                if !cur.ends_with('\n') && !cur.is_empty() {
+                    cur.push('\n');
+                }
+                cur.push_str(snippet.trim_start_matches('\n'));
+                self.ignore_editor = text_editor::Content::with_text(&cur);
+                Task::none()
+            }
+            Message::IgnoreTestPathChanged(path) => {
+                self.ignore_test_path = path;
+                self.ignore_test_result = None;
+                Task::none()
+            }
+            Message::RunIgnorePathCheck => {
+                let candidate = self.ignore_test_path.trim().to_string();
+                if candidate.is_empty() {
+                    self.ignore_test_result = None;
+                    return Task::none();
+                }
+                if let Some(repo) = self.current_repo() {
+                    let svc = self.service.clone();
+                    return Task::perform(
+                        async move {
+                            svc.git
+                                .check_ignore_path(&repo.path, &candidate)
+                                .await
+                                .ok()
+                                .flatten()
+                        },
+                        Message::IgnorePathCheckCompleted,
+                    );
+                }
+                Task::none()
+            }
+            Message::IgnorePathCheckCompleted(rule) => {
+                self.ignore_test_result = Some(rule);
                 Task::none()
             }
             Message::SaveIgnoreLayer => {

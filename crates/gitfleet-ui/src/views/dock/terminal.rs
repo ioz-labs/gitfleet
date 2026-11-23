@@ -1,9 +1,11 @@
 use crate::app::{GitFleetApp, Message, STATUS_BAR_HEIGHT, TerminalMenuSubmenu};
 use crate::icons;
+use crate::theme::kit::{ButtonSize, ButtonVariant, UiButton, status_pill};
 use crate::theme::{self, Palette, ThemeMode, icon_size, layout, pad, space, type_scale};
-use crate::views::{slim_scroll, tip};
+use crate::views::{slim_scroll, tip, truncate_chars};
 use iced::widget::{
-    Space, button, column, container, horizontal_rule, opaque, row, text, tooltip, vertical_rule,
+    Space, button, column, container, horizontal_rule, opaque, row, text, text_input, tooltip,
+    vertical_rule,
 };
 use iced::{Alignment, Color, Element, Length, Padding};
 
@@ -19,17 +21,8 @@ impl GitFleetApp {
         let font_name = self.active_terminal_font();
         let font_size = self.service.settings().terminal_font_size.clamp(12, 24) as f32;
         let is_dark = self.theme_mode == ThemeMode::Dark;
-
-        let term_bg = if is_dark {
-            Color::from_rgb(0.075, 0.082, 0.094) // #131518 Windows Terminal / VS Code charcoal
-        } else {
-            Color::from_rgb(0.985, 0.988, 0.992)
-        };
-        let term_fg = if is_dark {
-            Color::from_rgb(0.90, 0.92, 0.94)
-        } else {
-            Color::from_rgb(0.11, 0.14, 0.18)
-        };
+        let term_bg = p.surface_input;
+        let term_fg = p.text_primary;
 
         let main_area: Element<'_, Message> =
             if let Some(tab) = self.terminal_tabs.get(self.active_terminal_tab) {
@@ -70,7 +63,82 @@ impl GitFleetApp {
                         });
                     panes_row = panes_row.push(pane_box);
                 }
-                panes_row.into()
+
+                if self.terminal_search_open {
+                    let q = self.terminal_search_query.trim().to_lowercase();
+                    let focused_pane = tab.panes.get(tab.focused_pane).or_else(|| tab.panes.first());
+                    let mut matched_lines: Vec<(usize, String)> = Vec::new();
+                    if !q.is_empty()
+                        && let Some(fp) = focused_pane
+                    {
+                        for (r_idx, trow) in fp.snapshot.lines.iter().enumerate() {
+                            let line_str: String =
+                                trow.runs.iter().map(|r| r.text.as_str()).collect();
+                            let trimmed = line_str.trim();
+                            if !trimmed.is_empty() && trimmed.to_lowercase().contains(&q) {
+                                matched_lines.push((r_idx + 1, trimmed.to_string()));
+                            }
+                        }
+                    }
+
+                    let mut search_bar = row![
+                        icons::search(icon_size::XS, p.accent_fg),
+                        text_input(
+                            "Search active terminal buffer…",
+                            &self.terminal_search_query
+                        )
+                        .on_input(Message::TerminalBufferSearchChanged)
+                        .padding([4, 8])
+                        .size(type_scale::CAPTION)
+                        .font(theme::CODE_FONT)
+                        .width(Length::Fixed(240.0))
+                        .style(theme::dark_input(p)),
+                        status_pill(
+                            format!("{} match(es)", matched_lines.len()),
+                            if matched_lines.is_empty() {
+                                p.text_muted
+                            } else {
+                                p.accent_fg
+                            },
+                            p.surface_card,
+                        ),
+                    ]
+                    .spacing(space::XS)
+                    .align_y(Alignment::Center);
+
+                    if let Some((ln, preview)) = matched_lines.first() {
+                        search_bar = search_bar.push(
+                            text(format!("L{ln}: {}", truncate_chars(preview, 54)))
+                                .size(type_scale::BADGE)
+                                .font(theme::CODE_FONT)
+                                .color(p.text_secondary),
+                        );
+                    }
+                    search_bar = search_bar
+                        .push(Space::with_width(Length::Fill))
+                        .push(
+                            UiButton::new(p, "Clear Screen")
+                                .variant(ButtonVariant::Subtle)
+                                .size(ButtonSize::Xs)
+                                .on_press(Message::TerminalClearActiveScreen),
+                        )
+                        .push(
+                            UiButton::icon_only(p, icons::close_x(icon_size::XS, p.text_secondary))
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::IconSm)
+                                .on_press(Message::ToggleTerminalBufferSearch),
+                        );
+
+                    column![
+                        theme::dock_toolbar(p, search_bar),
+                        panes_row,
+                    ]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+                } else {
+                    panes_row.into()
+                }
             } else {
                 let actions = row![
                     button(

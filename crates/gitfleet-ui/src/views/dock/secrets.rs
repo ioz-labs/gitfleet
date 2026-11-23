@@ -815,6 +815,35 @@ impl GitFleetApp {
             .center_y(Length::Fill)
             .into()
         } else {
+            let key_q = self.secret_key_filter.trim().to_lowercase();
+            let visible_keys: Vec<&String> = file
+                .keys
+                .iter()
+                .filter(|k| key_q.is_empty() || k.to_lowercase().contains(&key_q))
+                .collect();
+
+            let filter_bar = container(
+                row![
+                    icons::search(icon_size::XS, p.text_muted),
+                    text_input("Filter KEY names…", &self.secret_key_filter)
+                        .on_input(Message::SecretKeyFilterChanged)
+                        .padding([4, 8])
+                        .size(type_scale::CAPTION)
+                        .font(theme::CODE_FONT)
+                        .width(Length::Fixed(220.0))
+                        .style(theme::dark_input(p)),
+                    Space::with_width(Length::Fill),
+                    text(format!("Showing {}/{} keys", visible_keys.len(), file.keys.len()))
+                        .size(type_scale::BADGE)
+                        .font(theme::CODE_FONT)
+                        .color(p.text_muted),
+                ]
+                .spacing(space::XS)
+                .align_y(Alignment::Center),
+            )
+            .padding([5, 14])
+            .width(Length::Fill);
+
             let table_hdr = container(
                 row![
                     container(
@@ -832,7 +861,7 @@ impl GitFleetApp {
                     )
                     .width(Length::FillPortion(62)),
                     container(
-                        text(format!("{} keys", file.keys.len()))
+                        text("Actions")
                             .size(type_scale::BADGE)
                             .color(p.text_muted)
                             .wrapping(text::Wrapping::None),
@@ -850,9 +879,9 @@ impl GitFleetApp {
                 ..Default::default()
             });
 
-            let mut rows_col = column![].spacing(0).width(Length::Fill);
+            let mut rows_col = column![filter_bar].spacing(0).width(Length::Fill);
             let editing_key = self.secret_key_input.trim();
-            for (idx, key) in file.keys.iter().enumerate() {
+            for (idx, key) in visible_keys.into_iter().enumerate() {
                 if idx > 0 {
                     rows_col = rows_col.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 }

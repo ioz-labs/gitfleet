@@ -94,6 +94,46 @@ impl GitService {
         Ok(files)
     }
 
+    /// Evaluates `git check-ignore -v --no-index -- <test_path>` so Ignore Studio can preview
+    /// the exact `<source>:<line>:<pattern>` rule matching a candidate path in real time.
+    pub async fn check_ignore_path(
+        &self,
+        repo_path: &Path,
+        test_path: &str,
+    ) -> AppResult<Option<String>> {
+        let cleaned = test_path.trim().trim_start_matches(['/', '\\']);
+        if cleaned.is_empty() {
+            return Ok(None);
+        }
+        let out = runner::run_git(
+            repo_path,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "check-ignore",
+                "-v",
+                "--no-index",
+                "--",
+                cleaned,
+            ],
+            None,
+            None,
+            false,
+        )
+        .await?;
+        if out.exit_code == 0 {
+            let line = out.stdout.lines().next().unwrap_or("").trim();
+            let rule_part = line.split('\t').next().unwrap_or(line).trim();
+            Ok(Some(if rule_part.is_empty() {
+                "Matched ignore rule".to_string()
+            } else {
+                rule_part.to_string()
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Lists gitignored files and collapsed gitignored directories (`--ignored=matching`) without
     /// eagerly recursing into massive ignored build/dependency trees like `target/` or `node_modules/`.
     /// Works both at a repository root and inside any subdirectory of a Git repository.

@@ -1556,6 +1556,18 @@ impl GitFleetApp {
                 } else if self.bottom_mode == BottomViewMode::Edit {
                     self.ensure_editor_hydrated();
                 }
+                if let Some(target_line) = self.pending_jump_line.take() {
+                    let row_0 = target_line.saturating_sub(1);
+                    let prev_cfg = crate::views::code_editor::NumberedEditorConfig::preview(
+                        crate::theme::type_scale::CODE,
+                        false,
+                    );
+                    let edit_cfg = crate::views::code_editor::NumberedEditorConfig::host_edit();
+                    return Task::batch([
+                        self.preview_scroll.scroll_to_visual_row_centered(row_0, prev_cfg),
+                        self.editor_scroll.scroll_to_visual_row_centered(row_0, edit_cfg),
+                    ]);
+                }
                 Task::batch([self.preview_scroll.reset(), self.editor_scroll.reset()])
             }
             Message::ImageDiffLoaded(req_id, title, data) => {

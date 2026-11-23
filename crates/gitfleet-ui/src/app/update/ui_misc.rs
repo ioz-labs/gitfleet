@@ -1,7 +1,7 @@
 use crate::app::{
     BottomViewMode, CherryPickModalState, ConfirmAction, ContextMenuState, ContextMenuSubmenu,
-    DiscardFileEntry, DiscardModalState, DrawerTab, GitFleetApp, HostLayoutMode, Message,
-    RIBBON_HEIGHT, ResizeTarget, STATUS_BAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
+    DiscardFileEntry, DiscardModalState, DockPosition, DrawerTab, GitFleetApp, HostLayoutMode,
+    Message, RIBBON_HEIGHT, ResizeTarget, STATUS_BAR_HEIGHT, TerminalMenuSubmenu, WindowKind,
 };
 use crate::theme::{ThemeMode, ThemePreset};
 use chrono::Utc;
@@ -575,9 +575,94 @@ impl GitFleetApp {
                 self.search_case_sensitive = v;
                 Task::none()
             }
+            Message::SearchWholeWordToggled(v) => {
+                self.search_whole_word = v;
+                Task::none()
+            }
             Message::SearchRegexToggled(v) => {
                 self.search_regex = v;
                 Task::none()
+            }
+            Message::ToggleFleetSearchAdvanced => {
+                self.search_show_advanced = !self.search_show_advanced;
+                Task::none()
+            }
+            Message::FleetReplaceTextChanged(v) => {
+                self.search_replace_text = v;
+                Task::none()
+            }
+            Message::FleetIncludeGlobChanged(v) => {
+                self.search_include_glob = v;
+                Task::none()
+            }
+            Message::FleetExcludeGlobChanged(v) => {
+                self.search_exclude_glob = v;
+                Task::none()
+            }
+            Message::ToggleFleetSearchRepoNode(repo_id) => {
+                if !self.collapsed_search_repos.remove(&repo_id) {
+                    self.collapsed_search_repos.insert(repo_id);
+                }
+                Task::none()
+            }
+            Message::ExecuteFleetReplaceAll => {
+                let query = self.search_query.trim().to_string();
+                let replacement = self.search_replace_text.clone();
+                if query.is_empty() || self.search_results.is_empty() {
+                    return Task::none();
+                }
+                let opts = gitfleet_search::SearchOptions {
+                    case_sensitive: self.search_case_sensitive,
+                    whole_word: self.search_whole_word,
+                    regex: self.search_regex,
+                };
+                let ws = self.service.workspace.current();
+                let repo_roots: std::collections::HashMap<RepoId, PathBuf> =
+                    ws.repos.into_iter().map(|r| (r.id, r.path)).collect();
+                let mut unique_paths: Vec<PathBuf> = Vec::new();
+                let mut seen: HashSet<PathBuf> = HashSet::new();
+                for m in &self.search_results {
+                    if let Some(root) = repo_roots.get(&m.repo_id) {
+                        let abs = root.join(&m.file_path);
+                        if seen.insert(abs.clone()) {
+                            unique_paths.push(abs);
+                        }
+                    }
+                }
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            gitfleet_search::replace_in_files(
+                                &unique_paths,
+                                &query,
+                                &replacement,
+                                opts,
+                            )
+                        })
+                        .await
+                        .unwrap_or_default()
+                    },
+                    Message::FleetReplaceCompleted,
+                )
+            }
+            Message::FleetReplaceCompleted(report) => {
+                if !report.errors.is_empty() {
+                    self.report_action_error(
+                        "Fleet Replace Completed with Errors",
+                        report.errors.join("\n"),
+                        false,
+                    );
+                } else {
+                    self.toast_is_error = false;
+                    self.toast_message = format!(
+                        "Replaced {} occurrence(s) across {} file(s)",
+                        report.replacements, report.files_modified
+                    );
+                }
+                Task::batch([
+                    self.update(Message::RefreshAll),
+                    self.update(Message::RunFleetSearch),
+                ])
             }
             Message::RunFleetSearch => {
                 let q = self.search_query.trim().to_string();
@@ -586,6 +671,7 @@ impl GitFleetApp {
                 }
                 self.search_running = true;
                 self.search_results.clear();
+                self.collapsed_search_repos.clear();
                 let targets: Vec<(RepoId, String, PathBuf)> = self
                     .service
                     .workspace
@@ -598,7 +684,10 @@ impl GitFleetApp {
                 let req = SearchRequest {
                     query: q,
                     case_sensitive: self.search_case_sensitive,
+                    whole_word: self.search_whole_word,
                     regex: self.search_regex,
+                    include_glob: self.search_include_glob.clone(),
+                    exclude_glob: self.search_exclude_glob.clone(),
                     targets,
                 };
                 let svc = self.service.clone();
@@ -625,14 +714,54 @@ impl GitFleetApp {
                 self.search_results = matches;
                 Task::none()
             }
-            Message::JumpToSearchMatch(repo_id, file_path) => {
+            Message::JumpToSearchMatch(repo_id, file_path, line_number) => {
                 let mut tasks = Vec::new();
                 if self.selected_repo.as_ref() != Some(&repo_id) {
                     tasks.push(self.update(Message::SelectRepo(repo_id)));
                 }
+                self.pending_jump_line = Some(line_number);
                 self.bottom_mode = BottomViewMode::Preview;
                 tasks.push(self.update(Message::SelectRepoFile(file_path)));
                 Task::batch(tasks)
+            }
+            Message::ToggleDockPosition => {
+                self.dock_position = match self.dock_position {
+                    DockPosition::Bottom => DockPosition::Right,
+                    DockPosition::Right => DockPosition::Bottom,
+                };
+                Task::none()
+            }
+            Message::SetCommandLogFilter(f) => {
+                self.command_log_filter = f;
+                Task::none()
+            }
+            Message::CommandLogQueryChanged(q) => {
+                self.command_log_query = q;
+                Task::none()
+            }
+            Message::SelectCommandLogEntry(id) => {
+                self.selected_command_log_id = Some(id);
+                Task::none()
+            }
+            Message::ToggleTerminalBufferSearch => {
+                self.terminal_search_open = !self.terminal_search_open;
+                if self.terminal_search_open {
+                    self.terminal_focused = false;
+                }
+                Task::none()
+            }
+            Message::TerminalBufferSearchChanged(q) => {
+                self.terminal_focused = false;
+                self.terminal_search_query = q;
+                Task::none()
+            }
+            Message::TerminalClearActiveScreen => {
+                if let Some(tab) = self.terminal_tabs.get(self.active_terminal_tab)
+                    && let Some(pane) = tab.panes.get(tab.focused_pane).or_else(|| tab.panes.first())
+                {
+                    let _ = self.service.terminal.write(&pane.session_id, "\x0c");
+                }
+                Task::none()
             }
             Message::BackgroundTick => {
                 if self.drawer_tab == Some(DrawerTab::Terminal) {
@@ -1172,13 +1301,20 @@ impl GitFleetApp {
                 if let Some(target) = self.active_resize {
                     let top_chrome = RIBBON_HEIGHT;
                     let bottom_chrome = STATUS_BAR_HEIGHT
-                        + if self.drawer_tab.is_some() {
+                        + if self.drawer_tab.is_some() && self.dock_position == DockPosition::Bottom
+                        {
                             self.drawer_height
                         } else {
                             0.0
                         };
+                    let right_dock_w =
+                        if self.drawer_tab.is_some() && self.dock_position == DockPosition::Right {
+                            self.drawer_width
+                        } else {
+                            0.0
+                        };
                     let main_h = (self.window_size.height - top_chrome - bottom_chrome).max(200.0);
-                    let main_w = self.window_size.width.max(640.0);
+                    let main_w = (self.window_size.width - right_dock_w).max(480.0);
 
                     match target {
                         ResizeTarget::SidebarWidth => {
@@ -1230,6 +1366,14 @@ impl GitFleetApp {
                                     .clamp(crate::theme::layout::DOCK_MIN_HEIGHT, max_h);
                                 self.drawer_height = next_h;
                                 self.terminal_expanded = next_h >= 420.0;
+                            }
+                        }
+                        ResizeTarget::DrawerWidth => {
+                            if self.drawer_tab.is_some() {
+                                let max_w = (self.window_size.width * 0.62).max(380.0);
+                                let next_w = (self.window_size.width - pos.x)
+                                    .clamp(crate::theme::layout::DOCK_RIGHT_MIN_WIDTH, max_w);
+                                self.drawer_width = next_w;
                             }
                         }
                     }
@@ -1380,6 +1524,7 @@ impl GitFleetApp {
                     ConfirmAction::DeleteVaultProfile { profile } => {
                         self.update(Message::DeleteVaultProfile(profile))
                     }
+                    ConfirmAction::FleetReplaceAll => self.update(Message::ExecuteFleetReplaceAll),
                 }
             }
             Message::OpenCherryPickModal { revisions, detail } => {
