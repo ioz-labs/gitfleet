@@ -338,6 +338,37 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            Message::SignCommitToggled(v) => {
+                self.sign_commit = v;
+                Task::none()
+            }
+            Message::LoadCommitTemplate => {
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                let svc = self.service.clone();
+                let path = repo.path;
+                Task::perform(
+                    async move { svc.git.read_commit_template(&path).await },
+                    Message::CommitTemplateLoaded,
+                )
+            }
+            Message::CommitTemplateLoaded(tpl) => {
+                match tpl {
+                    Some(text) => {
+                        self.set_full_commit_message(&text);
+                        self.toast_is_error = false;
+                        self.toast_message = "Loaded commit template".into();
+                        return iced::widget::text_input::focus(self.commit_summary_id.clone());
+                    }
+                    None => {
+                        self.toast_is_error = false;
+                        self.toast_message =
+                            "No commit.template or .gitmessage found in this repository".into();
+                    }
+                }
+                Task::none()
+            }
             Message::CommitSubmitted => self.try_commit(false),
             Message::CommitAndPushSubmitted => self.try_commit(true),
             Message::FetchSelected => self.run_git_op("Fetch", move |svc, repo| async move {

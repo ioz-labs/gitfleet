@@ -1,5 +1,6 @@
+use crate::models::{RebaseAction, RebaseTodoItem};
 use crate::{GitService, runner};
-use gitfleet_core::AppResult;
+use gitfleet_core::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -280,6 +281,147 @@ impl GitService {
         )
         .await
     }
+
+    /// Lists commits in `<base_ref>..HEAD` ordered oldest-first (matching `git rebase -i` todo order).
+    pub async fn list_rebase_commits(
+        &self,
+        repo_path: &Path,
+        base_ref: &str,
+    ) -> AppResult<Vec<RebaseTodoItem>> {
+        let range = format!("{base_ref}..HEAD");
+        let out = runner::run_git_ok(
+            repo_path,
+            &["log", "--reverse", "--format=%H%x1f%h%x1f%s", &range],
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        let mut items = Vec::new();
+        for line in out.lines() {
+            let parts: Vec<&str> = line.split('\x1f').collect();
+            if parts.len() >= 3 {
+                items.push(RebaseTodoItem {
+                    action: RebaseAction::Pick,
+                    oid: parts[0].trim().to_string(),
+                    short_oid: parts[1].trim().to_string(),
+                    summary: parts[2].trim().to_string(),
+                });
+            }
+        }
+        Ok(items)
+    }
+
+    /// Executes an interactive rebase (`git rebase -i --autostash <base_ref>`) headlessly without
+    /// spawning any external editor window, using environment-injected POSIX `cp` + `:` sequence
+    /// helpers safe across Windows, macOS, and Linux paths containing spaces or Unicode.
+    pub async fn interactive_rebase(
+        &self,
+        repo_path: &Path,
+        base_ref: &str,
+        plan: &[RebaseTodoItem],
+    ) -> AppResult<String> {
+        if plan.is_empty() {
+            return Err(AppError::Git(
+                "Interactive rebase plan has no commits to apply.".into(),
+            ));
+        }
+        if let Some(first_kept) = plan.iter().find(|it| it.action != RebaseAction::Drop)
+            && matches!(first_kept.action, RebaseAction::Squash | RebaseAction::Fixup)
+        {
+            return Err(AppError::Git(
+                "The first kept commit in an interactive rebase cannot be Squash or Fixup."
+                    .into(),
+            ));
+        }
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let temp_dir = std::env::temp_dir().join(format!(
+            "gitfleet_irebase_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let mut todo_buf = String::new();
+        let mut env_owned: Vec<(String, String)> = Vec::new();
+
+        for (idx, item) in plan.iter().enumerate() {
+            match &item.action {
+                RebaseAction::Pick => {
+                    todo_buf.push_str(&format!("pick {}\n", item.oid));
+                }
+                RebaseAction::Reword(new_msg) => {
+                    let msg_path = temp_dir.join(format!("msg_{idx}.txt"));
+                    let normalized = new_msg.trim().replace("\r\n", "\n");
+                    let body = if normalized.is_empty() {
+                        item.summary.clone()
+                    } else {
+                        normalized
+                    };
+                    std::fs::write(&msg_path, format!("{body}\n"))?;
+                    let env_key = format!("GITFLEET_MSG_{idx}");
+                    env_owned.push((env_key.clone(), msg_path.to_string_lossy().to_string()));
+                    todo_buf.push_str(&format!(
+                        "pick {}\nexec git commit --amend -F \"${env_key}\"\n",
+                        item.oid
+                    ));
+                }
+                RebaseAction::Squash => {
+                    todo_buf.push_str(&format!("squash {}\n", item.oid));
+                }
+                RebaseAction::Fixup => {
+                    todo_buf.push_str(&format!("fixup {}\n", item.oid));
+                }
+                RebaseAction::Drop => {
+                    todo_buf.push_str(&format!("drop {}\n", item.oid));
+                }
+            }
+        }
+
+        let todo_path = temp_dir.join("git-rebase-todo");
+        std::fs::write(&todo_path, todo_buf.as_bytes())?;
+        env_owned.push((
+            "GITFLEET_TODO_FILE".to_string(),
+            todo_path.to_string_lossy().to_string(),
+        ));
+        env_owned.push((
+            "GIT_SEQUENCE_EDITOR".to_string(),
+            "cp \"$GITFLEET_TODO_FILE\"".to_string(),
+        ));
+        env_owned.push(("GIT_EDITOR".to_string(), ":".to_string()));
+
+        let env_refs: Vec<(&str, &str)> = env_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let res = runner::run_git_with_envs(
+            repo_path,
+            &["rebase", "-i", "--autostash", base_ref],
+            &env_refs,
+            Some(&self.command_log),
+            Some(&self.events),
+            true,
+        )
+        .await;
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let out = res?;
+        if out.exit_code != 0 {
+            let msg = if out.stderr.trim().is_empty() {
+                out.stdout.trim().to_string()
+            } else {
+                out.stderr.trim().to_string()
+            };
+            return Err(AppError::Git(msg));
+        }
+        Ok(out.stdout)
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +490,80 @@ mod tests {
         let remaining = svc.get_branches(&dir).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].name, "main");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_reorders_rewords_squashes_fixups_and_drops_headlessly() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_irebase_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Tester"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "t@local"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(dir.join("base.txt"), "root\n").unwrap();
+        svc.stage(&dir, &["base.txt".into()]).await.unwrap();
+        svc.commit(&dir, "root commit", false).await.unwrap();
+        let base_oid = svc.head_oid(&dir).await.unwrap();
+
+        for (fname, msg) in [
+            ("c1.txt", "first commit"),
+            ("c2.txt", "second fixup"),
+            ("c3.txt", "third drop me"),
+            ("c4.txt", "fourth reorder"),
+        ] {
+            std::fs::write(dir.join(fname), fname).unwrap();
+            svc.stage(&dir, &[fname.into()]).await.unwrap();
+            svc.commit(&dir, msg, false).await.unwrap();
+        }
+
+        let mut plan = svc.list_rebase_commits(&dir, &base_oid).await.unwrap();
+        assert_eq!(plan.len(), 4);
+        assert_eq!(plan[0].summary, "first commit");
+        assert_eq!(plan[3].summary, "fourth reorder");
+
+        // Reorder c4 to the front with a Vietnamese UTF-8 Reword, keep c1 + Fixup c2, and Drop c3!
+        let mut c4 = plan.remove(3);
+        c4.action = RebaseAction::Reword("feat: đưa commit 4 lên đầu".into());
+        plan[0].action = RebaseAction::Pick;
+        plan[1].action = RebaseAction::Fixup;
+        plan[2].action = RebaseAction::Drop;
+        plan.insert(0, c4);
+
+        svc.interactive_rebase(&dir, &base_oid, &plan).await.unwrap();
+
+        let log = svc
+            .get_log(
+                &dir,
+                crate::models::LogOptions {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let summaries: Vec<&str> = log.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(
+            summaries,
+            vec!["first commit", "feat: đưa commit 4 lên đầu", "root commit"]
+        );
+        assert!(dir.join("c1.txt").exists());
+        assert!(dir.join("c2.txt").exists());
+        assert!(!dir.join("c3.txt").exists());
+        assert!(dir.join("c4.txt").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

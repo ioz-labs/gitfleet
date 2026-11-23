@@ -746,6 +746,15 @@ impl GitFleetApp {
                     )),
                     true,
                 ));
+                items = items.push(ctx_btn(
+                    icons::branch(12.0, p.accent_fg).into(),
+                    "Interactive Rebase from Here…".into(),
+                    Message::OpenInteractiveRebase {
+                        base_ref: oid.clone(),
+                        base_label: short_oid.clone(),
+                    },
+                    false,
+                ));
                 items = items.push(horizontal_rule(1).style(theme::subtle_rule(p)));
                 items = items.push(ctx_btn(
                     icons::file_diff(12.0, p.text_secondary).into(),
@@ -904,6 +913,15 @@ impl GitFleetApp {
                         icons::branch(12.0, p.violet_fg).into(),
                         "Rebase… (Ctrl+D)".into(),
                         Message::RequestConfirm(PendingConfirm::rebase_onto(name.clone(), name)),
+                        false,
+                    ));
+                    items = items.push(ctx_btn(
+                        icons::branch(12.0, p.accent_fg).into(),
+                        "Interactive Rebase onto Branch…".into(),
+                        Message::OpenInteractiveRebase {
+                            base_ref: name.clone(),
+                            base_label: name.clone(),
+                        },
                         false,
                     ));
                     items = items.push(ctx_btn(
@@ -1192,6 +1210,18 @@ impl GitFleetApp {
                     false,
                 ));
                 items = items.push(ctx_btn(
+                    icons::file_code(12.0, p.violet_fg).into(),
+                    "Git Blame".into(),
+                    Message::OpenFileInMode(file.clone(), BottomViewMode::Blame),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::branch(12.0, p.accent_fg).into(),
+                    "File History (--follow)".into(),
+                    Message::FilterHistoryByFile(Some(file.path.clone())),
+                    false,
+                ));
+                items = items.push(ctx_btn(
                     icons::folder_open(12.0, p.accent_fg).into(),
                     "Open in Explorer".into(),
                     Message::RevealRepoFileInExplorer(file.path.clone()),
@@ -1252,6 +1282,18 @@ impl GitFleetApp {
                     icons::pencil(12.0, p.text_secondary).into(),
                     "Open in Editor".into(),
                     Message::OpenRepoFileInMode(path.clone(), BottomViewMode::Edit),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::file_code(12.0, p.violet_fg).into(),
+                    "Git Blame".into(),
+                    Message::OpenRepoFileInMode(path.clone(), BottomViewMode::Blame),
+                    false,
+                ));
+                items = items.push(ctx_btn(
+                    icons::branch(12.0, p.accent_fg).into(),
+                    "File History (--follow)".into(),
+                    Message::FilterHistoryByFile(Some(path.clone())),
                     false,
                 ));
                 items = items.push(ctx_btn(

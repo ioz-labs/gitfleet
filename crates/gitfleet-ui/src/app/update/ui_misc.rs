@@ -272,6 +272,10 @@ impl GitFleetApp {
                     self.cherry_pick_modal = None;
                     return Task::none();
                 }
+                if self.rebase_modal.is_some() {
+                    self.rebase_modal = None;
+                    return Task::none();
+                }
                 if self.discard_modal.is_some() {
                     self.discard_modal = None;
                     return Task::none();

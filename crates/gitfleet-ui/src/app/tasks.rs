@@ -28,6 +28,7 @@ impl GitFleetApp {
         let all_refs = self.graph_all_branches;
         let topo_order = self.graph_topo_order;
         let selected_refs: Vec<String> = self.graph_checked_branches.iter().cloned().collect();
+        let file_filter_path = self.graph_file_filter.clone();
         Task::perform(
             async move {
                 let res = svc
@@ -39,6 +40,7 @@ impl GitFleetApp {
                             all_refs,
                             topo_order,
                             selected_refs,
+                            file_filter_path,
                             ..Default::default()
                         },
                     )
@@ -47,6 +49,35 @@ impl GitFleetApp {
                 (repo.id, res)
             },
             |(id, res)| Message::LogLoaded(id, res),
+        )
+    }
+
+    pub(crate) fn load_blame_task(&mut self, rel_path: String) -> Task<Message> {
+        let Some(repo) = self.current_repo() else {
+            return Task::none();
+        };
+        self.blame_request_id = self.blame_request_id.wrapping_add(1);
+        let req_id = self.blame_request_id;
+        self.blame_file_path = Some(rel_path.clone());
+        self.blame_loading = true;
+        self.blame_error = None;
+        let rev = match &self.graph_selection {
+            crate::app::GraphSelection::Commit(oid) => Some(oid.clone()),
+            crate::app::GraphSelection::Range { head, .. } => Some(head.clone()),
+            _ => None,
+        };
+        let svc = self.service.clone();
+        let repo_path = repo.path;
+        Task::perform(
+            async move {
+                let res = svc
+                    .git
+                    .blame_file(&repo_path, rev.as_deref(), &rel_path)
+                    .await
+                    .map_err(|e| e.to_string());
+                (req_id, rel_path, res)
+            },
+            |(id, path, res)| Message::BlameLoaded(id, path, res),
         )
     }
 
@@ -329,6 +360,7 @@ impl GitFleetApp {
             return Task::none();
         }
         let amend = self.amend_commit;
+        let sign = self.sign_commit;
         self.clear_commit_composer();
         self.amend_commit = false;
         self.amend_target = None;
@@ -339,7 +371,7 @@ impl GitFleetApp {
         };
         self.run_git_op(label, move |svc, repo| async move {
             svc.git
-                .commit_all_changes(&repo.path, &msg, amend, push_after)
+                .commit_all_changes_signed(&repo.path, &msg, amend, push_after, sign)
                 .await
         })
     }
@@ -356,16 +388,19 @@ impl GitFleetApp {
             return Task::none();
         }
         let amend = self.amend_commit;
+        let sign = self.sign_commit;
         self.clear_commit_composer();
         self.amend_commit = false;
         self.amend_target = None;
         if push_after {
             self.run_git_op("Commit & Push", move |svc, repo| async move {
-                svc.git.commit_and_push(&repo.path, &msg, amend).await
+                svc.git
+                    .commit_and_push_signed(&repo.path, &msg, amend, sign)
+                    .await
             })
         } else {
             self.run_git_op("Commit", move |svc, repo| async move {
-                svc.git.commit(&repo.path, &msg, amend).await
+                svc.git.commit_signed(&repo.path, &msg, amend, sign).await
             })
         }
     }

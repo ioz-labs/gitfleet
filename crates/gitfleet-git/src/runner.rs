@@ -42,11 +42,46 @@ pub async fn run_git_with_stdin(
     events: Option<&EventBus>,
     record_in_log: bool,
 ) -> AppResult<GitOutput> {
+    run_git_full(
+        repo_path,
+        args,
+        stdin_bytes,
+        &[],
+        log_store,
+        events,
+        record_in_log,
+    )
+    .await
+}
+
+pub async fn run_git_with_envs(
+    repo_path: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    log_store: Option<&Arc<CommandLogStore>>,
+    events: Option<&EventBus>,
+    record_in_log: bool,
+) -> AppResult<GitOutput> {
+    run_git_full(repo_path, args, None, envs, log_store, events, record_in_log).await
+}
+
+async fn run_git_full(
+    repo_path: &Path,
+    args: &[&str],
+    stdin_bytes: Option<&[u8]>,
+    extra_envs: &[(&str, &str)],
+    log_store: Option<&Arc<CommandLogStore>>,
+    events: Option<&EventBus>,
+    record_in_log: bool,
+) -> AppResult<GitOutput> {
     let start = Instant::now();
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_path).args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("LC_MESSAGES", "C");
+    for &(k, v) in extra_envs {
+        cmd.env(k, v);
+    }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     if stdin_bytes.is_some() {
         cmd.stdin(Stdio::piped());

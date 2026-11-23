@@ -1,4 +1,7 @@
-use crate::models::{CommitSummary, FileChange, LogOptions, ReflogEntry, ResetMode, StashEntry};
+use crate::models::{
+    BlameLine, CommitSummary, FileChange, LogOptions, ReflogEntry, ResetMode, SignatureStatus,
+    StashEntry,
+};
 use crate::status::char_to_kind;
 use crate::{GitService, runner};
 use chrono::{DateTime, Local, TimeZone, Utc};
@@ -18,15 +21,26 @@ impl GitService {
         } else {
             "--date-order"
         };
-        let mut args = vec![
-            "log",
+        let file_filter = options
+            .file_filter_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let mut args = vec!["log"];
+        if file_filter.is_some() {
+            args.push("--follow");
+        }
+        args.extend_from_slice(&[
             order_flag,
             "-n",
             &limit_str,
-            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%ct%x1f%D%x1f%P%x1f%b%x1e",
-        ];
+            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%ct%x1f%D%x1f%P%x1f%b%x1f%G?%x1e",
+        ]);
         let mut upstream_ref: Option<String> = None;
-        if !options.selected_refs.is_empty() {
+        if file_filter.is_some() {
+            // Git's rename follower (`--follow`) requires a single revision (`pending.nr == 1`)
+            args.push("HEAD");
+        } else if !options.selected_refs.is_empty() {
             for r in &options.selected_refs {
                 args.push(r.as_str());
             }
@@ -97,6 +111,10 @@ impl GitService {
                 return Ok(Vec::new());
             }
         }
+        if let Some(fpath) = file_filter {
+            args.push("--");
+            args.push(fpath);
+        }
         let out = match runner::run_git_ok(
             repo_path,
             &args,
@@ -132,6 +150,11 @@ impl GitService {
                 let local_dt = Local.from_utc_datetime(&utc_dt.naive_utc());
                 let date_display = format_smartgit_date(local_dt, now_local);
                 let body = parts.get(9).map(|b| b.trim().to_string()).unwrap_or_default();
+                let signature = match parts.get(10).and_then(|s| s.trim().chars().next()) {
+                    Some('G' | 'U') => SignatureStatus::Verified,
+                    Some('B' | 'E' | 'X' | 'Y' | 'R') => SignatureStatus::Unverified,
+                    _ => SignatureStatus::None,
+                };
 
                 commits.push(CommitSummary {
                     oid: parts[0].trim().to_string(),
@@ -148,6 +171,7 @@ impl GitService {
                         .split_whitespace()
                         .map(|s| s.to_string())
                         .collect(),
+                    signature,
                 });
             }
         }
@@ -505,6 +529,29 @@ impl GitService {
         }
     }
 
+    pub async fn blame_file(
+        &self,
+        repo_path: &Path,
+        rev: Option<&str>,
+        file_path: &str,
+    ) -> AppResult<Vec<BlameLine>> {
+        let mut args: Vec<&str> = vec!["blame", "--line-porcelain", "-M"];
+        if let Some(r) = rev.map(str::trim).filter(|s| !s.is_empty()) {
+            args.push(r);
+        }
+        args.push("--");
+        args.push(file_path);
+        let out = runner::run_git_ok(
+            repo_path,
+            &args,
+            Some(&self.command_log),
+            Some(&self.events),
+            false,
+        )
+        .await?;
+        Ok(parse_blame_porcelain(&out))
+    }
+
     pub async fn reset_commit(
         &self,
         repo_path: &Path,
@@ -631,6 +678,72 @@ fn format_smartgit_date(dt: DateTime<Local>, now: DateTime<Local>) -> String {
     } else {
         dt.format("%m/%d/%Y %I:%M %p").to_string()
     }
+}
+
+pub fn parse_blame_porcelain(raw: &str) -> Vec<BlameLine> {
+    let mut result = Vec::new();
+    let mut cur_oid = String::new();
+    let mut cur_final_line = 0usize;
+    let mut cur_author = String::new();
+    let mut cur_time: i64 = 0;
+    let mut cur_summary = String::new();
+    let mut in_entry = false;
+
+    for line in raw.lines() {
+        if let Some(code) = line.strip_prefix('\t') {
+            if in_entry {
+                let uncommitted = cur_oid.chars().all(|c| c == '0');
+                let short_oid = if uncommitted {
+                    "Working".to_string()
+                } else {
+                    cur_oid[..cur_oid.len().min(7)].to_string()
+                };
+                let date_short = DateTime::<Utc>::from_timestamp(cur_time, 0)
+                    .map(|dt| dt.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default();
+                let summary = if uncommitted && cur_summary.is_empty() {
+                    "Uncommitted changes".to_string()
+                } else {
+                    cur_summary.clone()
+                };
+                result.push(BlameLine {
+                    final_line: cur_final_line,
+                    oid: cur_oid.clone(),
+                    short_oid,
+                    author: cur_author.clone(),
+                    date_short,
+                    summary,
+                    content: code.trim_end_matches('\r').to_string(),
+                });
+                in_entry = false;
+            }
+            continue;
+        }
+
+        if !in_entry {
+            let mut parts = line.split_whitespace();
+            if let (Some(oid), Some(_orig), Some(fin)) = (parts.next(), parts.next(), parts.next())
+                && oid.len() >= 40
+                && oid.chars().all(|c| c.is_ascii_hexdigit())
+                && let Ok(fin_ln) = fin.parse::<usize>()
+            {
+                cur_oid = oid.to_string();
+                cur_final_line = fin_ln;
+                cur_author.clear();
+                cur_time = 0;
+                cur_summary.clear();
+                in_entry = true;
+            }
+        } else if let Some(a) = line.strip_prefix("author ") {
+            cur_author = a.trim().to_string();
+        } else if let Some(t) = line.strip_prefix("author-time ") {
+            cur_time = t.trim().parse().unwrap_or(0);
+        } else if let Some(s) = line.strip_prefix("summary ") {
+            cur_summary = s.trim().to_string();
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -877,6 +990,72 @@ mod tests {
             .await
             .unwrap();
         assert!(untracked_diff.contains("+hello stash"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn blame_file_and_follow_history_across_renames_work() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitfleet_blame_follow_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let svc = GitService::new(EventBus::new(16), Arc::new(CommandLogStore::new()));
+        runner::run_git_ok(&dir, &["init", "-b", "main"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.name", "Alice"], None, None, false)
+            .await
+            .unwrap();
+        runner::run_git_ok(&dir, &["config", "user.email", "a@local"], None, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(
+            dir.join("legacy.rs"),
+            "fn alpha() {}\nfn keep_one() {}\nfn keep_two() {}\nfn beta() {}\n",
+        )
+        .unwrap();
+        svc.stage(&dir, &["legacy.rs".into()]).await.unwrap();
+        svc.commit(&dir, "create legacy", false).await.unwrap();
+        let c1 = svc.head_oid(&dir).await.unwrap();
+
+        runner::run_git_ok(&dir, &["mv", "legacy.rs", "modern.rs"], None, None, false)
+            .await
+            .unwrap();
+        std::fs::write(
+            dir.join("modern.rs"),
+            "fn alpha() {}\nfn keep_one() {}\nfn keep_two() {}\nfn beta_v2() {}\nfn gamma() {}\n",
+        )
+        .unwrap();
+        svc.stage(&dir, &["modern.rs".into()]).await.unwrap();
+        svc.commit(&dir, "rename and extend", false).await.unwrap();
+        let c2 = svc.head_oid(&dir).await.unwrap();
+
+        let blame = svc.blame_file(&dir, None, "modern.rs").await.unwrap();
+        assert_eq!(blame.len(), 5);
+        assert_eq!(blame[0].oid, c1);
+        assert_eq!(blame[0].content, "fn alpha() {}");
+        assert_eq!(blame[3].oid, c2);
+        assert_eq!(blame[3].summary, "rename and extend");
+        assert_eq!(blame[4].final_line, 5);
+
+        let followed = svc
+            .get_log(
+                &dir,
+                LogOptions {
+                    limit: 50,
+                    file_filter_path: Some("modern.rs".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let summaries: Vec<&str> = followed.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["rename and extend", "create legacy"]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

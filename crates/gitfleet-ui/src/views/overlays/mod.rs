@@ -14,6 +14,7 @@ pub(crate) mod file_ops_modal;
 pub(crate) mod fuzzy;
 mod git_flow_modal;
 mod merge_modal;
+pub(crate) mod rebase_modal;
 mod rename_branch_modal;
 mod rename_group_modal;
 mod rename_workspace_modal;

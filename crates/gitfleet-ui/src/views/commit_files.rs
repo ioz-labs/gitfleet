@@ -404,6 +404,38 @@ impl GitFleetApp {
 
                 let wide_hdr = row![
                     theme::clipped_line(wide_hdr_left, Length::Fill),
+                    tip(
+                        button(
+                            text("Template")
+                                .size(type_scale::BADGE)
+                                .color(p.text_secondary)
+                                .wrapping(text::Wrapping::None),
+                        )
+                        .padding([2, 6])
+                        .style(theme::subtle_btn(p))
+                        .on_press(Message::LoadCommitTemplate),
+                        "Load commit.template or .gitmessage into composer",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
+                    tip(
+                        button(
+                            text(if self.sign_commit { "Signed (-S)" } else { "Sign" })
+                                .size(type_scale::BADGE)
+                                .color(if self.sign_commit {
+                                    p.success_fg
+                                } else {
+                                    p.text_muted
+                                })
+                                .wrapping(text::Wrapping::None),
+                        )
+                        .padding([2, 6])
+                        .style(theme::filter_pill_btn(p, self.sign_commit))
+                        .on_press(Message::SignCommitToggled(!self.sign_commit)),
+                        "Toggle GPG / SSH commit signing (-S)",
+                        tooltip::Position::Bottom,
+                        p,
+                    ),
                     theme::clipped_line(
                         text(counter_label)
                             .size(type_scale::BADGE)
@@ -938,22 +970,41 @@ impl GitFleetApp {
                         .join(", ");
 
                     let make_commit_id_row = || -> Element<'_, Message> {
-                        theme::clipped_line(
-                            row![
-                                text("Commit")
-                                    .size(type_scale::CAPTION)
-                                    .color(p.text_muted)
-                                    .wrapping(text::Wrapping::None),
-                                text(c.short_oid.clone())
-                                    .size(type_scale::CAPTION)
-                                    .font(theme::CODE_FONT)
-                                    .color(p.accent_fg)
-                                    .wrapping(text::Wrapping::None),
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center),
-                            Length::Fill,
-                        )
+                        let mut r = row![
+                            text("Commit")
+                                .size(type_scale::CAPTION)
+                                .color(p.text_muted)
+                                .wrapping(text::Wrapping::None),
+                            text(c.short_oid.clone())
+                                .size(type_scale::CAPTION)
+                                .font(theme::CODE_FONT)
+                                .color(p.accent_fg)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center);
+                        match c.signature {
+                            gitfleet_git::SignatureStatus::Verified => {
+                                r = r.push(theme::badge(
+                                    "Verified",
+                                    p.success_bg,
+                                    p.success_fg,
+                                    p.border_subtle,
+                                    false,
+                                ));
+                            }
+                            gitfleet_git::SignatureStatus::Unverified => {
+                                r = r.push(theme::badge(
+                                    "Unverified",
+                                    p.warning_bg,
+                                    p.warning_fg,
+                                    p.border_subtle,
+                                    false,
+                                ));
+                            }
+                            gitfleet_git::SignatureStatus::None => {}
+                        }
+                        theme::clipped_line(r, Length::Fill)
                     };
 
                     let make_commit_detail_actions = || -> Element<'_, Message> {

@@ -671,6 +671,11 @@ impl GitFleetApp {
             Message::SelectRepo(id) => {
                 self.selected_repo = Some(id);
                 self.active_submodule = None;
+                self.graph_file_filter = None;
+                self.blame_lines.clear();
+                self.blame_file_path = None;
+                self.blame_loading = false;
+                self.blame_error = None;
                 self.clear_active_repo_view_state();
                 self.persist_ui_prefs();
                 if let Some(repo) = self.current_repo() {
@@ -711,6 +716,11 @@ impl GitFleetApp {
             Message::SelectSubmodule(parent_id, sub_rel) => {
                 self.selected_repo = Some(parent_id.clone());
                 self.active_submodule = Some((parent_id, sub_rel));
+                self.graph_file_filter = None;
+                self.blame_lines.clear();
+                self.blame_file_path = None;
+                self.blame_loading = false;
+                self.blame_error = None;
                 self.clear_active_repo_view_state();
                 if let Some(repo) = self.current_repo() {
                     if !repo.available {

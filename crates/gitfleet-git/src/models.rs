@@ -133,6 +133,16 @@ pub struct LogOptions {
     pub incoming_only: bool,
     #[serde(default)]
     pub selected_refs: Vec<String>,
+    #[serde(default)]
+    pub file_filter_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SignatureStatus {
+    #[default]
+    None,
+    Verified,
+    Unverified,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +159,36 @@ pub struct CommitSummary {
     pub refs: String,
     pub timestamp: DateTime<Utc>,
     pub parents: Vec<String>,
+    #[serde(default)]
+    pub signature: SignatureStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlameLine {
+    pub final_line: usize,
+    pub oid: String,
+    pub short_oid: String,
+    pub author: String,
+    pub date_short: String,
+    pub summary: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RebaseAction {
+    Pick,
+    Reword(String),
+    Squash,
+    Fixup,
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebaseTodoItem {
+    pub action: RebaseAction,
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

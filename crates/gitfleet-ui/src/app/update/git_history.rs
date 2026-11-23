@@ -208,6 +208,115 @@ impl GitFleetApp {
                 }
                 Task::none()
             }
+            Message::FilterHistoryByFile(path_opt) => {
+                self.context_menu = None;
+                self.graph_file_filter = path_opt;
+                self.graph_tab = GraphTab::Graph;
+                if let Some(repo) = self.current_repo() {
+                    return self.load_log_task(repo);
+                }
+                Task::none()
+            }
+            Message::OpenInteractiveRebase {
+                base_ref,
+                base_label,
+            } => {
+                self.context_menu = None;
+                self.show_palette = false;
+                let Some(repo) = self.current_repo() else {
+                    return Task::none();
+                };
+                self.rebase_modal = Some(
+                    crate::views::overlays::rebase_modal::RebaseModalState::new_loading(
+                        base_ref.clone(),
+                        base_label,
+                    ),
+                );
+                let svc = self.service.clone();
+                let path = repo.path;
+                Task::perform(
+                    async move {
+                        let res = svc
+                            .git
+                            .list_rebase_commits(&path, &base_ref)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (base_ref, res)
+                    },
+                    |(b, r)| Message::InteractiveRebaseCommitsLoaded(b, r),
+                )
+            }
+            Message::InteractiveRebaseCommitsLoaded(base_ref, res) => {
+                if let Some(modal) = &mut self.rebase_modal
+                    && modal.base_ref == base_ref
+                {
+                    match res {
+                        Ok(items) => modal.populate(items),
+                        Err(e) => {
+                            modal.loading = false;
+                            modal.error = Some(e);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::RebaseSetAction(idx, choice) => {
+                if let Some(modal) = &mut self.rebase_modal
+                    && let Some(row) = modal.rows.get_mut(idx)
+                {
+                    row.choice = choice;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::RebaseMoveRow(idx, delta) => {
+                if let Some(modal) = &mut self.rebase_modal {
+                    let len = modal.rows.len();
+                    let next = idx as isize + delta;
+                    if idx < len && next >= 0 && (next as usize) < len {
+                        modal.rows.swap(idx, next as usize);
+                        modal.error = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::RebaseEditMessage(idx, val) => {
+                if let Some(modal) = &mut self.rebase_modal
+                    && let Some(row) = modal.rows.get_mut(idx)
+                {
+                    row.reword_text = val;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::CloseInteractiveRebase => {
+                self.rebase_modal = None;
+                Task::none()
+            }
+            Message::ConfirmInteractiveRebase => {
+                let Some(modal) = &self.rebase_modal else {
+                    return Task::none();
+                };
+                if modal.validation_error().is_some() {
+                    return Task::none();
+                }
+                let base_ref = modal.base_ref.clone();
+                let base_label = modal.base_label.clone();
+                let plan = modal.to_git_plan();
+                self.rebase_modal = None;
+                self.run_git_op("Interactive Rebase", move |svc, repo| async move {
+                    if let Ok(prev) = svc.git.head_oid(&repo.path).await {
+                        svc.undo.record(UndoEntry {
+                            id: format!("{}", Utc::now().timestamp_millis()),
+                            repo_id: repo.id.clone(),
+                            label: format!("Interactive Rebase onto {base_label}"),
+                            previous_head: prev,
+                            created_at: Utc::now(),
+                        });
+                    }
+                    svc.git.interactive_rebase(&repo.path, &base_ref, &plan).await
+                })
+            }
             Message::ReflogLoaded(id, res) => {
                 if self.active_repo_key().as_ref() == Some(&id) {
                     self.reflog = res.unwrap_or_default();

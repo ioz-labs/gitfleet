@@ -648,9 +648,22 @@ impl GitService {
         message: &str,
         amend: bool,
     ) -> AppResult<String> {
+        self.commit_signed(repo_path, message, amend, false).await
+    }
+
+    pub async fn commit_signed(
+        &self,
+        repo_path: &Path,
+        message: &str,
+        amend: bool,
+        sign: bool,
+    ) -> AppResult<String> {
         let mut args = vec!["commit", "-F", "-"];
         if amend {
             args.push("--amend");
+        }
+        if sign {
+            args.push("-S");
         }
         let normalized = message.replace("\r\n", "\n");
         let out = runner::run_git_with_stdin(
@@ -679,7 +692,18 @@ impl GitService {
         message: &str,
         amend: bool,
     ) -> AppResult<String> {
-        self.commit(repo_path, message, amend).await?;
+        self.commit_and_push_signed(repo_path, message, amend, false)
+            .await
+    }
+
+    pub async fn commit_and_push_signed(
+        &self,
+        repo_path: &Path,
+        message: &str,
+        amend: bool,
+        sign: bool,
+    ) -> AppResult<String> {
+        self.commit_signed(repo_path, message, amend, sign).await?;
         self.push(repo_path).await
     }
 
@@ -691,11 +715,24 @@ impl GitService {
         amend: bool,
         push_after: bool,
     ) -> AppResult<String> {
+        self.commit_all_changes_signed(repo_path, message, amend, push_after, false)
+            .await
+    }
+
+    pub async fn commit_all_changes_signed(
+        &self,
+        repo_path: &Path,
+        message: &str,
+        amend: bool,
+        push_after: bool,
+        sign: bool,
+    ) -> AppResult<String> {
         self.stage_all(repo_path).await?;
         if push_after {
-            self.commit_and_push(repo_path, message, amend).await
+            self.commit_and_push_signed(repo_path, message, amend, sign)
+                .await
         } else {
-            self.commit(repo_path, message, amend).await
+            self.commit_signed(repo_path, message, amend, sign).await
         }
     }
 
@@ -709,6 +746,29 @@ impl GitService {
         amend: bool,
         push_after: bool,
     ) -> AppResult<String> {
+        self.commit_with_selection_signed(
+            repo_path,
+            stage_paths,
+            unstage_paths,
+            message,
+            amend,
+            push_after,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_with_selection_signed(
+        &self,
+        repo_path: &Path,
+        stage_paths: &[String],
+        unstage_paths: &[String],
+        message: &str,
+        amend: bool,
+        push_after: bool,
+        sign: bool,
+    ) -> AppResult<String> {
         if !unstage_paths.is_empty() {
             self.unstage(repo_path, unstage_paths).await?;
         }
@@ -716,10 +776,59 @@ impl GitService {
             self.stage(repo_path, stage_paths).await?;
         }
         if push_after {
-            self.commit_and_push(repo_path, message, amend).await
+            self.commit_and_push_signed(repo_path, message, amend, sign)
+                .await
         } else {
-            self.commit(repo_path, message, amend).await
+            self.commit_signed(repo_path, message, amend, sign).await
         }
+    }
+
+    /// Reads the configured commit message template (`git config commit.template`, `.gitmessage`,
+    /// or `.github/COMMIT_TEMPLATE`), stripping `#` comment lines.
+    pub async fn read_commit_template(&self, repo_path: &Path) -> Option<String> {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(cfg) = runner::run_git_ok(
+            repo_path,
+            &["config", "--get", "commit.template"],
+            None,
+            None,
+            false,
+        )
+        .await
+        {
+            let trimmed = cfg.trim();
+            if !trimmed.is_empty() {
+                if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\"))
+                    && let Some(home) = std::env::var_os("USERPROFILE")
+                        .or_else(|| std::env::var_os("HOME"))
+                {
+                    candidates.push(std::path::PathBuf::from(home).join(rest));
+                } else {
+                    let p = Path::new(trimmed);
+                    if p.is_absolute() {
+                        candidates.push(p.to_path_buf());
+                    } else {
+                        candidates.push(repo_path.join(p));
+                    }
+                }
+            }
+        }
+        candidates.push(repo_path.join(".gitmessage"));
+        candidates.push(repo_path.join(".github").join("COMMIT_TEMPLATE"));
+
+        for path in candidates {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                let cleaned: Vec<&str> = raw
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with('#'))
+                    .collect();
+                let joined = cleaned.join("\n").trim().to_string();
+                if !joined.is_empty() {
+                    return Some(joined);
+                }
+            }
+        }
+        None
     }
 
     pub async fn amend_target(&self, repo_path: &Path) -> AppResult<AmendTarget> {

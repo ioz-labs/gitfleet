@@ -17,13 +17,14 @@ use crate::views::overlays::blueprint_modal::{
     BlueprintExportModalState, BlueprintImportModalState,
 };
 use crate::views::overlays::file_ops_modal::{AddGitignoreModalState, RenameEntryModalState};
+use crate::views::overlays::rebase_modal::RebaseModalState;
 use gitfleet_app::{AppService, DetectedTool};
 use gitfleet_core::{DocumentId, RepoId, SessionId};
 use gitfleet_docs::{FileEncoding, LineEnding};
 use gitfleet_git::{
-    AmendTarget, BranchInfo, CommitSummary, FileChange, ForecastResult, GitFlowKind, GitFlowState,
-    OrphanGitlink, ParsedConflictFile, ParsedDiff, ReflogEntry, ReleaseTrigger, RepoStatusSummary,
-    StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, has_conflict_markers,
+    AmendTarget, BlameLine, BranchInfo, CommitSummary, FileChange, ForecastResult, GitFlowKind,
+    GitFlowState, OrphanGitlink, ParsedConflictFile, ParsedDiff, ReflogEntry, ReleaseTrigger,
+    RepoStatusSummary, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, has_conflict_markers,
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{
@@ -80,6 +81,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) graph_tab: GraphTab,
     pub(crate) graph_all_branches: bool,
     pub(crate) graph_topo_order: bool,
+    pub(crate) graph_file_filter: Option<String>,
     pub(crate) commit_filter: String,
     pub(crate) graph_selection: GraphSelection,
     pub(crate) commits: Vec<CommitSummary>,
@@ -93,6 +95,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) commit_editor: text_editor::Content,
     pub(crate) amend_commit: bool,
     pub(crate) amend_target: Option<AmendTarget>,
+    pub(crate) sign_commit: bool,
 
     pub(crate) files_mode: FilesViewMode,
     pub(crate) show_ignored_files: bool,
@@ -190,6 +193,12 @@ pub(crate) struct GitFleetApp {
     pub(crate) workspace_modal_tab: WorkspaceModalTab,
     pub(crate) blueprint_export_modal: Option<BlueprintExportModalState>,
     pub(crate) blueprint_import_modal: Option<BlueprintImportModalState>,
+    pub(crate) rebase_modal: Option<RebaseModalState>,
+    pub(crate) blame_request_id: u64,
+    pub(crate) blame_file_path: Option<String>,
+    pub(crate) blame_lines: Vec<BlameLine>,
+    pub(crate) blame_loading: bool,
+    pub(crate) blame_error: Option<String>,
 
     // Merge/Rebase Forecast Modal
     pub(crate) show_merge_modal: bool,
@@ -442,6 +451,7 @@ impl GitFleetApp {
             graph_tab: GraphTab::Graph,
             graph_all_branches: false,
             graph_topo_order: false,
+            graph_file_filter: None,
             commit_filter: String::new(),
             graph_selection: GraphSelection::WorkingTree,
             commits: Vec::new(),
@@ -453,6 +463,7 @@ impl GitFleetApp {
             commit_editor: text_editor::Content::new(),
             amend_commit: false,
             amend_target: None,
+            sign_commit: false,
             files_mode: FilesViewMode::Flat,
             show_ignored_files: ws.ui.show_ignored_files,
             file_filter: String::new(),
@@ -544,6 +555,12 @@ impl GitFleetApp {
             workspace_modal_tab: WorkspaceModalTab::Workspaces,
             blueprint_export_modal: None,
             blueprint_import_modal: None,
+            rebase_modal: None,
+            blame_request_id: 0,
+            blame_file_path: None,
+            blame_lines: Vec::new(),
+            blame_loading: false,
+            blame_error: None,
             show_merge_modal: false,
             merge_branch_filter: String::new(),
             merge_target_branch: None,
@@ -959,6 +976,7 @@ impl GitFleetApp {
             || self.scan_modal.is_some()
             || self.blueprint_export_modal.is_some()
             || self.blueprint_import_modal.is_some()
+            || self.rebase_modal.is_some()
     }
 
     pub(crate) fn unsaved_editor_names(&self) -> Vec<String> {
@@ -1256,7 +1274,7 @@ impl GitFleetApp {
             .is_some_and(|st| st.conflict_files.iter().any(|f| f.path == rel_path));
         let svc = self.service.clone();
 
-        Task::perform(
+        let doc_task = Task::perform(
             async move {
                 let payload = tokio::task::spawn_blocking(move || {
                     let doc = svc.docs.open_document(&full_path).ok();
@@ -1292,7 +1310,13 @@ impl GitFleetApp {
                 Box::new(payload)
             },
             Message::DocContextLoaded,
-        )
+        );
+        if self.bottom_mode == BottomViewMode::Blame {
+            let blame_task = self.load_blame_task(rel_path.to_string());
+            Task::batch([doc_task, blame_task])
+        } else {
+            doc_task
+        }
     }
 
     pub(crate) fn reload_file_for_preview_and_edit_if_changed(&mut self, rel_path: &str) {

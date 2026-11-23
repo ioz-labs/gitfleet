@@ -172,6 +172,7 @@ pub(crate) enum BottomViewMode {
     CsvDiff,
     Preview,
     Edit,
+    Blame,
     ResolveConflicts,
 }
 

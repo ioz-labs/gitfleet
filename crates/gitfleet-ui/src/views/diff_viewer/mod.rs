@@ -427,22 +427,39 @@ impl GitFleetApp {
         ));
 
         if !is_raster_only {
-            header = header.push(tip(
-                button(
-                    text("Edit")
-                        .size(type_scale::CAPTION)
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([3, 8])
-                .style(theme::filter_pill_btn(
+            header = header
+                .push(tip(
+                    button(
+                        text("Edit")
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([3, 8])
+                    .style(theme::filter_pill_btn(
+                        p,
+                        self.bottom_mode == BottomViewMode::Edit,
+                    ))
+                    .on_press(Message::SetBottomViewMode(BottomViewMode::Edit)),
+                    "Live File Editor (Ctrl+S to save)",
+                    tooltip::Position::Top,
                     p,
-                    self.bottom_mode == BottomViewMode::Edit,
                 ))
-                .on_press(Message::SetBottomViewMode(BottomViewMode::Edit)),
-                "Live File Editor (Ctrl+S to save)",
-                tooltip::Position::Top,
-                p,
-            ));
+                .push(tip(
+                    button(
+                        text("Blame")
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([3, 8])
+                    .style(theme::filter_pill_btn(
+                        p,
+                        self.bottom_mode == BottomViewMode::Blame,
+                    ))
+                    .on_press(Message::SetBottomViewMode(BottomViewMode::Blame)),
+                    "Git Blame — inspect per-line commit, author, date & jump to commit",
+                    tooltip::Position::Top,
+                    p,
+                ));
         }
 
         if self.bottom_mode == BottomViewMode::Preview {
@@ -534,6 +551,7 @@ impl GitFleetApp {
             BottomViewMode::CsvDiff => self.view_csv_diff(p),
             BottomViewMode::Preview => self.view_file_preview(p),
             BottomViewMode::Edit => self.view_file_editor(p),
+            BottomViewMode::Blame => self.view_file_blame(p),
             BottomViewMode::ResolveConflicts => self.view_conflict_solver(p),
         };
 
@@ -616,5 +634,116 @@ impl GitFleetApp {
             p,
             Message::EditorScrolled,
         )
+    }
+
+    pub(crate) fn view_file_blame(&self, p: Palette) -> Element<'_, Message> {
+        if self.active_file_path.is_none() {
+            return container(
+                text("Select any tracked repository file to inspect per-line Git Blame.")
+                    .size(type_scale::BODY)
+                    .color(p.text_muted),
+            )
+            .padding(12)
+            .into();
+        }
+        if self.blame_loading {
+            return container(
+                text("Loading Git Blame…")
+                    .size(type_scale::BODY)
+                    .color(p.text_muted),
+            )
+            .padding(12)
+            .into();
+        }
+        if let Some(err) = &self.blame_error {
+            return container(
+                text(format!("Blame unavailable: {err}"))
+                    .size(type_scale::BODY)
+                    .color(p.danger_fg),
+            )
+            .padding(12)
+            .into();
+        }
+        if self.blame_lines.is_empty() {
+            return container(
+                text("No blame lines for this file.")
+                    .size(type_scale::BODY)
+                    .color(p.text_muted),
+            )
+            .padding(12)
+            .into();
+        }
+
+        let mut rows_col = column![].spacing(0);
+        let mut prev_oid = String::new();
+        for line in &self.blame_lines {
+            let is_new_group = line.oid != prev_oid;
+            prev_oid.clone_from(&line.oid);
+            let is_committed = !line.oid.chars().all(|c| c == '0');
+
+            let author_short: String = line.author.chars().take(14).collect();
+            let gutter_label = if is_new_group {
+                format!(
+                    "{:<8} {:<14} {}",
+                    line.short_oid, author_short, line.date_short
+                )
+            } else {
+                String::new()
+            };
+
+            let gutter_btn = button(
+                text(gutter_label)
+                    .size(type_scale::BADGE)
+                    .font(theme::CODE_FONT)
+                    .color(if is_committed {
+                        p.accent_fg
+                    } else {
+                        p.warning_fg
+                    })
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fixed(242.0))
+            .padding([2, 6])
+            .style(theme::subtle_btn(p))
+            .on_press_maybe(is_committed.then(|| Message::SelectCommit(line.oid.clone())));
+
+            let gutter_el: Element<'_, Message> = if is_new_group && !line.summary.is_empty() {
+                tip(
+                    gutter_btn,
+                    format!("{} — {}", line.short_oid, line.summary),
+                    tooltip::Position::Right,
+                    p,
+                )
+            } else {
+                gutter_btn.into()
+            };
+
+            let ln_el = container(
+                text(format!("{:>4}", line.final_line))
+                    .size(type_scale::BADGE)
+                    .font(theme::CODE_FONT)
+                    .color(p.text_muted)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fixed(44.0))
+            .padding([2, 4]);
+
+            let code_el = text(theme::sanitize_code_line(&line.content))
+                .size(type_scale::CODE)
+                .font(theme::CODE_FONT)
+                .color(p.text_primary)
+                .wrapping(text::Wrapping::None);
+
+            if is_new_group && line.final_line > 1 {
+                rows_col = rows_col.push(horizontal_rule(1).style(theme::subtle_rule(p)));
+            }
+            rows_col = rows_col.push(
+                row![gutter_el, ln_el, code_el]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            );
+        }
+
+        crate::views::slim_scroll_h(rows_col, 680.0, p)
     }
 }

@@ -5,6 +5,7 @@ use crate::app::types::{
     ScanLevelPreset, SettingsTab, TerminalMenuSubmenu, WorkspaceModalTab,
 };
 use crate::views::overlays::blueprint_modal::BlueprintExportRepoItem;
+use crate::views::overlays::rebase_modal::RebaseActionChoice;
 use crate::terminal::TerminalCanvasAction;
 use crate::syntax::CodeLanguage;
 use crate::theme::{ThemeMode, ThemePreset};
@@ -16,10 +17,10 @@ use gitfleet_core::RepoId;
 use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{
-    AmendTarget, BranchInfo, CommitSummary, ConflictStrategy, DiscardTarget, FileChange,
+    AmendTarget, BlameLine, BranchInfo, CommitSummary, ConflictStrategy, DiscardTarget, FileChange,
     ForecastResult, GitFlowKind, GitFlowState, HunkChoice, IgnoredDirListing, IgnoredEntries,
-    MergeMode, OrphanGitlink, ParsedConflictFile, ParsedDiff, ReflogEntry, RepoStatusSummary,
-    ResetMode, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
+    MergeMode, OrphanGitlink, ParsedConflictFile, ParsedDiff, RebaseTodoItem, ReflogEntry,
+    RepoStatusSummary, ResetMode, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
 };
 use gitfleet_search::SearchMatch;
 use gitfleet_security::{IgnoreLayer, OversizedFile, SecretFinding};
@@ -184,6 +185,17 @@ pub(crate) enum Message {
     },
     StashFilesLoaded(usize, Result<Vec<FileChange>, String>),
     StashPaths(Vec<String>),
+    FilterHistoryByFile(Option<String>),
+    OpenInteractiveRebase {
+        base_ref: String,
+        base_label: String,
+    },
+    InteractiveRebaseCommitsLoaded(String, Result<Vec<RebaseTodoItem>, String>),
+    RebaseSetAction(usize, RebaseActionChoice),
+    RebaseMoveRow(usize, isize),
+    RebaseEditMessage(usize, String),
+    ConfirmInteractiveRebase,
+    CloseInteractiveRebase,
     ResetCommit(String, ResetMode),
     RevertCommit(String),
     UndoLastAction,
@@ -300,6 +312,10 @@ pub(crate) enum Message {
     CommitMessageAction(text_editor::Action),
     AmendToggled(bool),
     AmendTargetLoaded(Result<AmendTarget, String>),
+    SignCommitToggled(bool),
+    LoadCommitTemplate,
+    CommitTemplateLoaded(Option<String>),
+    BlameLoaded(u64, String, Result<Vec<BlameLine>, String>),
     CommitSubmitted,
     CommitAndPushSubmitted,
     FetchSelected,

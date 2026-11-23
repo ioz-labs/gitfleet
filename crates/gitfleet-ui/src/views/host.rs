@@ -891,6 +891,10 @@ impl GitFleetApp {
             modal_layers.push(self.view_cherry_pick_modal(p, modal));
         }
 
+        if let Some(modal) = &self.rebase_modal {
+            modal_layers.push(self.view_interactive_rebase_modal(p, modal));
+        }
+
         if let Some(modal) = &self.discard_modal {
             modal_layers.push(self.view_discard_modal(p, modal));
         }

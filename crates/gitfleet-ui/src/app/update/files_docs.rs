@@ -1376,6 +1376,12 @@ impl GitFleetApp {
                     self.csv_prefer_table = true;
                 }
                 self.diff_selection = None;
+                if mode == BottomViewMode::Blame {
+                    if let Some(rel) = self.active_file_path.clone() {
+                        return self.load_blame_task(rel);
+                    }
+                    return Task::none();
+                }
                 if matches!(mode, BottomViewMode::Edit | BottomViewMode::Preview) {
                     if mode == BottomViewMode::Preview {
                         self.ensure_preview_hydrated();
@@ -1384,6 +1390,23 @@ impl GitFleetApp {
                     }
                     if let Some(rel) = self.active_file_path.clone() {
                         self.reload_file_for_preview_and_edit_if_changed(&rel);
+                    }
+                }
+                Task::none()
+            }
+            Message::BlameLoaded(req_id, path, res) => {
+                if req_id == self.blame_request_id {
+                    self.blame_loading = false;
+                    self.blame_file_path = Some(path);
+                    match res {
+                        Ok(lines) => {
+                            self.blame_lines = lines;
+                            self.blame_error = None;
+                        }
+                        Err(e) => {
+                            self.blame_lines.clear();
+                            self.blame_error = Some(e);
+                        }
                     }
                 }
                 Task::none()

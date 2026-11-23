@@ -715,6 +715,16 @@ impl GitFleetApp {
                 }
             }
 
+            if c.signature == gitfleet_git::SignatureStatus::Verified {
+                commit_line = commit_line.push(theme::badge(
+                    "Verified",
+                    p.success_bg,
+                    p.success_fg,
+                    p.border_subtle,
+                    false,
+                ));
+            }
+
             let (initials, avatar_color) = theme::author_avatar_info(&c.author);
             let avatar_badge = container(
                 text(initials.clone())
@@ -840,8 +850,34 @@ impl GitFleetApp {
                 Space::with_height(Length::Shrink).into()
             };
 
+        let follow_banner: Element<'_, Message> = if let Some(fpath) = &self.graph_file_filter {
+            container(
+                row![
+                    icons::file_code(12.0, p.accent_fg),
+                    text(format!("File History (--follow): {fpath}"))
+                        .size(type_scale::CAPTION)
+                        .font(theme::CODE_FONT)
+                        .color(p.accent_fg),
+                    Space::with_width(Length::Fill),
+                    button(icons::close_x(10.0, p.text_secondary))
+                        .padding([2, 5])
+                        .style(theme::vscode_icon_btn(p, false))
+                        .on_press(Message::FilterHistoryByFile(None)),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([3, 8])
+            .width(Length::Fill)
+            .style(theme::pill_box(p.fill_selected, p.accent_fg, p.border_subtle))
+            .into()
+        } else {
+            Space::with_height(Length::Shrink).into()
+        };
+
         column![
             header,
+            follow_banner,
             range_banner,
             horizontal_rule(1).style(theme::subtle_rule(p)),
             slim_scroll_h(rows_col, min_graph_w, p)
