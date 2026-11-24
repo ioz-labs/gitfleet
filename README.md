@@ -232,11 +232,15 @@ cargo build --release --locked -p gitfleet-ui
 
 ### Automated Releases
 
-GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) runs strict checks (`-D warnings`), native unit tests, and packages all 5 platform/architecture targets automatically whenever a version tag matching `v*` is pushed (or when triggered manually via **Actions → Release → Run workflow**):
+GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) runs strict checks (`-D warnings`), native unit tests, and packages all 5 platform/architecture targets automatically when triggered via **Actions → Release → Run workflow** on `main` (which updates Cargo cache on `main`, creates tag `vX.Y.Z`, and publishes the GitHub Release) or whenever a version tag matching `v*` is pushed:
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
+# Recommended: trigger from main (reuses & updates main Cargo cache)
+gh workflow run release.yml --ref main
+
+# Or push a tag directly
+git tag v0.7.1
+git push origin v0.7.1
 ```
 
 ---

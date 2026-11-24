@@ -7,9 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version label for manual build artifacts (e.g. 0.7.0)"
+        description: "Release version (optional; defaults to Cargo.toml version, e.g. 0.7.1)"
         required: false
         default: ""
+      publish:
+        description: "Create tag v<version> & publish GitHub Release"
+        type: boolean
+        required: false
+        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -30,12 +35,37 @@ jobs:
   verify:
     name: Check & Unit Tests
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then
+            VER="$INPUT_VERSION"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+          else
+            VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          fi
+          VER="${VER#v}"
+          if [ -z "$VER" ]; then
+            echo "::error::Could not resolve release version" >&2
+            exit 1
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Install Linux GUI system libraries
         run: |
@@ -114,13 +144,21 @@ jobs:
       - name: Resolve version
         id: meta
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            VER="${{ inputs.version }}"
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then
+            VER="$INPUT_VERSION"
           elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF#refs/tags/v}"
           else
             VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          fi
+          VER="${VER#v}"
+          if [ -z "$VER" ]; then
+            echo "::error::Could not resolve release version" >&2
+            exit 1
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
 
@@ -359,7 +397,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: [verify, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
     runs-on: ubuntu-24.04
     steps:
       - name: Download all release artifacts
@@ -375,5 +413,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ needs.verify.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: release-files/*
