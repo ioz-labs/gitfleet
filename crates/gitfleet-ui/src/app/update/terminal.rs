@@ -14,12 +14,14 @@ impl GitFleetApp {
             }
             Message::TerminalNewTab(profile_id) => {
                 self.spawn_terminal_pane(profile_id, false);
-                Task::none()
+                self.terminal_restore_focus = false;
+                Self::unfocus_text_widgets()
             }
             Message::TerminalSplitPane(profile_id) => {
                 let split = !self.terminal_tabs.is_empty();
                 self.spawn_terminal_pane(profile_id, split);
-                Task::none()
+                self.terminal_restore_focus = false;
+                Self::unfocus_text_widgets()
             }
             Message::TerminalOpenExternalWindow(profile_id) => {
                 self.show_terminal_menu = false;
@@ -53,7 +55,9 @@ impl GitFleetApp {
                 if idx < self.terminal_tabs.len() {
                     self.active_terminal_tab = idx;
                     self.terminal_focused = true;
+                    self.terminal_restore_focus = false;
                     self.sync_terminal_snapshots();
+                    return Self::unfocus_text_widgets();
                 }
                 Task::none()
             }
@@ -64,7 +68,9 @@ impl GitFleetApp {
                     self.active_terminal_tab = tab_idx;
                     tab.focused_pane = pane_idx;
                     self.terminal_focused = true;
+                    self.terminal_restore_focus = false;
                     self.sync_terminal_snapshots();
+                    return Self::unfocus_text_widgets();
                 }
                 Task::none()
             }
@@ -79,6 +85,7 @@ impl GitFleetApp {
                     }
                     if self.terminal_tabs.is_empty() {
                         self.terminal_focused = false;
+                        self.terminal_restore_focus = false;
                     }
                 }
                 Task::none()
@@ -96,6 +103,7 @@ impl GitFleetApp {
                         }
                         if self.terminal_tabs.is_empty() {
                             self.terminal_focused = false;
+                            self.terminal_restore_focus = false;
                         }
                     } else if tab.focused_pane >= tab.panes.len() {
                         tab.focused_pane = tab.panes.len().saturating_sub(1);
@@ -116,6 +124,7 @@ impl GitFleetApp {
             Message::TerminalCanvas(action) => match action {
                 TerminalCanvasAction::Focus(sid) => {
                     self.terminal_focused = true;
+                    self.terminal_restore_focus = false;
                     self.show_terminal_menu = false;
                     self.terminal_menu_submenu = TerminalMenuSubmenu::None;
                     if let Some(tab) = self.terminal_tabs.get_mut(self.active_terminal_tab)
@@ -123,7 +132,27 @@ impl GitFleetApp {
                     {
                         tab.focused_pane = idx;
                     }
-                    Task::none()
+                    Self::unfocus_text_widgets()
+                }
+                TerminalCanvasAction::PastePrimary(sid) => {
+                    self.terminal_focused = true;
+                    self.terminal_restore_focus = false;
+                    self.show_terminal_menu = false;
+                    self.terminal_menu_submenu = TerminalMenuSubmenu::None;
+                    if let Some(tab) = self.terminal_tabs.get_mut(self.active_terminal_tab)
+                        && let Some(idx) = tab.panes.iter().position(|p| p.session_id == sid)
+                    {
+                        tab.focused_pane = idx;
+                    }
+                    Task::batch([
+                        Self::unfocus_text_widgets(),
+                        clipboard::read_primary().map(move |text| Message::TerminalPasteLoaded {
+                            session_id: sid.clone(),
+                            text,
+                            primary: true,
+                            tried_fallback: false,
+                        }),
+                    ])
                 }
                 TerminalCanvasAction::Resize(sid, cols, rows) => {
                     for tab in &mut self.terminal_tabs {
@@ -163,13 +192,41 @@ impl GitFleetApp {
             Message::TerminalPasteClipboard => {
                 self.show_terminal_menu = false;
                 self.terminal_menu_submenu = TerminalMenuSubmenu::None;
-                if let Some(sid) = self.focused_terminal_session_id()
-                    && let Ok(mut cb) = arboard::Clipboard::new()
-                    && let Ok(clip) = cb.get_text()
-                {
-                    let normalized = clip.replace("\r\n", "\r").replace('\n', "\r");
-                    let _ = self.service.terminal.write(&sid, &normalized);
+                let Some(sid) = self.focused_terminal_session_id() else {
+                    return Task::none();
+                };
+                self.terminal_focused = true;
+                self.terminal_restore_focus = false;
+                Task::batch([
+                    Self::unfocus_text_widgets(),
+                    clipboard::read().map(move |text| Message::TerminalPasteLoaded {
+                        session_id: sid.clone(),
+                        text,
+                        primary: false,
+                        tried_fallback: false,
+                    }),
+                ])
+            }
+            Message::TerminalPasteLoaded {
+                session_id,
+                text,
+                primary,
+                tried_fallback,
+            } => {
+                if let Some(clip) = text.filter(|s| !s.is_empty()) {
+                    let _ = self.service.terminal.paste(&session_id, &clip);
                     self.sync_terminal_snapshots();
+                    return Task::none();
+                }
+                if !tried_fallback {
+                    return Task::perform(read_clipboard_fallback(primary), move |fallback| {
+                        Message::TerminalPasteLoaded {
+                            session_id: session_id.clone(),
+                            text: fallback,
+                            primary,
+                            tried_fallback: true,
+                        }
+                    });
                 }
                 Task::none()
             }
@@ -302,4 +359,76 @@ impl GitFleetApp {
             None => Ok(task),
         }
     }
+}
+
+async fn run_clipboard_cmd(program: &str, args: &[&str]) -> Option<String> {
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let child = cmd.spawn().ok()?;
+    let output = tokio::time::timeout(Duration::from_millis(1200), child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+async fn read_clipboard_fallback(primary: bool) -> Option<String> {
+    if cfg!(target_os = "linux") {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            let args: &[&str] = if primary {
+                &["--primary", "--no-newline", "--type", "text"]
+            } else {
+                &["--no-newline", "--type", "text"]
+            };
+            if let Some(txt) = run_clipboard_cmd("wl-paste", args).await {
+                return Some(txt);
+            }
+        }
+        if std::env::var_os("DISPLAY").is_some() {
+            let xclip_sel = if primary { "primary" } else { "clipboard" };
+            if let Some(txt) = run_clipboard_cmd(
+                "xclip",
+                &["-o", "-selection", xclip_sel, "-t", "UTF8_STRING"],
+            )
+            .await
+            {
+                return Some(txt);
+            }
+            if let Some(txt) = run_clipboard_cmd("xclip", &["-o", "-selection", xclip_sel]).await {
+                return Some(txt);
+            }
+            let xsel_flag = if primary { "--primary" } else { "--clipboard" };
+            if let Some(txt) = run_clipboard_cmd("xsel", &[xsel_flag, "--output"]).await {
+                return Some(txt);
+            }
+        }
+    }
+
+    if primary {
+        return None;
+    }
+
+    let handle = tokio::task::spawn_blocking(|| {
+        arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut cb| cb.get_text().ok())
+            .filter(|s| !s.is_empty())
+    });
+    tokio::time::timeout(std::time::Duration::from_millis(1500), handle)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
 }

@@ -73,6 +73,7 @@ fn resolve_term_color(c: TermColor, default: Color, is_dark: bool, bold_bright: 
 #[derive(Debug, Clone)]
 pub enum TerminalCanvasAction {
     Focus(SessionId),
+    PastePrimary(SessionId),
     Resize(SessionId, u16, u16),
     Scroll(SessionId, isize),
 }
@@ -117,28 +118,34 @@ where
         let rows = (inner_h / cell_h).floor().clamp(6.0, 120.0) as u16;
 
         match ev {
-            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if cursor.is_over(bounds) {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.is_over(bounds) =>
+            {
+                return (
+                    event::Status::Captured,
+                    Some(TerminalCanvasAction::Focus(self.session_id.clone()).into()),
+                );
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle))
+                if cursor.is_over(bounds) =>
+            {
+                return (
+                    event::Status::Captured,
+                    Some(TerminalCanvasAction::PastePrimary(self.session_id.clone()).into()),
+                );
+            }
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta })
+                if cursor.is_over(bounds) =>
+            {
+                let lines: isize = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => (y * 3.0).round() as isize,
+                    mouse::ScrollDelta::Pixels { y, .. } => (y / cell_h).round() as isize,
+                };
+                if lines != 0 {
                     return (
                         event::Status::Captured,
-                        Some(TerminalCanvasAction::Focus(self.session_id.clone()).into()),
+                        Some(TerminalCanvasAction::Scroll(self.session_id.clone(), lines).into()),
                     );
-                }
-            }
-            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if cursor.is_over(bounds) {
-                    let lines: isize = match delta {
-                        mouse::ScrollDelta::Lines { y, .. } => (y * 3.0).round() as isize,
-                        mouse::ScrollDelta::Pixels { y, .. } => (y / cell_h).round() as isize,
-                    };
-                    if lines != 0 {
-                        return (
-                            event::Status::Captured,
-                            Some(
-                                TerminalCanvasAction::Scroll(self.session_id.clone(), lines).into(),
-                            ),
-                        );
-                    }
                 }
             }
             _ => {}

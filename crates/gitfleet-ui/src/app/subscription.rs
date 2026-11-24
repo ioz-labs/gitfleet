@@ -262,7 +262,8 @@ fn handle_window_event(
             Some(Message::EndResize)
         }
         iced::Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(id, size)),
-        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowUnfocused),
+        iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocused(id)),
+        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowUnfocused(id)),
         iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
             Some(Message::ModifiersChanged(modifiers))
         }
@@ -439,29 +440,43 @@ fn handle_window_and_terminal_event(
             Some(Message::EndResize)
         }
         iced::Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(id, size)),
-        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowUnfocused),
+        iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocused(id)),
+        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowUnfocused(id)),
         iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
             Some(Message::ModifiersChanged(modifiers))
         }
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
+            modified_key,
+            physical_key,
             modifiers,
             text,
             ..
         }) if status == event::Status::Ignored => {
-            if modifiers.command() && modifiers.shift() {
+            if crate::terminal::is_terminal_paste_shortcut(
+                &key,
+                &modified_key,
+                physical_key,
+                modifiers,
+            ) {
+                return Some(Message::TerminalPasteClipboard);
+            }
+            if modifiers.command() && modifiers.shift() && !modifiers.alt() {
+                if crate::terminal::is_ascii_letter_key(
+                    &key,
+                    &modified_key,
+                    physical_key,
+                    'c',
+                    keyboard::key::Code::KeyC,
+                ) {
+                    return Some(Message::TerminalCopyScreen);
+                }
                 match key.as_ref() {
                     Key::Character("`") | Key::Character("~") => {
                         return Some(Message::TerminalNewTab(None));
                     }
                     Key::Character("5") | Key::Character("%") => {
                         return Some(Message::TerminalSplitPane(None));
-                    }
-                    Key::Character("v") | Key::Character("V") => {
-                        return Some(Message::TerminalPasteClipboard);
-                    }
-                    Key::Character("c") | Key::Character("C") => {
-                        return Some(Message::TerminalCopyScreen);
                     }
                     Key::Character("f") | Key::Character("F") => {
                         return Some(Message::ToggleDrawer(DrawerTab::Search));
@@ -472,16 +487,12 @@ fn handle_window_and_terminal_event(
                     _ => {}
                 }
             }
-            if modifiers.command() && !modifiers.shift() && !modifiers.alt() {
-                match key.as_ref() {
-                    Key::Character("`") => {
-                        return Some(Message::ToggleDrawer(DrawerTab::Terminal));
-                    }
-                    Key::Character("v") | Key::Character("V") => {
-                        return Some(Message::TerminalPasteClipboard);
-                    }
-                    _ => {}
-                }
+            if modifiers.command()
+                && !modifiers.shift()
+                && !modifiers.alt()
+                && matches!(key.as_ref(), Key::Character("`"))
+            {
+                return Some(Message::ToggleDrawer(DrawerTab::Terminal));
             }
             Some(Message::TerminalKeyPressed {
                 key,

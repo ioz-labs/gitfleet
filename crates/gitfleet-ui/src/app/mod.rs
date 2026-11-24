@@ -335,6 +335,7 @@ pub(crate) struct GitFleetApp {
     pub(crate) terminal_tabs: Vec<TerminalTab>,
     pub(crate) active_terminal_tab: usize,
     pub(crate) terminal_focused: bool,
+    pub(crate) terminal_restore_focus: bool,
     pub(crate) terminal_expanded: bool,
     pub(crate) terminal_search_open: bool,
     pub(crate) terminal_search_query: String,
@@ -680,6 +681,7 @@ impl GitFleetApp {
             terminal_tabs: Vec::new(),
             active_terminal_tab: 0,
             terminal_focused: false,
+            terminal_restore_focus: false,
             terminal_expanded: false,
             terminal_search_open: false,
             terminal_search_query: String::new(),
@@ -1094,6 +1096,10 @@ impl GitFleetApp {
             .get(tab.focused_pane)
             .or_else(|| tab.panes.first())?;
         Some(pane.session_id.clone())
+    }
+
+    pub(crate) fn unfocus_text_widgets() -> Task<Message> {
+        text_input::focus(text_input::Id::unique())
     }
 
     pub(crate) fn spawn_terminal_pane(&mut self, profile_id: Option<String>, split_into_active: bool) {

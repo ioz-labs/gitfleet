@@ -383,6 +383,7 @@ impl GitFleetApp {
                 if self.drawer_tab == Some(tab) {
                     self.drawer_tab = None;
                     self.terminal_focused = false;
+                    self.terminal_restore_focus = false;
                     self.show_terminal_menu = false;
                     self.terminal_menu_submenu = TerminalMenuSubmenu::None;
                 } else {
@@ -392,18 +393,22 @@ impl GitFleetApp {
                     match tab {
                         DrawerTab::Secrets | DrawerTab::Ignore => {
                             self.terminal_focused = false;
+                            self.terminal_restore_focus = false;
                             self.refresh_vault_and_ignore();
                         }
                         DrawerTab::Terminal => {
+                            self.terminal_restore_focus = false;
                             if self.terminal_tabs.is_empty() {
                                 self.spawn_terminal_pane(None, false);
                             } else {
                                 self.terminal_focused = true;
                                 self.sync_terminal_snapshots();
                             }
+                            return Self::unfocus_text_widgets();
                         }
                         _ => {
                             self.terminal_focused = false;
+                            self.terminal_restore_focus = false;
                         }
                     }
                 }
@@ -412,6 +417,7 @@ impl GitFleetApp {
             Message::CloseDrawer => {
                 self.drawer_tab = None;
                 self.terminal_focused = false;
+                self.terminal_restore_focus = false;
                 self.show_terminal_menu = false;
                 self.terminal_menu_submenu = TerminalMenuSubmenu::None;
                 Task::none()
@@ -1440,9 +1446,28 @@ impl GitFleetApp {
                 self.keyboard_modifiers = modifiers;
                 Task::none()
             }
-            Message::WindowUnfocused => {
+            Message::WindowFocused(win_id) => {
+                if self.windows.get(&win_id) == Some(&WindowKind::Host)
+                    && self.terminal_restore_focus
+                {
+                    self.terminal_restore_focus = false;
+                    if self.drawer_tab == Some(DrawerTab::Terminal)
+                        && !self.terminal_tabs.is_empty()
+                        && !self.has_modal_or_menu_open()
+                    {
+                        self.terminal_focused = true;
+                    }
+                }
+                Task::none()
+            }
+            Message::WindowUnfocused(win_id) => {
                 self.keyboard_modifiers = Modifiers::empty();
-                self.terminal_focused = false;
+                if self.windows.get(&win_id) == Some(&WindowKind::Host) {
+                    if self.terminal_focused {
+                        self.terminal_restore_focus = true;
+                    }
+                    self.terminal_focused = false;
+                }
                 Task::none()
             }
             Message::ToggleRibbonDropdown(target) => {

@@ -14,7 +14,7 @@ use crate::views::csv_diff::CsvDiffData;
 use crate::views::detached_viewer::DetachedAction;
 use crate::views::diff_viewer::DiffLayoutCache;
 use crate::views::image_diff::{ImageDiffData, ImageDiffMode, ImageDiffZoom};
-use gitfleet_core::RepoId;
+use gitfleet_core::{RepoId, SessionId};
 use gitfleet_docs::{FileEncoding, LineEnding, OpenDocumentCapability};
 use gitfleet_git::bulk::BulkOperation;
 use gitfleet_git::{
@@ -610,6 +610,12 @@ pub(crate) enum Message {
         text: Option<String>,
     },
     TerminalPasteClipboard,
+    TerminalPasteLoaded {
+        session_id: SessionId,
+        text: Option<String>,
+        primary: bool,
+        tried_fallback: bool,
+    },
     TerminalCopyScreen,
     TerminalSendCtrlC,
     ToggleTerminalMenu,
@@ -720,7 +726,8 @@ pub(crate) enum Message {
     CursorMoved(window::Id, Point),
     WindowResized(window::Id, Size),
     ModifiersChanged(Modifiers),
-    WindowUnfocused,
+    WindowFocused(window::Id),
+    WindowUnfocused(window::Id),
     OpenContextMenu(ContextMenuTarget),
     CloseContextMenu,
     ContextAction(Box<Message>),
