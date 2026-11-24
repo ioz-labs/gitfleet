@@ -101,18 +101,16 @@ impl GitFleetApp {
                                     tab.line_ending = cap.line_ending;
                                     tab.encoding = cap.encoding;
                                     tab.trailing_newline = cap.content.ends_with('\n');
-                                    tab.is_large_file =
-                                        crate::views::code_editor::is_large_editor_text(
-                                            &cap.content,
-                                        );
-                                    tab.total_raw_lines = cap.content.lines().count().max(1);
-                                    tab.working_full_text = None;
                                     tab.raw_text = Some(cap.content);
                                 }
                                 tab.dirty = false;
                                 tab.preview_hydrated = false;
-                                if tab.mode == DetachedViewMode::Preview
-                                    || tab.is_virtualized_code_mode()
+                                if tab.mode == DetachedViewMode::Preview && !tab.supports_preview()
+                                {
+                                    tab.mode = DetachedViewMode::Edit;
+                                    tab.ensure_editor_hydrated();
+                                } else if tab.supports_preview()
+                                    && tab.mode == DetachedViewMode::Preview
                                 {
                                     tab.ensure_preview_hydrated();
                                 }
@@ -578,10 +576,6 @@ impl GitFleetApp {
                                 tab.line_ending = saved.line_ending;
                                 tab.encoding = saved.encoding;
                                 tab.trailing_newline = saved.content.ends_with('\n');
-                                tab.is_large_file =
-                                    crate::views::code_editor::is_large_editor_text(&saved.content);
-                                tab.total_raw_lines = saved.content.lines().count().max(1);
-                                tab.working_full_text = None;
                                 tab.raw_text = Some(saved.content);
                                 tab.dirty = false;
                                 tab.editor_hydrated = false;
@@ -1504,7 +1498,14 @@ impl GitFleetApp {
                     tab.dirty = false;
                 }
 
-                tab.mode = payload.preferred_mode;
+                tab.mode = if payload.preferred_mode == DetachedViewMode::Preview
+                    && tab.is_editable()
+                    && !tab.supports_preview()
+                {
+                    DetachedViewMode::Edit
+                } else {
+                    payload.preferred_mode
+                };
                 tab.hydrate_active_mode();
                 tab.reset_scroll_state();
                 tab.rebuild_diff_cache(theme_mode);

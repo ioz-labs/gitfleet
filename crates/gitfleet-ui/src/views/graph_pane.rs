@@ -90,7 +90,7 @@ impl GraphRefPillKind {
 }
 
 /// Parses Git `%D` decorations and enriches them with `BranchInfo` ahead/behind/upstream data
-/// to produce full, untruncated SmartGit-style graph pills (`[origin = ▶ develop]`,
+/// to produce full, untruncated graph pills (`[origin = ▶ develop]`,
 /// `[-10 ▶ develop]`, `[+3 ▶ develop]`, `[origin/develop]`, tags).
 pub(crate) fn build_commit_ref_pills(
     refs: &str,
@@ -562,7 +562,7 @@ impl GitFleetApp {
                 || c.refs.to_lowercase().contains(&q)
         };
 
-        // Locate the HEAD commit so Working Tree / Index sits right above HEAD (SmartGit style),
+        // Locate the HEAD commit so Working Tree / Index sits right above HEAD,
         // even when incoming commits on origin/<branch> appear above HEAD in the graph.
         let head_idx = self
             .commits
@@ -914,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_synced_head_and_origin_into_smartgit_capsule_and_drops_origin_head() {
+    fn merges_synced_head_and_origin_into_synced_capsule_and_drops_origin_head() {
         let branches = vec![
             mk_branch("develop", true, false, Some("origin/develop"), 0, 0, false),
             mk_branch("origin/develop", false, true, None, 0, 0, false),

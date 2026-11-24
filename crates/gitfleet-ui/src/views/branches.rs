@@ -258,7 +258,7 @@ fn render_branch_subtree<'a>(
     max_row_w: &mut f32,
 ) {
     let p = ctx.p;
-    // Folders first (alphabetical via BTreeMap), matching SmartGit's branch tree
+    // Folders first (alphabetical via BTreeMap) for the branch tree
     for (folder, child) in &node.folders {
         let folder_key = format!("{key_prefix}/{folder}");
         let default_expanded = !ctx.is_remote && (child.contains_head() || ctx.auto_expand_small);
@@ -637,7 +637,7 @@ impl GitFleetApp {
                     }
                 }
 
-                // 0. SmartGit-style HEAD row (checkable to include/exclude HEAD in Graph)
+                // 0. HEAD row (checkable to include/exclude HEAD in Graph)
                 let head_oid_short = self
                     .active_status()
                     .and_then(|s| s.head_oid.as_deref())

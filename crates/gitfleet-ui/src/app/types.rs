@@ -1027,7 +1027,7 @@ impl CommitModalState {
             staged_files.sort_by(|a, b| a.path.cmp(&b.path));
         }
 
-        // SmartGit rule: if nothing is staged yet, default to Local Changes with all files checked.
+        // Default rule: if nothing is staged yet, default to Local Changes with all files checked.
         let scope = if staged_files.is_empty() {
             CommitModalScope::Local
         } else {

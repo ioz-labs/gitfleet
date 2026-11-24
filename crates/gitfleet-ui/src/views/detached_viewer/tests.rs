@@ -119,99 +119,86 @@ use std::path::Path;
     }
 
     #[test]
-    fn studio_tab_hydrates_editor_and_preview_lazily() {
+    fn studio_tab_disables_preview_for_code_and_hydrates_markdown_lazily() {
         let dir = std::env::temp_dir().join(format!(
             "gitfleet-studio-lazy-{}",
             std::process::id()
         ));
         let _ = std::fs::create_dir_all(&dir);
-        let file = dir.join(".env");
-        std::fs::write(&file, "API_KEY=demo\nPORT=8080\n").unwrap();
+        let rs_file = dir.join("main.rs");
+        let md_file = dir.join("README.md");
+        std::fs::write(&rs_file, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
+        std::fs::write(&md_file, "# Hello\n\nSome markdown.\n").unwrap();
 
         let docs = gitfleet_docs::DocsService::new();
-        let cap = docs.open_document(&file).unwrap();
 
-        let mut tab = StudioTab::new_empty(1, ".env".into());
-        tab.mode = DetachedViewMode::Edit;
-        assert!(tab.apply_loaded_doc(&file, Some(Path::new(&dir)), Some(cap)));
-        assert!(!tab.editor_hydrated);
-        assert!(!tab.preview_hydrated);
+        // Code files never offer Preview and always stay directly editable in Code mode
+        let rs_cap = docs.open_document(&rs_file).unwrap();
+        let mut rs_tab = StudioTab::new_empty(1, "main.rs".into());
+        rs_tab.mode = DetachedViewMode::Preview;
+        assert!(rs_tab.apply_loaded_doc(&rs_file, Some(Path::new(&dir)), Some(rs_cap)));
+        assert!(!rs_tab.supports_preview());
+        rs_tab.hydrate_active_mode();
+        assert_eq!(rs_tab.mode, DetachedViewMode::Edit);
+        assert!(rs_tab.editor_hydrated);
+        assert!(!rs_tab.preview_hydrated);
 
-        // Hydrating Edit mode shapes editor only — leaves Preview untouched
-        tab.hydrate_active_mode();
-        assert!(tab.editor_hydrated);
-        assert!(!tab.preview_hydrated);
+        // Rich previewable files (Markdown, SVG, CSV/TSV) hydrate editor & preview lazily
+        let md_cap = docs.open_document(&md_file).unwrap();
+        let mut md_tab = StudioTab::new_empty(2, "README.md".into());
+        md_tab.mode = DetachedViewMode::Edit;
+        assert!(md_tab.apply_loaded_doc(&md_file, Some(Path::new(&dir)), Some(md_cap)));
+        assert!(md_tab.supports_preview());
+        assert!(!md_tab.editor_hydrated);
+        assert!(!md_tab.preview_hydrated);
 
-        // Switching to Preview hydrates preview on demand
-        tab.mode = DetachedViewMode::Preview;
-        tab.ensure_preview_hydrated();
-        assert!(tab.preview_hydrated);
+        md_tab.hydrate_active_mode();
+        assert!(md_tab.editor_hydrated);
+        assert!(!md_tab.preview_hydrated);
+
+        md_tab.mode = DetachedViewMode::Preview;
+        md_tab.ensure_preview_hydrated();
+        assert!(md_tab.preview_hydrated);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn large_cargo_lock_opens_virtualized_and_splices_edit_window_cleanly() {
+    fn large_file_opens_directly_in_full_editable_code_mode() {
         let dir = std::env::temp_dir().join(format!(
-            "gitfleet-studio-cargolock-{}",
+            "gitfleet-studio-full-edit-{}",
             std::process::id()
         ));
         let _ = std::fs::create_dir_all(&dir);
-        let lock_file = dir.join("Cargo.lock");
+        let code_file = dir.join("large_module.rs");
 
-        let mut raw = String::with_capacity(190_000);
-        for pkg in 0..1_000 {
-            raw.push_str("[[package]]\n");
-            raw.push_str(&format!("name = \"crate-{pkg}\"\n"));
-            raw.push_str("version = \"0.1.0\"\n");
-            raw.push_str("source = \"registry+https://github.com/rust-lang/crates.io-index\"\n");
-            raw.push_str("checksum = \"abcdef0123456789abcdef0123456789\"\n\n");
+        let mut raw = String::with_capacity(80_000);
+        for i in 0..1_200 {
+            raw.push_str(&format!("pub fn func_{i}() -> usize {{ {i} }}\n"));
         }
         let orig_lines = raw.lines().count();
-        assert!(orig_lines >= 6_000);
-        std::fs::write(&lock_file, &raw).unwrap();
+        assert_eq!(orig_lines, 1_200);
+        std::fs::write(&code_file, &raw).unwrap();
 
         let docs = gitfleet_docs::DocsService::new();
-        let cap = docs.open_document(&lock_file).unwrap();
-        let prebuilt = crate::preview::PreviewState::from_file_prewarmed(
-            &lock_file,
-            Some(&cap.content),
-            crate::theme::ThemeMode::Dark,
-        );
+        let cap = docs.open_document(&code_file).unwrap();
 
-        let mut tab = StudioTab::new_empty(1, "Cargo.lock".into());
+        let mut tab = StudioTab::new_empty(1, "large_module.rs".into());
         tab.mode = DetachedViewMode::Edit;
-        let t0 = std::time::Instant::now();
-        assert!(tab.apply_loaded_doc_with_preview(
-            &lock_file,
-            Some(Path::new(&dir)),
-            Some(cap),
-            Some(prebuilt),
-        ));
+        assert!(tab.apply_loaded_doc(&code_file, Some(Path::new(&dir)), Some(cap)));
+        assert!(!tab.supports_preview());
         tab.hydrate_active_mode();
 
-        // Must enter fast virtualized mode without feeding 6,000+ lines into `cosmic_text::Editor`
-        assert!(tab.is_large_file);
-        assert!(tab.is_virtualized_code_mode());
-        assert_eq!(tab.total_line_count(), orig_lines);
-        assert!(
-            t0.elapsed() < std::time::Duration::from_millis(50),
-            "hydrating 6,000-line Cargo.lock should be O(1), took {:?}",
-            t0.elapsed()
-        );
+        // Full file is loaded directly into editor_content and immediately editable (no slice/preview fallback)
+        assert!(tab.editor_hydrated);
+        assert_eq!(tab.editor_content.line_count(), orig_lines);
+        assert_eq!(tab.active_full_text().unwrap(), raw);
 
-        // Open a 300-line edit window around line 3,001, insert a comment, commit slice, and verify full file
-        tab.open_edit_window_around(3_000);
-        assert!(!tab.is_virtualized_code_mode());
-        assert!(tab.editor_content.line_count() <= 305);
         tab.editor_content
-            .perform(text_editor::Action::Edit(text_editor::Edit::Insert('#')));
-        tab.commit_edit_window(crate::theme::ThemeMode::Dark);
-        assert!(tab.is_virtualized_code_mode());
+            .perform(text_editor::Action::Edit(text_editor::Edit::Insert('/')));
+        tab.recompute_dirty_flag();
         assert!(tab.dirty);
-        let merged = tab.active_full_text().unwrap();
-        assert_eq!(merged.lines().count(), orig_lines);
-        assert!(merged.lines().nth(3_000).unwrap().starts_with('#'));
+        assert!(tab.active_full_text().unwrap().starts_with('/'));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

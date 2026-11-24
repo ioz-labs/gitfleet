@@ -1124,7 +1124,6 @@ pub(crate) fn render_image_diff<'a>(
         )
     };
 
-    // 1. Mode & Zoom Toolbar (matching RepoFlock screenshot #1)
     let mode_btn = |label: &'static str, mode: ImageDiffMode| -> Element<'a, ImageDiffMsg> {
         button(
             text(label)

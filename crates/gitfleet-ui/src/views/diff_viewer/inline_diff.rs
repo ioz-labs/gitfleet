@@ -1,4 +1,4 @@
-//! SmartGit-style intra-line token diff computation using prefix/suffix trimming
+//! Intra-line token diff computation using prefix/suffix trimming
 //! and identifier-weighted longest common subsequence (LCS).
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +94,7 @@ pub(crate) fn full_changed_spans(line: &str) -> Vec<InlineSpan> {
     }
 }
 
-/// Computes SmartGit-style intra-line token diff highlights for a modified `(old, new)` line pair
+/// Computes intra-line token diff highlights for a modified `(old, new)` line pair
 /// using prefix/suffix trimming + identifier-weighted LCS.
 pub(crate) fn compute_inline_diff(old: &str, new: &str) -> (Vec<InlineSpan>, Vec<InlineSpan>) {
     if old == new {

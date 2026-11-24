@@ -81,11 +81,20 @@ impl GitFleetApp {
                 let p_clone = path.clone();
                 let (doc, prebuilt_preview) = tokio::task::spawn_blocking(move || {
                     let doc = svc.docs.open_document(&p_clone).ok();
-                    let prebuilt = crate::preview::PreviewState::from_file_prewarmed(
-                        &p_clone,
-                        doc.as_ref().map(|c| c.content.as_str()),
-                        theme_mode,
-                    );
+                    let needs_preview = doc.is_none()
+                        || StudioTab::is_rich_preview_target(
+                            Some(p_clone.as_path()),
+                            CodeLanguage::from_path(&p_clone),
+                        );
+                    let prebuilt = if needs_preview {
+                        crate::preview::PreviewState::from_file_prewarmed(
+                            &p_clone,
+                            doc.as_ref().map(|c| c.content.as_str()),
+                            theme_mode,
+                        )
+                    } else {
+                        crate::preview::PreviewState::Empty
+                    };
                     (doc, crate::preview::PrebuiltPreviewSlot::new(prebuilt))
                 })
                 .await
@@ -671,18 +680,13 @@ impl GitFleetApp {
                     tab.doc_version = Some(res.version.clone());
                     tab.line_ending = res.line_ending;
                     tab.encoding = res.encoding;
-                    tab.is_large_file =
-                        crate::views::code_editor::is_large_editor_text(&res.content);
-                    tab.total_raw_lines = res.content.lines().count().max(1);
-                    tab.working_full_text = None;
                     tab.raw_text = Some(res.content.clone());
                     tab.dirty = false;
                     tab.disk_conflict = false;
                     tab.preview_hydrated = false;
                     tab.refresh_git_line_marks();
-                    if tab.mode == DetachedViewMode::Preview
-                        || v.split_right_preview
-                        || tab.is_virtualized_code_mode()
+                    if tab.supports_preview()
+                        && (tab.mode == DetachedViewMode::Preview || v.split_right_preview)
                     {
                         tab.ensure_preview_hydrated();
                     }

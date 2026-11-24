@@ -269,10 +269,10 @@ pub fn avatar_box(color: Color) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-/// Computes SmartGit-style 2-letter uppercase author initials and a deterministic vibrant badge color.
+/// Computes 2-letter uppercase author initials and a deterministic vibrant badge color.
 pub fn author_avatar_info(author: &str) -> (String, Color) {
     const AVATAR_PALETTE: [Color; 8] = [
-        Color::from_rgb(0.659, 0.333, 0.788), // SmartGit Orchid Purple (#a855c9)
+        Color::from_rgb(0.659, 0.333, 0.788), // Orchid Purple (#a855c9)
         Color::from_rgb(0.196, 0.494, 0.808), // Ocean Blue
         Color::from_rgb(0.165, 0.620, 0.451), // Emerald
         Color::from_rgb(0.804, 0.478, 0.165), // Amber Orange
@@ -436,7 +436,7 @@ pub fn repo_row_btn(p: Palette, selected: bool) -> impl Fn(&Theme, button::Statu
     }
 }
 
-/// Calm, VS Code / SmartGit-inspired checkbox for sidebar trees (muted border when unchecked,
+/// Calm, VS Code-inspired checkbox for sidebar trees (muted border when unchecked,
 /// accent highlight when checked or hovered).
 pub fn tree_checkbox(p: Palette) -> impl Fn(&Theme, checkbox::Status) -> checkbox::Style {
     move |_, status| {

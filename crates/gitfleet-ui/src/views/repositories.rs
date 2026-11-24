@@ -94,7 +94,7 @@ fn changed_count_badge<'a>(count: usize, fg: Color, bg: Color) -> Element<'a, Me
     .into()
 }
 
-/// SmartGit-style 3-layer cool-slate repository disk stack with high-contrast overlaid
+/// 3-layer cool-slate repository disk stack with high-contrast overlaid
 /// Push (`^` orange) / Pull (`v` green) chevrons and a distinct bottom-right amber dirty badge.
 struct RepoSyncIcon {
     tone: RepoDiskTone,
@@ -1374,7 +1374,7 @@ impl GitFleetApp {
             );
         }
 
-        // Render nested groups tree followed directly by ungrouped repos at root level (SmartGit-style)
+        // Render nested groups tree followed directly by ungrouped repos at root level
         let mut max_row_w: f32 = 120.0;
         self.render_group_subtree(
             &group_tree,

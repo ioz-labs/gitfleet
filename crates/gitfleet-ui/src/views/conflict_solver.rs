@@ -106,7 +106,7 @@ fn render_common_lines<'a>(
 }
 
 impl GitFleetApp {
-    /// Interactive SmartGit-style Conflict Solver rendered in the bottom viewer when a conflicted
+    /// Interactive Conflict Solver rendered in the bottom viewer when a conflicted
     /// file is selected. Supports hunk-by-hunk Ours / Theirs / Both / Custom editing, diff3 base
     /// inspection, Prev/Next conflict navigation, and one-click Save & Mark Resolved (`git add`).
     pub(crate) fn view_conflict_solver(&self, p: Palette) -> Element<'_, Message> {

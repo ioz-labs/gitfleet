@@ -26,7 +26,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 pub(crate) fn change_colors(kind: DiffChangeKind, p: Palette) -> (Color, Color, Color) {
-    // Returns (soft_bg, accent_border, text_fg) using SmartGit-aligned semantic tokens
+    // Returns (soft_bg, accent_border, text_fg) using semantic diff tokens
     match kind {
         DiffChangeKind::Added => (p.diff_add_line_bg, p.git_added, p.text_primary),
         DiffChangeKind::Removed => (p.diff_del_line_bg, p.git_deleted, p.text_primary),
@@ -42,7 +42,7 @@ pub(crate) fn change_colors(kind: DiffChangeKind, p: Palette) -> (Color, Color, 
 }
 
 /// Computes `(left_w, conn_x_rel, right_x_rel, right_w)` for Side-by-Side viewport width `vw`,
-/// carving out `CONNECTOR_W` in the center for SmartGit cubic-Bezier diff connectors.
+/// carving out `CONNECTOR_W` in the center for cubic-Bezier diff connectors.
 #[inline]
 fn split_pane_columns(vw: f32) -> (f32, f32, f32, f32) {
     let vw = vw.max(240.0);
@@ -65,7 +65,7 @@ pub(crate) struct DiffRowSelConfig {
     pub(crate) sel_overlay: Color,
 }
 
-/// Single fixed-height diff row widget that paints selective top/bottom borders, 2px SmartGit
+/// Single fixed-height diff row widget that paints selective top/bottom borders, 2px
 /// insertion/deletion seam hairlines, and character-accurate drag-to-select highlights.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn diff_code_row_box<'a>(
@@ -499,7 +499,7 @@ impl canvas::Program<Message> for DiffConnectorCanvas {
 
 /// Unified Side-by-Side scrollable host with **one** vertical scrollbar and **one** horizontal
 /// scrollbar that pans both Left and Right code columns simultaneously while keeping sticky
-/// line-number gutters, the 28px SmartGit Bezier connector channel, and full-width `"N lines hidden"`
+/// line-number gutters, the 28px Bezier connector channel, and full-width `"N lines hidden"`
 /// context bars pinned horizontally inside the viewport.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn split_diff_scroll<'a>(
@@ -1184,9 +1184,9 @@ pub(crate) struct SplitSideVisual<'a> {
 }
 
 /// Single fixed-height (`DIFF_LINE_H`) Side-by-Side paired row widget.
-/// Renders Left and Right side-by-side around the 28px SmartGit Bezier connector channel,
+/// Renders Left and Right side-by-side around the 28px Bezier connector channel,
 /// with sticky line-number gutters, hardware-scissored horizontal scrolling for both code cells,
-/// SmartGit 2px insertion/deletion seam hairlines, and independent drag-to-select on Left and Right.
+/// 2px insertion/deletion seam hairlines, and independent drag-to-select on Left and Right.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn split_paired_code_row<'a>(
     row_idx: usize,
@@ -1398,7 +1398,7 @@ pub(crate) fn split_paired_code_row<'a>(
                     Background::Color(self.p.border_subtle),
                 );
 
-                // SmartGit 2px insertion/deletion seam hairline on opposite side of pure Added/Removed blocks
+                // 2px insertion/deletion seam hairline on opposite side of pure Added/Removed blocks
                 if let Some(c) = seam_c {
                     renderer.fill_quad(
                         flat_quad(Rectangle {
@@ -1510,7 +1510,7 @@ pub(crate) fn split_paired_code_row<'a>(
                 self.right_child_idx,
             );
 
-            // Center 28px SmartGit connector channel background + 1px side borders
+            // Center 28px connector channel background + 1px side borders
             renderer.fill_quad(
                 flat_quad(Rectangle {
                     x: vp_x + conn_x,
@@ -1775,7 +1775,7 @@ pub(crate) enum OverviewSide {
     Unified,
 }
 
-/// Interactive SmartGit edge diff-position overview bar showing Added/Removed/Modified markers,
+/// Interactive edge diff-position overview bar showing Added/Removed/Modified markers,
 /// a live viewport position indicator box, and click/drag-to-jump navigation.
 pub(crate) struct DiffOverviewBar {
     pub(crate) spans: Vec<ConnectorSpan>,

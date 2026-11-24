@@ -311,9 +311,6 @@ pub(crate) enum DetachedAction {
     // Direct Code Editor
     EditorAction(text_editor::Action),
     EditorScrolled(scrollable::Viewport),
-    VirtualCodeLineClicked(usize),
-    OpenEditWindowAround(usize),
-    CommitEditWindow,
     InsertIndent,
     OutdentSelection,
     SmartEnter,
@@ -416,12 +413,6 @@ pub(crate) struct StudioTab {
     pub(crate) line_ending: LineEnding,
     pub(crate) trailing_newline: bool,
     pub(crate) raw_text: Option<String>,
-    pub(crate) working_full_text: Option<String>,
-    pub(crate) is_large_file: bool,
-    pub(crate) total_raw_lines: usize,
-    pub(crate) virtual_cursor_line: usize,
-    pub(crate) last_virtual_line_click: Option<(usize, Instant)>,
-    pub(crate) edit_window: Option<(usize, usize)>,
     pub(crate) editor_hydrated: bool,
     pub(crate) editor_content: text_editor::Content,
     pub(crate) editor_scroll: crate::views::code_editor::CodeScrollState,
@@ -486,12 +477,6 @@ impl StudioTab {
             line_ending: LineEnding::Lf,
             trailing_newline: true,
             raw_text: None,
-            working_full_text: None,
-            is_large_file: false,
-            total_raw_lines: 1,
-            virtual_cursor_line: 0,
-            last_virtual_line_click: None,
-            edit_window: None,
             editor_hydrated: false,
             editor_content: text_editor::Content::new(),
             editor_scroll: crate::views::code_editor::CodeScrollState::new(),
@@ -584,14 +569,8 @@ impl StudioTab {
         self.last_typing_snapshot_at = if coalesce_typing { Some(now) } else { None };
     }
 
-    pub(crate) fn is_virtualized_code_mode(&self) -> bool {
-        self.is_large_file && self.edit_window.is_none()
-    }
-
     pub(crate) fn total_line_count(&self) -> usize {
-        if self.is_large_file {
-            self.total_raw_lines.max(1)
-        } else if self.editor_hydrated {
+        if self.editor_hydrated {
             self.editor_content.line_count().max(1)
         } else {
             self.raw_text
@@ -602,97 +581,17 @@ impl StudioTab {
     }
 
     pub(crate) fn cursor_display_pos(&self) -> (usize, usize) {
-        if self.is_virtualized_code_mode() {
-            (self.virtual_cursor_line, 0)
-        } else if let Some((win_start, _)) = self.edit_window {
-            let (l, c) = self.editor_content.cursor_position();
-            (win_start + l, c)
-        } else {
-            self.editor_content.cursor_position()
-        }
+        self.editor_content.cursor_position()
     }
 
     pub(crate) fn active_full_text(&self) -> Option<String> {
-        if !self.is_large_file {
-            if self.editor_hydrated {
-                return Some(format_editor_text_for_save(
-                    &self.editor_content,
-                    self.trailing_newline,
-                ));
-            }
-            return self.raw_text.clone();
-        }
-        let base = self.working_full_text.as_deref().or(self.raw_text.as_deref())?;
-        if let Some((win_start, win_end)) = self.edit_window
-            && self.editor_hydrated
-        {
-            let slice_edited = editor_buffer_text(&self.editor_content);
-            return Some(splice_window_into_text(
-                base,
+        if self.editor_hydrated {
+            return Some(format_editor_text_for_save(
+                &self.editor_content,
                 self.trailing_newline,
-                win_start,
-                win_end,
-                &slice_edited,
             ));
         }
-        Some(base.to_string())
-    }
-
-    pub(crate) fn open_edit_window_around(&mut self, center_line: usize) {
-        if !self.is_large_file {
-            self.ensure_editor_hydrated();
-            return;
-        }
-        if let Some(full) = self.active_full_text() {
-            self.total_raw_lines = full.lines().count().max(1);
-            self.working_full_text = Some(full);
-        }
-        let Some(base) = self.working_full_text.as_deref().or(self.raw_text.as_deref()) else {
-            return;
-        };
-        let all_lines: Vec<&str> = base.lines().collect();
-        let total = all_lines.len().max(1);
-        let clamped_center = center_line.min(total.saturating_sub(1));
-        const HALF_WIN: usize = 150;
-        let win_start = clamped_center.saturating_sub(HALF_WIN);
-        let win_end = (clamped_center + HALF_WIN).min(total).max(win_start + 1);
-        let mut slice_str = if all_lines.is_empty() {
-            String::new()
-        } else {
-            all_lines[win_start..win_end].join("\n")
-        };
-        if slice_str.ends_with('\n') {
-            // `cosmic_text::BidiParagraphs` treats a final `\n` as a line terminator rather than
-            // a trailing empty line; adding one `\n` preserves exact `win_end - win_start` lines.
-            slice_str.push('\n');
-        }
-        self.editor_content = text_editor::Content::with_text(&slice_str);
-        self.edit_window = Some((win_start, win_end));
-        self.editor_hydrated = true;
-        self.virtual_cursor_line = clamped_center;
-        let rel_ln = clamped_center.saturating_sub(win_start);
-        super::io::jump_editor_to_span(&mut self.editor_content, rel_ln, 0, 0);
-    }
-
-    pub(crate) fn commit_edit_window(&mut self, theme_mode: ThemeMode) {
-        if !self.is_large_file || self.edit_window.is_none() {
-            return;
-        }
-        if let Some(full) = self.active_full_text() {
-            let (abs_ln, _) = self.cursor_display_pos();
-            self.total_raw_lines = full.lines().count().max(1);
-            self.virtual_cursor_line = abs_ln.min(self.total_raw_lines.saturating_sub(1));
-            if let Some(path) = self.file_path.as_deref() {
-                self.preview_state =
-                    PreviewState::from_file_prewarmed(path, Some(&full), theme_mode);
-                self.preview_hydrated = true;
-            }
-            self.working_full_text = Some(full);
-        }
-        self.edit_window = None;
-        self.editor_content = text_editor::Content::new();
-        self.editor_hydrated = true;
-        self.recompute_dirty_flag();
+        self.raw_text.clone()
     }
 
     pub(crate) fn jump_to_line_and_scroll(
@@ -702,26 +601,7 @@ impl StudioTab {
         col_end: usize,
         cfg: crate::views::code_editor::NumberedEditorConfig,
     ) -> Task<Message> {
-        if self.is_virtualized_code_mode() {
-            self.virtual_cursor_line = line_idx.min(self.total_raw_lines.saturating_sub(1));
-            return self
-                .editor_scroll
-                .scroll_to_visual_row_centered(self.virtual_cursor_line, cfg);
-        }
-        if let Some((win_start, win_end)) = self.edit_window {
-            if line_idx < win_start || line_idx >= win_end {
-                self.open_edit_window_around(line_idx);
-            }
-            let cur_start = self.edit_window.map(|(s, _)| s).unwrap_or(0);
-            let rel_ln = line_idx.saturating_sub(cur_start);
-            super::io::jump_editor_to_span(&mut self.editor_content, rel_ln, col_start, col_end);
-            return crate::views::code_editor::scroll_numbered_editor_to_line(
-                &self.editor_content,
-                &mut self.editor_scroll,
-                rel_ln,
-                cfg.with_line_offset(cur_start),
-            );
-        }
+        self.ensure_editor_hydrated();
         super::io::jump_editor_to_span(&mut self.editor_content, line_idx, col_start, col_end);
         crate::views::code_editor::scroll_numbered_editor_to_line(
             &self.editor_content,
@@ -766,13 +646,14 @@ impl StudioTab {
     }
 
     pub(crate) fn refresh_live_split_preview(&mut self) {
+        if !self.supports_preview() {
+            return;
+        }
         let live_text = self.active_full_text();
         let virtual_path = match self.file_path.clone() {
             Some(p) => p,
             None => PathBuf::from(match self.language {
                 CodeLanguage::Markdown => "untitled.md",
-                CodeLanguage::Json => "untitled.json",
-                CodeLanguage::Html => "untitled.html",
                 _ => "untitled.txt",
             }),
         };
@@ -781,10 +662,30 @@ impl StudioTab {
         self.preview_hydrated = true;
     }
 
-    pub(crate) fn has_preview_available(&self) -> bool {
-        self.file_path.is_some()
-            || self.is_untitled
-            || !matches!(self.preview_state, PreviewState::Empty)
+    /// Returns whether an editable file has a true rich visual preview (Markdown, SVG, CSV/TSV).
+    /// Plain code, config, JSON, and text files are edited directly in Code mode without Preview.
+    pub(crate) fn is_rich_preview_target(path: Option<&Path>, language: CodeLanguage) -> bool {
+        if language == CodeLanguage::Markdown {
+            return true;
+        }
+        let Some(ext) = path
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+        else {
+            return false;
+        };
+        matches!(ext.as_str(), "md" | "markdown" | "mdx" | "svg" | "csv" | "tsv")
+    }
+
+    /// Returns whether this tab offers a Preview mode in GitFleet Studio.
+    /// Non-editable files (images, binaries, read-only snapshots) keep Preview;
+    /// editable files only offer Preview for rich visual formats (Markdown, SVG, CSV/TSV).
+    pub(crate) fn supports_preview(&self) -> bool {
+        if !self.is_editable() {
+            return self.file_path.is_some() || !matches!(self.preview_state, PreviewState::Empty);
+        }
+        Self::is_rich_preview_target(self.file_path.as_deref(), self.language)
     }
 
     pub(crate) fn rebuild_diff_cache(&mut self, theme_mode: ThemeMode) {
@@ -802,18 +703,8 @@ impl StudioTab {
         self.preview_editor = text_editor::Content::new();
     }
 
-    /// Lazily shapes `editor_content` only when entering Code/Edit view (avoids redundant cosmic_text work).
-    /// For large files (`is_large_file && edit_window.is_none()`), bypasses `Content::with_text` completely
-    /// (`0.0ms` UI thread) and ensures `preview_state` is ready for virtualized code rendering.
+    /// Lazily hydrates `editor_content` with the full file contents when entering Code/Edit view.
     pub(crate) fn ensure_editor_hydrated(&mut self) {
-        if self.is_large_file && self.edit_window.is_none() {
-            self.ensure_preview_hydrated();
-            if !self.editor_hydrated {
-                self.editor_content = text_editor::Content::new();
-                self.editor_hydrated = true;
-            }
-            return;
-        }
         if self.editor_hydrated {
             return;
         }
@@ -825,9 +716,14 @@ impl StudioTab {
         self.editor_hydrated = true;
     }
 
-    /// Lazily parses `PreviewState` and shapes `preview_editor` only when viewing Preview mode.
+    /// Lazily parses `PreviewState` when viewing Preview mode on a preview-capable tab.
     pub(crate) fn ensure_preview_hydrated(&mut self) {
         if self.preview_hydrated {
+            return;
+        }
+        if !self.supports_preview() {
+            self.preview_state = PreviewState::Empty;
+            self.preview_hydrated = true;
             return;
         }
         if let Some(path) = self.file_path.as_deref() {
@@ -846,6 +742,10 @@ impl StudioTab {
     }
 
     pub(crate) fn hydrate_active_mode(&mut self) {
+        if self.mode == DetachedViewMode::Preview && self.is_editable() && !self.supports_preview()
+        {
+            self.mode = DetachedViewMode::Edit;
+        }
         match self.mode {
             DetachedViewMode::Edit => self.ensure_editor_hydrated(),
             DetachedViewMode::Preview => self.ensure_preview_hydrated(),
@@ -883,10 +783,6 @@ impl StudioTab {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_typing_snapshot_at = None;
-        self.working_full_text = None;
-        self.edit_window = None;
-        self.virtual_cursor_line = 0;
-        self.last_virtual_line_click = None;
         self.editor_hydrated = false;
         self.preview_hydrated = false;
 
@@ -897,10 +793,11 @@ impl StudioTab {
                 self.encoding = cap.encoding;
                 self.line_ending = cap.line_ending;
                 self.trailing_newline = cap.content.ends_with('\n');
-                self.is_large_file = crate::views::code_editor::is_large_editor_text(&cap.content);
-                self.total_raw_lines = cap.content.lines().count().max(1);
                 self.raw_text = Some(cap.content);
-                if let Some(prev) = prebuilt_preview {
+                if self.supports_preview()
+                    && let Some(prev) = prebuilt_preview
+                    && !matches!(prev, PreviewState::Empty)
+                {
                     self.preview_state = prev;
                     self.preview_hydrated = true;
                 } else {
@@ -914,8 +811,6 @@ impl StudioTab {
                 self.doc_id = None;
                 self.doc_version = None;
                 self.raw_text = None;
-                self.is_large_file = false;
-                self.total_raw_lines = 1;
                 if let Some(prev) = prebuilt_preview {
                     self.preview_state = prev;
                     self.preview_hydrated = true;
@@ -1395,10 +1290,11 @@ impl DetachedViewerState {
                 tab.encoding = app.open_doc_encoding;
                 tab.line_ending = app.open_doc_line_ending;
                 tab.trailing_newline = raw.ends_with('\n');
-                tab.is_large_file = crate::views::code_editor::is_large_editor_text(&raw);
-                tab.total_raw_lines = raw.lines().count().max(1);
                 tab.raw_text = Some(raw);
-                if app.preview_hydrated && !matches!(app.preview_state, PreviewState::Empty) {
+                if tab.supports_preview()
+                    && app.preview_hydrated
+                    && !matches!(app.preview_state, PreviewState::Empty)
+                {
                     tab.preview_state = app.preview_state.clone_snapshot();
                     tab.preview_hydrated = true;
                 }
@@ -1432,9 +1328,13 @@ impl DetachedViewerState {
             tab.language = app.open_doc_language;
         }
 
+        let allow_preview = !(can_edit || tab.loading_file)
+            || StudioTab::is_rich_preview_target(tab.file_path.as_deref(), tab.language);
+
         tab.mode = match app.bottom_mode {
             BottomViewMode::Edit if can_edit || tab.loading_file => DetachedViewMode::Edit,
-            BottomViewMode::Preview => DetachedViewMode::Preview,
+            BottomViewMode::Preview if allow_preview => DetachedViewMode::Preview,
+            BottomViewMode::Preview if can_edit || tab.loading_file => DetachedViewMode::Edit,
             BottomViewMode::UnifiedDiff if !tab.diff_parsed.raw.is_empty() => {
                 DetachedViewMode::UnifiedDiff
             }
@@ -1606,6 +1506,9 @@ impl DetachedViewerState {
         let is_csv = is_csv_diff_path(rel_path);
         let has_diff = !tab.diff_parsed.raw.is_empty() || state.initial_diff.is_some();
 
+        let allow_preview = !(can_edit || tab.loading_file)
+            || StudioTab::is_rich_preview_target(tab.file_path.as_deref(), tab.language);
+
         tab.mode = if prefer_edit {
             if can_edit || tab.loading_file {
                 DetachedViewMode::Edit
@@ -1615,7 +1518,8 @@ impl DetachedViewerState {
         } else {
             match app.bottom_mode {
                 BottomViewMode::Edit if can_edit || tab.loading_file => DetachedViewMode::Edit,
-                BottomViewMode::Preview => DetachedViewMode::Preview,
+                BottomViewMode::Preview if allow_preview => DetachedViewMode::Preview,
+                BottomViewMode::Preview if can_edit || tab.loading_file => DetachedViewMode::Edit,
                 BottomViewMode::ImageDiff
                     if is_img && (tab.diff_image.is_some() || state.initial_diff.is_some()) =>
                 {
@@ -1939,52 +1843,4 @@ impl DetachedViewerState {
         }
         scored.into_iter().take(limit).map(|(_, c)| c).collect()
     }
-}
-
-fn splice_window_into_text(
-    base: &str,
-    trailing_newline: bool,
-    win_start: usize,
-    win_end: usize,
-    replacement: &str,
-) -> String {
-    let base_lines: Vec<&str> = base.lines().collect();
-    let total = base_lines.len();
-    let clamped_start = win_start.min(total);
-    let clamped_end = win_end.min(total).max(clamped_start);
-    let mut out = String::with_capacity(base.len() + replacement.len().min(4096));
-    let mut first = true;
-
-    for &line in &base_lines[..clamped_start] {
-        if !first {
-            out.push('\n');
-        }
-        out.push_str(line);
-        first = false;
-    }
-    if replacement.is_empty() {
-        if !first {
-            out.push('\n');
-        }
-        first = false;
-    } else {
-        for line in replacement.split('\n') {
-            if !first {
-                out.push('\n');
-            }
-            out.push_str(line);
-            first = false;
-        }
-    }
-    for &line in &base_lines[clamped_end..] {
-        if !first {
-            out.push('\n');
-        }
-        out.push_str(line);
-        first = false;
-    }
-    if trailing_newline && (!out.is_empty() || !base_lines.is_empty()) {
-        out.push('\n');
-    }
-    out
 }

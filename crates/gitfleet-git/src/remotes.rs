@@ -35,7 +35,7 @@ impl GitService {
         .await
     }
 
-    /// Executes a SmartGit-grade Pull / Sync workflow:
+    /// Executes a safe Pull / Sync workflow:
     /// 1. When `auto_stash` is `true` and the working tree has staged/unstaged/untracked changes,
     ///    stashes them (`-u`) before pulling.
     /// 2. Runs `git pull` with `--ff-only`, `--rebase`, or `--no-rebase`.
@@ -210,7 +210,7 @@ impl GitService {
         .await
     }
 
-    /// Executes SmartGit's "Push, then Pull" sync order: pushes local commits first (publishing
+    /// Executes a "Push, then Pull" sync order: pushes local commits first (publishing
     /// `-u origin <branch>` if needed), then pulls incoming upstream commits (with optional Auto-Stash).
     pub async fn sync_push_then_pull(
         &self,

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (optional; defaults to Cargo.toml version, e.g. 0.7.1)"
+        description: "Release version (optional; defaults to Cargo.toml version, e.g. 0.7.2)"
         required: false
         default: ""
       publish:

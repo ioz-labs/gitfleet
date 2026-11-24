@@ -168,6 +168,16 @@ impl GitFleetApp {
                 Task::none()
             }
             DetachedAction::ToggleSplitPreview => {
+                let can_split = v
+                    .active_tab()
+                    .is_some_and(|t| t.is_editable() && t.supports_preview());
+                if !can_split {
+                    v.split_right_preview = false;
+                    v.status_is_error = false;
+                    v.status_note =
+                        "Live preview is available for Markdown, SVG, and CSV/TSV files".into();
+                    return Task::none();
+                }
                 v.split_right_preview = !v.split_right_preview;
                 if v.split_right_preview
                     && let Some(tab) = v.active_tab_mut()
@@ -566,6 +576,9 @@ impl GitFleetApp {
             // ── View Mode & Diff Controls ────────────────────────────────────
             DetachedAction::SetMode(mode) => {
                 if let Some(tab) = v.active_tab_mut() {
+                    if mode == DetachedViewMode::Preview && !tab.supports_preview() {
+                        return Task::none();
+                    }
                     tab.mode = mode;
                     if matches!(
                         mode,
@@ -1027,6 +1040,11 @@ impl GitFleetApp {
                     );
                     if !ok && tab.mode == DetachedViewMode::Edit {
                         tab.mode = DetachedViewMode::Preview;
+                    } else if ok
+                        && tab.mode == DetachedViewMode::Preview
+                        && !tab.supports_preview()
+                    {
+                        tab.mode = DetachedViewMode::Edit;
                     }
                     if payload.jump_match.is_some() && ok {
                         tab.mode = DetachedViewMode::Edit;
@@ -1214,7 +1232,7 @@ impl GitFleetApp {
                     if is_edit {
                         tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
-                        if split_open {
+                        if split_open && tab.supports_preview() {
                             tab.refresh_live_split_preview();
                         }
                     }
@@ -1230,98 +1248,6 @@ impl GitFleetApp {
             DetachedAction::EditorScrolled(vp) => {
                 if let Some(tab) = v.active_tab_mut() {
                     tab.editor_scroll.on_scroll(vp);
-                }
-                Task::none()
-            }
-            DetachedAction::VirtualCodeLineClicked(line_idx) => {
-                const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
-                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
-                    v.editor_font_size,
-                    v.editor_word_wrap,
-                );
-                let mut opened_slice = false;
-                let mut scroll_t = Task::none();
-                if let Some(tab) = v.active_tab_mut() {
-                    let now = Instant::now();
-                    let is_double = tab.last_virtual_line_click.is_some_and(|(prev_ln, ts)| {
-                        prev_ln == line_idx && now.duration_since(ts) <= DOUBLE_CLICK_WINDOW
-                    });
-                    tab.virtual_cursor_line = line_idx.min(tab.total_raw_lines.saturating_sub(1));
-                    if is_double {
-                        tab.last_virtual_line_click = None;
-                        tab.open_edit_window_around(line_idx);
-                        let cur_start = tab.edit_window.map(|(s, _)| s).unwrap_or(0);
-                        let rel_ln = line_idx.saturating_sub(cur_start);
-                        scroll_t = crate::views::code_editor::scroll_numbered_editor_to_line(
-                            &tab.editor_content,
-                            &mut tab.editor_scroll,
-                            rel_ln,
-                            cfg.with_line_offset(cur_start),
-                        );
-                        opened_slice = true;
-                    } else {
-                        tab.last_virtual_line_click = Some((line_idx, now));
-                    }
-                }
-                if opened_slice {
-                    v.status_is_error = false;
-                    v.status_note = format!(
-                        "Editing slice around Ln {} (Ctrl+S saves full file)",
-                        line_idx + 1
-                    );
-                }
-                scroll_t
-            }
-            DetachedAction::OpenEditWindowAround(line_idx) => {
-                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
-                    v.editor_font_size,
-                    v.editor_word_wrap,
-                );
-                let scroll_t = if let Some(tab) = v.active_tab_mut() {
-                    tab.open_edit_window_around(line_idx);
-                    let cur_start = tab.edit_window.map(|(s, _)| s).unwrap_or(0);
-                    let rel_ln = line_idx.saturating_sub(cur_start);
-                    Some(crate::views::code_editor::scroll_numbered_editor_to_line(
-                        &tab.editor_content,
-                        &mut tab.editor_scroll,
-                        rel_ln,
-                        cfg.with_line_offset(cur_start),
-                    ))
-                } else {
-                    None
-                };
-                if let Some(t) = scroll_t {
-                    v.status_is_error = false;
-                    v.status_note = format!(
-                        "Editing slice around Ln {} (Ctrl+S saves full file)",
-                        line_idx + 1
-                    );
-                    return t;
-                }
-                Task::none()
-            }
-            DetachedAction::CommitEditWindow => {
-                let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
-                    v.editor_font_size,
-                    false,
-                );
-                let committed = if let Some(tab) = v.active_tab_mut() {
-                    tab.commit_edit_window(theme_mode);
-                    let target_ln = tab.virtual_cursor_line;
-                    let scroll_t = tab
-                        .editor_scroll
-                        .scroll_to_visual_row_centered(target_ln, cfg);
-                    Some((tab.total_raw_lines, scroll_t))
-                } else {
-                    None
-                };
-                if let Some((total_lines, scroll_t)) = committed {
-                    v.recompute_in_file_matches(true);
-                    v.status_is_error = false;
-                    v.status_note = format!(
-                        "Returned to fast full-file view ({total_lines} lines)"
-                    );
-                    return scroll_t;
                 }
                 Task::none()
             }
@@ -1345,7 +1271,7 @@ impl GitFleetApp {
                         jump_editor_to_span(&mut tab.editor_content, prev.line, prev.col, prev.col);
                         tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
-                        if split_open {
+                        if split_open && tab.supports_preview() {
                             tab.refresh_live_split_preview();
                         }
                         did_undo = true;
@@ -1394,7 +1320,7 @@ impl GitFleetApp {
                         jump_editor_to_span(&mut tab.editor_content, next.line, next.col, next.col);
                         tab.recompute_dirty_flag();
                         tab.preview_hydrated = false;
-                        if split_open {
+                        if split_open && tab.supports_preview() {
                             tab.refresh_live_split_preview();
                         }
                         did_redo = true;
@@ -1464,7 +1390,7 @@ impl GitFleetApp {
                     };
                     tab.recompute_dirty_flag();
                     tab.preview_hydrated = false;
-                    if split_open {
+                    if split_open && tab.supports_preview() {
                         tab.refresh_live_split_preview();
                     }
                     task
@@ -1825,7 +1751,13 @@ impl GitFleetApp {
                     tab.indent_spaces = lang.default_indent_spaces();
                     tab.preview_state.set_code_language(lang);
                     tab.rebuild_diff_cache(theme_mode);
-                    if split_open {
+                    if tab.mode == DetachedViewMode::Preview
+                        && tab.is_editable()
+                        && !tab.supports_preview()
+                    {
+                        tab.mode = DetachedViewMode::Edit;
+                        tab.ensure_editor_hydrated();
+                    } else if split_open && tab.supports_preview() {
                         tab.refresh_live_split_preview();
                     }
                 }
@@ -1866,7 +1798,7 @@ impl GitFleetApp {
             DetachedAction::OpenInFileFind { show_replace } => {
                 let can_find = v
                     .active_tab()
-                    .is_some_and(|t| t.is_editable() || t.has_preview_available());
+                    .is_some_and(|t| t.is_editable() || t.supports_preview());
                 if !can_find {
                     v.status_is_error = false;
                     v.status_note = "Open a text file to search inside it".into();
@@ -1997,29 +1929,15 @@ impl GitFleetApp {
                 });
                 match res {
                     Some(Ok(updated)) => {
+                        let split_open = v.split_right_preview;
                         if let Some(tab) = v.active_tab_mut() {
-                            if tab.is_large_file {
-                                tab.total_raw_lines = updated.lines().count().max(1);
-                                tab.edit_window = None;
-                                tab.editor_content = text_editor::Content::new();
-                                tab.editor_hydrated = true;
-                                if let Some(path) = tab.file_path.as_deref() {
-                                    tab.preview_state =
-                                        crate::preview::PreviewState::from_file_prewarmed(
-                                            path,
-                                            Some(&updated),
-                                            theme_mode,
-                                        );
-                                    tab.preview_hydrated = true;
-                                }
-                                tab.working_full_text = Some(updated);
-                                tab.recompute_dirty_flag();
-                            } else {
-                                tab.record_undo_snapshot(false);
-                                tab.editor_content = text_editor::Content::with_text(&updated);
-                                tab.editor_hydrated = true;
-                                tab.recompute_dirty_flag();
-                                tab.preview_hydrated = false;
+                            tab.record_undo_snapshot(false);
+                            tab.editor_content = text_editor::Content::with_text(&updated);
+                            tab.editor_hydrated = true;
+                            tab.recompute_dirty_flag();
+                            tab.preview_hydrated = false;
+                            if split_open && tab.supports_preview() {
+                                tab.refresh_live_split_preview();
                             }
                         }
                         v.recompute_in_file_matches(true);
@@ -2055,29 +1973,15 @@ impl GitFleetApp {
                 match res {
                     Some(Ok((updated, count))) => {
                         if count > 0 {
+                            let split_open = v.split_right_preview;
                             if let Some(tab) = v.active_tab_mut() {
-                                if tab.is_large_file {
-                                    tab.total_raw_lines = updated.lines().count().max(1);
-                                    tab.edit_window = None;
-                                    tab.editor_content = text_editor::Content::new();
-                                    tab.editor_hydrated = true;
-                                    if let Some(path) = tab.file_path.as_deref() {
-                                        tab.preview_state =
-                                            crate::preview::PreviewState::from_file_prewarmed(
-                                                path,
-                                                Some(&updated),
-                                                theme_mode,
-                                            );
-                                        tab.preview_hydrated = true;
-                                    }
-                                    tab.working_full_text = Some(updated);
-                                    tab.recompute_dirty_flag();
-                                } else {
-                                    tab.record_undo_snapshot(false);
-                                    tab.editor_content = text_editor::Content::with_text(&updated);
-                                    tab.editor_hydrated = true;
-                                    tab.recompute_dirty_flag();
-                                    tab.preview_hydrated = false;
+                                tab.record_undo_snapshot(false);
+                                tab.editor_content = text_editor::Content::with_text(&updated);
+                                tab.editor_hydrated = true;
+                                tab.recompute_dirty_flag();
+                                tab.preview_hydrated = false;
+                                if split_open && tab.supports_preview() {
+                                    tab.refresh_live_split_preview();
                                 }
                             }
                             v.recompute_in_file_matches(false);

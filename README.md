@@ -15,10 +15,10 @@
   <a href="#architecture"><img src="https://img.shields.io/badge/unsafe__code-forbid-brightgreen.svg" alt="unsafe_code forbid" /></a>
 </p>
 
-Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or WebView overhead, **GitFleet** pairs a SmartGit-inspired column-aligned Cockpit & commit graph with multi-repository fleet operations, **GitFleet Studio** (an integrated multi-tab code editor & standalone diff workbench), a 3-layer semantic theme engine, visual Image/CSV diffing, an interactive conflict solver, a multi-profile encrypted secrets vault, and a built-in PTY terminal.
+Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or WebView overhead, **GitFleet** pairs a column-aligned Cockpit & commit graph with multi-repository fleet operations, **GitFleet Studio** (an integrated multi-tab code editor & standalone diff workbench), a 3-layer semantic theme engine, visual Image/CSV diffing, an interactive conflict solver, a multi-profile encrypted secrets vault, and a built-in PTY terminal.
 
 <p align="center">
-  <img src="assets/screenshots/gitfleet-workspace.jpg" alt="GitFleet Main Cockpit — column-aligned SmartGit ribbon, nested repository groups, commit graph, multi-line commit composer, and workspace status bar" />
+  <img src="assets/screenshots/gitfleet-workspace.jpg" alt="GitFleet Main Cockpit — column-aligned action ribbon, nested repository groups, commit graph, multi-line commit composer, and workspace status bar" />
 </p>
 
 ---
@@ -26,7 +26,7 @@ Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or 
 ## Highlights & Features
 
 ### Multi-Repository Fleet Cockpit
-- **SmartGit-Aligned Ribbon & 4 Workspace Layouts**: Column-aligned action Ribbon (`Pull` / `Sync` / `Push` with split-dropdown options, `Stage` / `Unstage` / `Discard` / `Save Stash` / `Apply`, `Merge` / `Rebase` / `Git-Flow` / `Undo`, and `Studio`) paired with instant layout presets (**Cockpit**, **Changes**, **History**, and **Zen**).
+- **Column-Aligned Action Ribbon & 4 Workspace Layouts**: Column-aligned action Ribbon (`Pull` / `Sync` / `Push` with split-dropdown options, `Stage` / `Unstage` / `Discard` / `Save Stash` / `Apply`, `Merge` / `Rebase` / `Git-Flow` / `Undo`, and `Studio`) paired with instant layout presets (**Cockpit**, **Changes**, **History**, and **Zen**).
 - **Auto-Stash Pull & Sync**: Pull or Sync safely even with dirty working-tree changes — GitFleet can automatically stash local modifications before pulling/rebasing and re-apply them cleanly afterward (preserving the stash safely if conflicts arise).
 - **Nested Repository Groups & Portable Blueprints**: Organize dozens of repositories into nested groups with auto-grouped folder scanning, drag-and-drop regrouping, cascading **Rename Group**, and **Portable Group Blueprints** (export a group hierarchy to JSON and auto-clone every repo on another machine with SSH/HTTPS URL rewriting).
 - **Live Sync, Clone & Submodule Indicators**: Real-time `↑ ahead` / `↓ behind` counters and dirty badges on repositories and submodules, standalone **Clone Repository** modal with live progress & cancellation, `All` / `Dirty` / `Sync` filters, and `.gitfleet` workspaces with multi-instance **Lock / Claim** ownership protection.
@@ -43,12 +43,12 @@ Built on native [`iced`](https://github.com/iced-rs/iced) with zero Electron or 
 </p>
 
 - **Native Multi-Tab Code Editor**: Instant asynchronous file opening, per-tab **Undo / Redo**, untitled scratch tabs & **Save As**, **Quick Open (`Ctrl+P`)**, **Symbol Outline (`Ctrl+Shift+O`)**, **Go to Line (`Ctrl+G`)**, syntax highlighting across **19 languages**, sticky pixel-aligned **line numbers**, indent guides, bracket matching, toggle comments (`Ctrl+/`), move lines (`Alt+↑/↓`), **Word Wrap (`Alt+Z`)**, and live **Font Zoom (`Ctrl+=` / `Ctrl+-`)**.
-- **Virtualized Large-File Engine**: Opens multi-thousand-line files (such as `Cargo.lock` or large logs) with zero UI lag via O(visible) line virtualization and on-demand windowed slice editing.
-- **Git-Aware Explorer & Split Live Preview**: Color-coded Git status badges on files/folders, live added/modified/deleted gutter marks, one-click **Diff HEAD**, side-by-side live Markdown/JSON/code preview, dimmed gitignored entries, and inline **Create / Duplicate / Rename / Delete / Add to `.gitignore`**.
+- **Direct Full-File Editing**: Opens full source files directly in the live code editor with O(visible) gutter, indent guides, and bracket matching for responsive scrolling and editing.
+- **Git-Aware Explorer & Split Live Preview**: Color-coded Git status badges on files/folders, live added/modified/deleted gutter marks, one-click **Diff HEAD**, side-by-side live Markdown/SVG/CSV preview, dimmed gitignored entries, and inline **Create / Duplicate / Rename / Delete / Add to `.gitignore`**.
 - **Search, Replace & Standalone Compare**: VS Code-style **Folder Search & Replace** alongside **In-File Find & Replace** (`Ctrl+F` / `Ctrl+H`), interactive status bar menus for **Encoding**, **Line Endings** (`LF` / `CRLF`), and **Syntax Language**, plus standalone **Compare Any Two Local Files** (text, image, and CSV).
 
 ### Virtualized Diff, Blame, Rich Preview & Live Editor
-- **SmartGit-Grade Side-by-Side & Unified Diffs**: Virtualized diff engine with unified vertical & horizontal scrollbars, **28px cubic-Bezier S-curve change connectors**, 2px insertion/deletion seams, **dual Left/Right diff-position overview bars** with live viewport indicator & click/drag-to-jump, shared expandable `hidden lines` bars, intra-line token highlights, and **partial line & hunk stage/unstage/discard**.
+- **Precision Side-by-Side & Unified Diffs**: Virtualized diff engine with unified vertical & horizontal scrollbars, **28px cubic-Bezier S-curve change connectors**, 2px insertion/deletion seams, **dual Left/Right diff-position overview bars** with live viewport indicator & click/drag-to-jump, shared expandable `hidden lines` bars, intra-line token highlights, and **partial line & hunk stage/unstage/discard**.
 - **Per-Line Git Blame**: Virtualized blame view showing commit hash, author, timestamp, and one-click jump to the originating commit in the graph.
 - **Visual Image Diff & CSV Table Diff**:
   - **Image Diff**: 2-Up, Swipe, Onion Skin, Blink, and Pixel Diff for raster images (PNG, JPEG, WebP, GIF, BMP) and SVG.
@@ -239,8 +239,8 @@ GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) 
 gh workflow run release.yml --ref main
 
 # Or push a tag directly
-git tag v0.7.1
-git push origin v0.7.1
+git tag v0.7.2
+git push origin v0.7.2
 ```
 
 ---

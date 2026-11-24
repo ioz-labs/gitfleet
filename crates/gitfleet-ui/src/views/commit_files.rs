@@ -1399,7 +1399,7 @@ impl GitFleetApp {
         }
     }
 
-    /// Resizable Top-Right-Bottom zone: SmartGit-style Files pane (`Changed | Dir | All`)
+    /// Resizable Top-Right-Bottom zone: Files pane (`Changed | Dir | All`)
     /// with dedicated Unstaged + Staged split panels when inspecting Working Tree / Index.
     pub(crate) fn view_files_pane(&self, p: Palette) -> Element<'_, Message> {
         let active_status = self.active_status();
@@ -1769,7 +1769,7 @@ impl GitFleetApp {
             .into()
     }
 
-    /// SmartGit-style Files view:
+    /// Files view:
     /// - When inspecting `Working Tree / Index`:
     ///   - If there are NO staged files, renders a single calm full-height files table (Staged panel hidden).
     ///   - When at least one file is staged, splits cleanly into **Unstaged** (top) and **Staged** (bottom)
@@ -2056,7 +2056,7 @@ impl GitFleetApp {
             let file_name = file.path.rsplit('/').next().unwrap_or(&file.path).to_string();
             let dir_display = if file_dir.is_empty() { "." } else { file_dir };
             // Show exact semantic change kind (`Added`, `Modified`, `Deleted`, `Renamed`, `Untracked`, `Conflict`)
-            // since Unstaged and Staged now live in separate panels like SmartGit.
+            // since Unstaged and Staged live in separate panels.
             let state_text = file.kind.state_label(false);
 
             let row_btn = theme::pressable_row(

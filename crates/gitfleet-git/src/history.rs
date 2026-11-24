@@ -57,7 +57,7 @@ impl GitService {
             .await
             .is_ok();
 
-            // SmartGit-style Current mode: include both HEAD and its tracked upstream (e.g.
+            // Current mode: include both HEAD and its tracked upstream (e.g.
             // origin/develop) so incoming remote commits ahead of HEAD are visible in the graph.
             if let Ok(up) = runner::run_git_ok(
                 repo_path,
@@ -148,7 +148,7 @@ impl GitService {
                 let unix_secs: i64 = parts[6].trim().parse().unwrap_or(0);
                 let utc_dt = DateTime::<Utc>::from_timestamp(unix_secs, 0).unwrap_or_else(Utc::now);
                 let local_dt = Local.from_utc_datetime(&utc_dt.naive_utc());
-                let date_display = format_smartgit_date(local_dt, now_local);
+                let date_display = format_commit_date(local_dt, now_local);
                 let body = parts.get(9).map(|b| b.trim().to_string()).unwrap_or_default();
                 let signature = match parts.get(10).and_then(|s| s.trim().chars().next()) {
                     Some('G' | 'U') => SignatureStatus::Verified,
@@ -736,7 +736,7 @@ impl GitService {
     }
 }
 
-fn format_smartgit_date(dt: DateTime<Local>, now: DateTime<Local>) -> String {
+fn format_commit_date(dt: DateTime<Local>, now: DateTime<Local>) -> String {
     let days_diff = (now.date_naive() - dt.date_naive()).num_days();
     if days_diff == 0 {
         dt.format("Today %I:%M %p").to_string()

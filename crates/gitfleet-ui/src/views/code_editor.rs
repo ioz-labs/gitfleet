@@ -74,7 +74,6 @@ pub(crate) struct NumberedEditorConfig {
     pub(crate) show_indent_guides: bool,
     pub(crate) indent_step: usize,
     pub(crate) match_brackets: bool,
-    pub(crate) line_number_offset: usize,
 }
 
 impl NumberedEditorConfig {
@@ -89,17 +88,11 @@ impl NumberedEditorConfig {
             show_indent_guides: true,
             indent_step: 4,
             match_brackets: true,
-            line_number_offset: 0,
         }
     }
 
     pub(crate) fn with_indent_step(mut self, step: usize) -> Self {
         self.indent_step = step.clamp(1, 8);
-        self
-    }
-
-    pub(crate) fn with_line_offset(mut self, offset: usize) -> Self {
-        self.line_number_offset = offset;
         self
     }
 
@@ -114,7 +107,6 @@ impl NumberedEditorConfig {
             show_indent_guides: true,
             indent_step: 4,
             match_brackets: true,
-            line_number_offset: 0,
         }
     }
 
@@ -129,7 +121,6 @@ impl NumberedEditorConfig {
             show_indent_guides: false,
             indent_step: 4,
             match_brackets: false,
-            line_number_offset: 0,
         }
     }
 
@@ -982,10 +973,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
     ) -> adv_layout::Node {
         let vp = self.viewport_cell.get();
         let line_count = self.content.line_count().max(1);
-        let g_w = gutter_width(
-            line_count + self.config.line_number_offset,
-            self.config.font_size,
-        );
+        let g_w = gutter_width(line_count, self.config.font_size);
 
         let (editor_w, overflows_x) = if self.config.word_wrap {
             let avail = if limits.max().width.is_finite() {
@@ -1035,7 +1023,8 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
             )
         } else {
             let exact_h = (line_count as f32 * self.config.line_height_px()
-                + self.config.padding.vertical())
+                + self.config.padding.vertical()
+                + 2.0)
             .ceil()
             .max(vp.height);
             adv_layout::Limits::new(Size::new(editor_w, exact_h), Size::new(editor_w, exact_h))
@@ -1082,10 +1071,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
         };
         let child_bounds = child_layout.bounds();
         let line_count = self.content.line_count().max(1);
-        let g_w = gutter_width(
-            line_count + self.config.line_number_offset,
-            self.config.font_size,
-        );
+        let g_w = gutter_width(line_count, self.config.font_size);
         let line_h = self.config.line_height_px();
         let (cursor_line, cursor_col) = self.content.cursor_position();
 
@@ -1380,7 +1366,6 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
 
             // Render ONLY visible line numbers (O(visible_lines)).
             for line_idx in vis_lines {
-                let abs_line_idx = line_idx + self.config.line_number_offset;
                 let visual_row = if self.config.word_wrap && state.prefix_rows.len() > line_idx {
                     state.prefix_rows[line_idx] as usize
                 } else {
@@ -1397,7 +1382,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
                 adv_text::Renderer::fill_text(
                     renderer,
                     adv_text::Text {
-                        content: (abs_line_idx + 1).to_string(),
+                        content: (line_idx + 1).to_string(),
                         bounds: Size::new(inner_text_w, line_h),
                         size: Pixels(self.config.font_size),
                         line_height: text::LineHeight::Absolute(Pixels(line_h)),
@@ -1414,7 +1399,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
 
                 // S5: 3px Git Diff Gutter Bars right next to the gutter border
                 if let Some(marks) = &self.git_marks
-                    && let Some(&mark) = marks.get(&abs_line_idx)
+                    && let Some(&mark) = marks.get(&line_idx)
                 {
                     let (bar_rect, bar_col) = match mark {
                         LineGitMark::Added => (
@@ -1475,10 +1460,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
         let bounds = layout.bounds();
         let child_bounds = child_layout.bounds();
         let line_count = self.content.line_count().max(1);
-        let g_w = gutter_width(
-            line_count + self.config.line_number_offset,
-            self.config.font_size,
-        );
+        let g_w = gutter_width(line_count, self.config.font_size);
         let sticky_gutter_x = bounds.x.max(viewport.x);
         let gutter_right_x = sticky_gutter_x + g_w;
 
@@ -1557,10 +1539,7 @@ impl<'a, M> Widget<M, Theme, Renderer> for NumberedEditorCanvas<'a, M> {
         };
         let bounds = layout.bounds();
         let line_count = self.content.line_count().max(1);
-        let g_w = gutter_width(
-            line_count + self.config.line_number_offset,
-            self.config.font_size,
-        );
+        let g_w = gutter_width(line_count, self.config.font_size);
         let sticky_gutter_x = bounds.x.max(viewport.x);
         let gutter_right_x = sticky_gutter_x + g_w;
 

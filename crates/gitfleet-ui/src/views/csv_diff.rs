@@ -702,7 +702,6 @@ fn render_csv_line<'a, M: 'a>(
     let grid_line = style.grid_line;
 
     let mut r = row![
-        // 3px left status accent bar (matches RepoFlock screenshot #2)
         container(Space::new(Length::Fixed(3.0), Length::Fixed(row_h))).style(move |_| {
             container::Style {
                 background: Some(Background::Color(bar_color)),

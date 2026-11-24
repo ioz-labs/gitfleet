@@ -8,16 +8,13 @@ use super::state::{
     DetachedAction, DetachedViewMode, DetachedViewerState, StudioSidebarPanel, StudioTab,
 };
 use super::status_bar::render_mode_subbar;
-use super::symbols::LineGitMark;
 use crate::app::Message;
 use crate::icons;
-use crate::syntax::{CodeHighlightSettings, CodeSyntaxHighlighter, format_code_token};
+use crate::syntax::{CodeHighlightSettings, CodeLanguage, CodeSyntaxHighlighter, format_code_token};
 use crate::theme::{self, Palette, ThemeMode, icon_size, type_scale};
 use crate::views::csv_diff::render_csv_diff;
-use crate::views::diff_viewer::widgets::render_highlighted_code;
 use crate::views::diff_viewer::{
-    DIFF_LINE_H, DIFF_OVERSCAN_PX, TextDiffRenderCtx, render_file_preview,
-    render_side_by_side_diff_with, render_unified_diff_with,
+    TextDiffRenderCtx, render_file_preview, render_side_by_side_diff_with, render_unified_diff_with,
 };
 use crate::views::image_diff::render_image_diff;
 use crate::views::{tip, truncate_chars};
@@ -192,7 +189,7 @@ pub(crate) fn render_editor_workbench<'a>(
     }
 
     let canvas: Element<'a, Message> = match tab.mode {
-        DetachedViewMode::Edit if v.split_right_preview && tab.has_preview_available() => {
+        DetachedViewMode::Edit if v.split_right_preview && tab.supports_preview() => {
             let left_p = ((v.split_ratio.clamp(0.22, 0.78) * 1000.0).round() as u16).max(200);
             let right_p = 1000u16.saturating_sub(left_p).max(200);
             let left_editor = container(render_studio_code_editor(win_id, v, tab, theme_mode, p))
@@ -232,6 +229,9 @@ pub(crate) fn render_editor_workbench<'a>(
             .into()
         }
         DetachedViewMode::Edit => render_studio_code_editor(win_id, v, tab, theme_mode, p),
+        DetachedViewMode::Preview if tab.is_editable() && !tab.supports_preview() => {
+            render_studio_code_editor(win_id, v, tab, theme_mode, p)
+        }
         DetachedViewMode::Preview => container(
             render_file_preview(
                 &tab.preview_state,
@@ -493,7 +493,7 @@ fn render_tab_bar<'a>(
             ));
         }
 
-        if tab.is_editable() && tab.has_preview_available() {
+        if tab.is_editable() && tab.supports_preview() {
             right_actions = right_actions.push(tip(
                 button(icons::split_horizontal(
                     13.0,
@@ -515,7 +515,7 @@ fn render_tab_bar<'a>(
             ));
         }
 
-        if tab.is_editable() || tab.has_preview_available() {
+        if tab.is_editable() || tab.supports_preview() {
             right_actions = right_actions.push(tip(
                 button(icons::search(
                     13.0,
@@ -696,7 +696,7 @@ fn render_breadcrumb_bar<'a>(
         );
     }
 
-    if tab.has_preview_available() {
+    if tab.supports_preview() {
         let active = tab.mode == DetachedViewMode::Preview;
         modes = modes.push(
             button(
@@ -918,19 +918,19 @@ fn render_studio_code_editor<'a>(
         );
     }
 
-    if tab.is_virtualized_code_mode() {
-        return render_virtualized_studio_code(win_id, v, tab, theme_mode, p);
-    }
-
     let active_match = if v.in_file_find_open {
         v.in_file_active_idx
             .and_then(|i| v.in_file_matches.get(i))
     } else {
         None
     };
-    let line_offset = tab.edit_window.map(|(s, _)| s).unwrap_or(0);
+    let effective_lang = if tab.editor_content.line_count() > 4_000 {
+        CodeLanguage::PlainText
+    } else {
+        tab.language
+    };
     let hl_settings = CodeHighlightSettings {
-        language: tab.language,
+        language: effective_lang,
         theme_mode,
         search_query: if v.in_file_find_open {
             v.in_file_query.clone()
@@ -938,7 +938,7 @@ fn render_studio_code_editor<'a>(
             String::new()
         },
         search_options: v.in_file_options,
-        active_match_line: active_match.and_then(|m| m.line_index.checked_sub(line_offset)),
+        active_match_line: active_match.map(|m| m.line_index),
         active_match_cols: active_match.map(|m| (m.col_start, m.col_end)),
     };
 
@@ -1089,7 +1089,7 @@ fn render_studio_code_editor<'a>(
             text_editor::Binding::from_key_press(key_press)
         });
 
-    let editor_el = crate::views::code_editor::numbered_code_editor_with_marks(
+    crate::views::code_editor::numbered_code_editor_with_marks(
         &tab.editor_content,
         ed,
         &tab.editor_scroll,
@@ -1097,277 +1097,11 @@ fn render_studio_code_editor<'a>(
             v.editor_font_size,
             v.editor_word_wrap,
         )
-        .with_indent_step(tab.indent_spaces)
-        .with_line_offset(line_offset),
+        .with_indent_step(tab.indent_spaces),
         Some(Arc::clone(&tab.git_line_marks)),
         p,
         move |vp| Message::Detached(win_id, DetachedAction::EditorScrolled(vp)),
-    );
-
-    if let Some((win_start, win_end)) = tab.edit_window {
-        let slice_banner = container(
-            row![
-                icons::file_code(13.0, p.accent_fg),
-                theme::clipped_line(
-                    text(format!(
-                        "Editing slice: lines {}–{} of {}  ·  Ctrl+S saves the entire file",
-                        win_start + 1,
-                        win_end,
-                        tab.total_raw_lines
-                    ))
-                    .size(type_scale::CAPTION)
-                    .color(p.text_primary),
-                    Length::Fill,
-                ),
-                button(
-                    text("Done Editing Slice")
-                        .size(type_scale::BADGE)
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([3, 10])
-                .style(theme::primary_btn(p))
-                .on_press(Message::Detached(win_id, DetachedAction::CommitEditWindow)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .padding([5, 12])
-        .width(Length::Fill)
-        .style(theme::studio_breadcrumb_bar(p));
-
-        return column![
-            slice_banner,
-            horizontal_rule(1).style(theme::subtle_rule(p)),
-            editor_el
-        ]
-        .spacing(0)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
-    }
-
-    editor_el
-}
-
-fn render_virtualized_studio_code<'a>(
-    win_id: window::Id,
-    v: &'a DetachedViewerState,
-    tab: &'a StudioTab,
-    theme_mode: ThemeMode,
-    p: Palette,
-) -> Element<'a, Message> {
-    let cfg = crate::views::code_editor::NumberedEditorConfig::studio(
-        v.editor_font_size,
-        false,
-    );
-    let row_h = cfg.line_height_px().max(DIFF_LINE_H).ceil();
-    let cur_ln = tab.virtual_cursor_line.min(tab.total_raw_lines.saturating_sub(1));
-
-    let fast_banner = container(
-        row![
-            icons::file_code(12.0, p.accent_fg),
-            theme::clipped_line(
-                text(format!(
-                    "Fast Large-File Mode ({} lines) — virtualized for instant scrolling · double-click any line to edit",
-                    tab.total_raw_lines
-                ))
-                .size(type_scale::CAPTION)
-                .color(p.text_secondary),
-                Length::Fill,
-            ),
-            button(
-                text(format!("Edit Around Ln {}", cur_ln + 1))
-                    .size(type_scale::BADGE)
-                    .wrapping(text::Wrapping::None),
-            )
-            .padding([3, 10])
-            .style(theme::primary_btn(p))
-            .on_press(Message::Detached(
-                win_id,
-                DetachedAction::OpenEditWindowAround(cur_ln),
-            )),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
     )
-    .padding([4, 12])
-    .width(Length::Fill)
-    .style(theme::studio_breadcrumb_bar(p));
-
-    let Some(doc) = tab.preview_state.highlighted_doc(theme_mode) else {
-        return column![
-            fast_banner,
-            horizontal_rule(1).style(theme::subtle_rule(p)),
-            Space::with_height(Length::Fill),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
-    };
-
-    let total_lines = doc.lines.len();
-    let total_h = total_lines as f32 * row_h;
-    let viewport_h = tab.editor_scroll.viewport_h.max(650.0);
-    let first = (((tab.editor_scroll.scroll_y - DIFF_OVERSCAN_PX).max(0.0) / row_h).floor()
-        as usize)
-        .min(total_lines);
-    let last = (((tab.editor_scroll.scroll_y + viewport_h + DIFF_OVERSCAN_PX) / row_h).ceil()
-        as usize)
-        .min(total_lines)
-        .max(first);
-    let top_spacer = first as f32 * row_h;
-    let bottom_spacer = (total_h - last as f32 * row_h).max(0.0);
-    let gutter_w = crate::views::code_editor::gutter_width(total_lines, cfg.font_size);
-
-    let active_search_line = if v.in_file_find_open {
-        v.in_file_active_idx
-            .and_then(|idx| v.in_file_matches.get(idx))
-            .map(|m| m.line_index)
-    } else {
-        None
-    };
-
-    let mut lines_col = column![Space::with_height(Length::Fixed(top_spacer))].spacing(0);
-    for i in first..last {
-        let line = &doc.lines[i];
-        let is_active = i == cur_ln;
-        let is_search_hit = active_search_line == Some(i)
-            || (v.in_file_find_open
-                && !v.in_file_matches.is_empty()
-                && v.in_file_matches
-                    .binary_search_by_key(&i, |m| m.line_index)
-                    .is_ok());
-
-        let git_mark_color = tab.git_line_marks.get(&i).map(|m| match m {
-            LineGitMark::Added => p.git_added,
-            LineGitMark::Modified => p.git_modified,
-            LineGitMark::DeletedAbove => p.git_deleted,
-        });
-
-        let gutter_bg = if is_active {
-            Color {
-                a: 0.42,
-                ..p.fill_selected
-            }
-        } else {
-            p.surface_sidebar
-        };
-
-        let gutter_num = container(
-            text(format!("{}", i + 1))
-                .size(cfg.font_size.min(type_scale::CAPTION))
-                .font(theme::CODE_FONT)
-                .color(if is_active { p.text_primary } else { p.text_muted })
-                .wrapping(text::Wrapping::None),
-        )
-        .width(Length::Fixed((gutter_w - 4.0).max(28.0)))
-        .height(Length::Fixed(row_h))
-        .padding([0, 6])
-        .align_x(iced::alignment::Horizontal::Right)
-        .align_y(iced::alignment::Vertical::Center)
-        .style(move |_| container::Style {
-            background: Some(iced::Background::Color(gutter_bg)),
-            ..Default::default()
-        });
-
-        let mark_strip = container(Space::with_width(Length::Fixed(3.0)))
-            .width(Length::Fixed(3.0))
-            .height(Length::Fixed(row_h))
-            .style(move |_| container::Style {
-                background: Some(iced::Background::Color(
-                    git_mark_color.unwrap_or(gutter_bg),
-                )),
-                ..Default::default()
-            });
-
-        let sep = container(Space::with_width(Length::Fixed(1.0)))
-            .width(Length::Fixed(1.0))
-            .height(Length::Fixed(row_h))
-            .style(move |_| container::Style {
-                background: Some(iced::Background::Color(p.border_subtle)),
-                ..Default::default()
-            });
-
-        let code_el: Element<'_, Message> = if line.spans.is_empty() {
-            text(line.text.clone())
-                .size(cfg.font_size)
-                .font(theme::CODE_FONT)
-                .color(p.text_primary)
-                .wrapping(text::Wrapping::None)
-                .into()
-        } else {
-            render_highlighted_code(&line.text, &[], &line.spans, p.text_primary, None)
-        };
-
-        let row_bg = if active_search_line == Some(i) {
-            Some(Color {
-                a: 0.28,
-                ..p.warning_fg
-            })
-        } else if is_search_hit {
-            Some(Color {
-                a: 0.16,
-                ..p.warning_fg
-            })
-        } else if is_active {
-            Some(Color {
-                a: 0.28,
-                ..p.fill_selected
-            })
-        } else {
-            None
-        };
-
-        let code_cell = container(code_el)
-            .width(Length::Fill)
-            .height(Length::Fixed(row_h))
-            .padding([0, 12])
-            .align_y(iced::alignment::Vertical::Center)
-            .style(move |_| container::Style {
-                background: row_bg.map(iced::Background::Color),
-                ..Default::default()
-            });
-
-        let clickable_row = mouse_area(
-            row![gutter_num, mark_strip, sep, code_cell]
-                .spacing(0)
-                .height(Length::Fixed(row_h))
-                .align_y(Alignment::Center),
-        )
-        .on_press(Message::Detached(
-            win_id,
-            DetachedAction::VirtualCodeLineClicked(i),
-        ));
-
-        lines_col = lines_col.push(clickable_row);
-    }
-    lines_col = lines_col.push(Space::with_height(Length::Fixed(bottom_spacer)));
-
-    let min_w = (doc.max_chars as f32 * (cfg.font_size * 0.62) + gutter_w + 48.0)
-        .clamp(420.0, 3600.0);
-    let scroller = container(theme::responsive_hscroll_synced(
-        lines_col,
-        min_w,
-        tab.editor_scroll.id.clone(),
-        move |vp| Message::Detached(win_id, DetachedAction::EditorScrolled(vp)),
-        p,
-    ))
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(move |_| container::Style {
-        background: Some(iced::Background::Color(p.surface_input)),
-        ..Default::default()
-    });
-
-    column![
-        fast_banner,
-        horizontal_rule(1).style(theme::subtle_rule(p)),
-        scroller
-    ]
-    .spacing(0)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
 }
 
 fn render_welcome_canvas<'a>(
